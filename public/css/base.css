@@ -1,0 +1,138 @@
+/* Reset, design tokens, typography, shared primitives. */
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+img { max-width: 100%; display: block; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+input, select { font: inherit; }
+
+:root {
+  /* Surfaces - true black so artwork sits on it, not near-black. */
+  --bg: #000000;
+  --surface: #0d0d0d;
+  --surface-2: #171717;
+  --line: rgba(255, 255, 255, .09);
+
+  /* Foreground */
+  --fg: #ffffff;
+  --fg-2: rgba(255, 255, 255, .68);
+  --fg-3: rgba(255, 255, 255, .42);
+
+  /* The only non-grey values in the system. State only, never decoration. */
+  --danger: #ef4444;
+  --warn: #f59e0b;
+
+  /* Layout */
+  --rail-w: 64px;
+  --tabbar-h: 56px;
+  --topbar-h: 60px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  --shadow: 0 24px 64px rgba(0, 0, 0, .7);
+
+  --ease: cubic-bezier(.22, 1, .36, 1);
+  --state: 160ms var(--ease);
+  --enter: 240ms var(--ease);
+
+  --z-sticky: 20;
+  --z-tabbar: 40;
+  --z-modal: 60;
+  --z-player: 80;
+  --z-toast: 100;
+}
+
+/* Type scale. Tracking tightens as size grows. */
+.t-hero    { font-size: 44px; font-weight: 800; letter-spacing: -1.1px; line-height: .98; }
+.t-section { font-size: 15px; font-weight: 700; letter-spacing: -.1px; }
+.t-card    { font-size: 12px; font-weight: 600; }
+.t-meta    { font-size: 10px; font-weight: 600; letter-spacing: .9px; text-transform: uppercase; color: var(--fg-3); }
+.t-num     { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 1023px) { .t-hero { font-size: 30px; letter-spacing: -.8px; } }
+@media (max-width: 767px)  { .t-hero { font-size: 21px; letter-spacing: -.6px; } }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  min-height: 44px; padding: 0 var(--space-4);
+  border-radius: var(--radius-sm); font-weight: 600; font-size: 12px;
+  transition: transform var(--state), background var(--state), opacity var(--state);
+}
+.btn:active { transform: scale(.97); }
+.btn--primary { background: var(--fg); color: #000; }
+.btn--primary:hover { opacity: .88; }
+.btn--secondary { background: rgba(255, 255, 255, .15); color: var(--fg); }
+.btn--secondary:hover { background: rgba(255, 255, 255, .24); }
+.btn--ghost { background: transparent; color: var(--fg-2); }
+.btn--ghost:hover { background: var(--surface-2); color: var(--fg); }
+.btn--danger { background: transparent; color: var(--danger); border: 1px solid rgba(239, 68, 68, .4); }
+.btn--icon { width: 44px; padding: 0; }
+.btn:disabled { opacity: .38; cursor: default; }
+
+/* Icons always carry a size. The nav icon shipped without one and laid out
+   at 0x0 on mobile, making the menu button invisible. */
+svg { width: 20px; height: 20px; flex: none; }
+.icon-sm { width: 16px; height: 16px; }
+.icon-lg { width: 24px; height: 24px; }
+
+.input {
+  width: 100%; min-height: 44px; padding: 0 var(--space-4);
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--radius); color: var(--fg);
+}
+.input::placeholder { color: var(--fg-3); }
+.input:focus { outline: none; border-color: rgba(255, 255, 255, .3); }
+
+.select {
+  min-height: 44px; padding: 0 var(--space-3);
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--radius); color: var(--fg);
+}
+
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: var(--radius-sm);
+  font-size: 10px; font-weight: 700; letter-spacing: .5px;
+  border: 1px solid var(--line); color: var(--fg-2);
+}
+.badge--danger { color: var(--danger); border-color: rgba(239, 68, 68, .4); }
+.badge--warn { color: var(--warn); border-color: rgba(245, 158, 11, .4); }
+
+.spinner {
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .18); border-top-color: var(--fg);
+  animation: spin .8s linear infinite;
+}
+.spinner--lg { width: 34px; height: 34px; border-width: 3px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
