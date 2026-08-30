@@ -34,15 +34,46 @@ export function applyFilters(results, filters) {
   });
 }
 
-/** Run a search and push the outcome into state. */
-export async function runSearch(query, type) {
+/**
+ * Clamp a season/episode box to a sane whole number.
+ *
+ * Zero is a legitimate value — that is where specials live — so this cannot
+ * lean on `Number(x) || fallback`, which would quietly rewrite 0 to 1.
+ */
+function wholeOr(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return parsed;
+}
+
+/**
+ * Run a search and push the outcome into state.
+ *
+ * Season and episode only travel for shows: Torrentio's series endpoint is
+ * keyed on `imdb:season:episode`, and querying it without them returns an
+ * empty list rather than an error.
+ */
+export async function runSearch(query, type, season, episode) {
   const term = String(query || '').trim();
   if (!term) return;
 
-  patchSlice('search', { query: term, type, status: 'loading', error: null, results: [], sources: [] });
+  const isShow = type === 'show';
+  const wantedSeason = isShow ? wholeOr(season, state.search.season) : state.search.season;
+  const wantedEpisode = isShow ? wholeOr(episode, state.search.episode) : state.search.episode;
+
+  patchSlice('search', {
+    query: term, type, season: wantedSeason, episode: wantedEpisode,
+    status: 'loading', error: null, results: [], sources: []
+  });
+
+  const params = { q: term, type };
+  if (isShow) {
+    params.season = wantedSeason;
+    params.episode = wantedEpisode;
+  }
 
   try {
-    const outcome = await api.searchTorrents({ q: term, type });
+    const outcome = await api.searchTorrents(params);
     patchSlice('search', {
       status: 'done',
       results: outcome.results || [],
@@ -58,12 +89,18 @@ export async function downloadResult(index) {
   const result = state.search.results[index];
   if (!result) return;
 
+  const isShow = state.search.type === 'show';
+
   try {
     const job = await api.startDownload({
       magnet: result.magnet,
       infoHash: result.infoHash,
       title: state.search.query || result.title,
-      type: state.search.type === 'show' ? 'episode' : 'movie',
+      type: isShow ? 'episode' : 'movie',
+      // Without these the organizer files every episode as S00E00 and picks
+      // the largest file out of a season pack rather than the right one.
+      season: isShow ? state.search.season : undefined,
+      episode: isShow ? state.search.episode : undefined,
       source: result.source
     });
     toast('success', 'Download started', job.title || result.title);
@@ -79,17 +116,26 @@ export async function downloadResult(index) {
  * ----------------------------------------------------------------------- */
 
 export function renderSearch() {
-  const { query, type, filters, status, results, sources, error } = state.search;
+  const { query, type, season, episode, filters, status, results, sources, error } = state.search;
   const visible = applyFilters(results, filters);
 
   const toolbar = `
     <div class="search-toolbar">
       <div class="search-toolbar__row">
         <input class="input" id="search-input" placeholder="Title to search for…" value="${esc(query)}" autocomplete="off">
-        <select class="select" id="search-type">
+        <select class="select" id="search-type" data-action="set-search-type">
           <option value="movie"${type === 'movie' ? ' selected' : ''}>Movie</option>
           <option value="show"${type === 'show' ? ' selected' : ''}>Show</option>
         </select>
+        ${type === 'show' ? `
+          <label class="episode-picker" title="Torrentio indexes shows one episode at a time">
+            <span class="episode-picker__label">S</span>
+            <input class="input input--num" id="search-season" type="number" min="0" max="99"
+                   value="${wholeOr(season, 1)}" aria-label="Season" autocomplete="off">
+            <span class="episode-picker__label">E</span>
+            <input class="input input--num" id="search-episode" type="number" min="0" max="999"
+                   value="${wholeOr(episode, 1)}" aria-label="Episode" autocomplete="off">
+          </label>` : ''}
         <button class="btn btn--primary" data-action="run-search">${icon('search', 'btn__icon')}<span class="btn__label">Search</span></button>
       </div>
       <div class="search-toolbar__row">

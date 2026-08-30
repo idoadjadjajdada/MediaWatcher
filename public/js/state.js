@@ -14,6 +14,10 @@ export const state = {
   search: {
     query: '',
     type: 'movie',
+    // Torrentio indexes series per episode, so a show search without these
+    // returns nothing at all. Only used when type === 'show'.
+    season: 1,
+    episode: 1,
     results: [],
     sources: [],
     status: 'idle',           // idle | loading | done | error

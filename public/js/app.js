@@ -191,21 +191,26 @@ const ACTIONS = {
   },
 
   'run-search': () => {
-    const input = document.getElementById('search-input');
-    const type = document.getElementById('search-type');
-    search.runSearch(input ? input.value : state.search.query, type ? type.value : state.search.type);
+    const live = liveSearch();
+    search.runSearch(live.query, live.type, live.season, live.episode);
+  },
+
+  // Switching to Show reveals the season/episode boxes, so this has to
+  // re-render rather than wait for the next search.
+  'set-search-type': (el) => {
+    patchSlice('search', { ...liveSearch(), type: el.value });
   },
 
   'filter-quality': (el) => {
     patchSlice('search', {
-      query: liveQuery(),
+      ...liveSearch(),
       filters: { ...state.search.filters, quality: el.dataset.quality }
     });
   },
 
   'toggle-upscaled': (el) => {
     patchSlice('search', {
-      query: liveQuery(),
+      ...liveSearch(),
       filters: { ...state.search.filters, hideUpscaled: el.checked }
     });
   },
@@ -276,12 +281,26 @@ const ACTIONS = {
 };
 
 /**
- * Whatever is typed in the search box right now. Re-rendering the page would
- * otherwise discard text the user has not submitted yet.
+ * Whatever is in the search controls right now. Re-rendering the page would
+ * otherwise discard anything the user has typed but not submitted yet, so
+ * every action that triggers a re-render folds this back into state first.
  */
-function liveQuery() {
-  const input = document.getElementById('search-input');
-  return input ? input.value : state.search.query;
+function liveSearch() {
+  const read = (id, fallback) => {
+    const node = document.getElementById(id);
+    return node ? node.value : fallback;
+  };
+  const whole = (value, fallback) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  };
+
+  return {
+    query: read('search-input', state.search.query),
+    type: read('search-type', state.search.type),
+    season: whole(read('search-season', state.search.season), state.search.season),
+    episode: whole(read('search-episode', state.search.episode), state.search.episode)
+  };
 }
 
 /** Poll the library until a background scan finishes. */
@@ -313,7 +332,10 @@ function onClick(event) {
 
   // Inputs are driven by their own 'change' event; handling the click too
   // would run the action twice for one toggle.
-  if (target.tagName === 'INPUT') {
+  // Form controls are driven by their own 'change' event. Handling the click
+  // too would run the action twice for a toggle, and for a <select> it would
+  // re-render the page out from under the open dropdown.
+  if (target.tagName === 'INPUT' || target.tagName === 'SELECT') {
     if (event.type === 'click') return;
   } else {
     event.preventDefault();
