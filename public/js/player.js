@@ -19,13 +19,40 @@ import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episod
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
-const NEXT_UP_AT = 0.85;
-const COUNTDOWN_SECONDS = 10;
+/**
+ * How close to the end the "up next" card appears, in seconds.
+ *
+ * This used to be a fraction of the running time (0.85), which is the wrong
+ * unit: 15% of a 22-minute episode is 3m19s, so the card appeared — and ten
+ * seconds later auto-advanced — while a fifth of the episode was still to
+ * play, taking the ending and the post-credits scene with it. The same 15% on
+ * a three-hour film would have been 27 minutes. Distance from the end behaves
+ * the same whatever the runtime.
+ */
+export const NEXT_UP_LEAD_SECONDS = 45;
 const SKIP_SECONDS = 10;
 const RESUME_MIN = 5;
 const RESUME_MAX_RATIO = 0.95;
 
 let ctx = null;
+
+/* --------------------------------------------------------------------------
+ * Next-episode timing (pure, so it can be tested without a DOM)
+ * ----------------------------------------------------------------------- */
+
+/** Is playback close enough to the end to offer the next episode? */
+export function shouldOfferNext(total, current, lead = NEXT_UP_LEAD_SECONDS) {
+  if (!Number.isFinite(total) || total <= 0) return false;
+  if (!Number.isFinite(current) || current < 0) return false;
+  return (total - current) <= lead;
+}
+
+/** Whole seconds of playback left, never negative. */
+export function secondsRemaining(total, current) {
+  if (!Number.isFinite(total) || total <= 0) return 0;
+  if (!Number.isFinite(current)) return 0;
+  return Math.max(0, Math.ceil(total - current));
+}
 
 const root = () => document.getElementById('player-root');
 const el = (id) => document.getElementById(id);
@@ -97,7 +124,7 @@ export async function open(filePath) {
     // listed before embedded tracks, so [0] is the best available.
     activeTrack: (Array.isArray(tracks) && tracks[0]) || null,
     speed: 1,
-    countdown: null,
+    advancing: false,
     nextTarget: null,
     video: el('player-video'),
     node: el('player')
@@ -121,7 +148,6 @@ export async function close({ save = true } = {}) {
   document.removeEventListener('keydown', onKeyDown);
   clearInterval(ctx.saveTimer);
   clearTimeout(ctx.idleTimer);
-  clearInterval(ctx.countdown);
 
   // Dropping the src stops the server-side ffmpeg process straight away.
   ctx.video.removeAttribute('src');
@@ -208,6 +234,7 @@ function tick() {
   playBtn.innerHTML = ctx.video.paused ? playIcon() : pauseIcon();
   playBtn.setAttribute('aria-label', ctx.video.paused ? 'Play' : 'Pause');
 
+  if (ctx.nextTarget && !shouldOfferNext(total, current)) withdrawNextOffer();
   maybeOfferNext(total, current);
 }
 
@@ -327,12 +354,15 @@ async function persist(final = false) {
  * ----------------------------------------------------------------------- */
 
 function maybeOfferNext(total, current) {
-  if (!ctx || ctx.countdown || ctx.nextDismissed) return;
-  if (!total || current / total < NEXT_UP_AT) return;
+  if (!ctx || ctx.nextDismissed) return;
   if (!ctx.located || ctx.located.type !== 'episode') return;
+  if (!shouldOfferNext(total, current)) return;
 
-  const next = nextEpisode(ctx.located.item, ctx.located.season, ctx.located.episode.episode_number);
   const box = el('next-up');
+  if (!box) return;
+
+  const next = ctx.nextTarget
+    || nextEpisode(ctx.located.item, ctx.located.season, ctx.located.episode.episode_number);
 
   if (!next) {
     if (!ctx.endShown) {
@@ -346,36 +376,48 @@ function maybeOfferNext(total, current) {
     return;
   }
 
-  ctx.nextTarget = next;
-  el('next-up-title').textContent =
-    `${episodeTag(next.season, next.episode.episode_number)} — ${next.episode.title || 'Next episode'}`;
-  box.hidden = false;
+  if (!ctx.nextTarget) {
+    ctx.nextTarget = next;
+    el('next-up-title').textContent =
+      `${episodeTag(next.season, next.episode.episode_number)} — ${next.episode.title || 'Next episode'}`;
+    box.hidden = false;
+  }
 
-  let remaining = COUNTDOWN_SECONDS;
-  el('next-up-count').textContent = String(remaining);
-  ctx.countdown = setInterval(() => {
-    remaining -= 1;
-    const counter = el('next-up-count');
-    if (counter) counter.textContent = String(Math.max(0, remaining));
-    if (remaining <= 0) playNext();
-  }, 1000);
+  // The counter tracks real playback rather than wall-clock time, so pausing
+  // pauses it and seeking backwards takes the card away again. The old version
+  // ran a setInterval that advanced regardless of what the video was doing.
+  const left = secondsRemaining(total, current);
+  const counter = el('next-up-count');
+  if (counter) counter.textContent = String(left);
+
+  // Advance only once the episode has actually finished. `ended` handles the
+  // usual case, but in ffmpeg pipe mode the element's duration is Infinity and
+  // `ended` can fail to fire, so this is the backstop.
+  if (left <= 0) playNext();
+}
+
+/** Hide the up-next card and forget the target, e.g. after seeking back. */
+function withdrawNextOffer() {
+  if (!ctx || !ctx.nextTarget) return;
+  ctx.nextTarget = null;
+  const box = el('next-up');
+  if (box) box.hidden = true;
 }
 
 export function playNext() {
-  if (!ctx?.nextTarget) return;
+  if (!ctx?.nextTarget || ctx.advancing) return;
   const file = (ctx.nextTarget.episode.files || [])[0];
   if (!file) return;
-  const target = file.file_path;
-  clearInterval(ctx.countdown);
-  ctx.countdown = null;
-  open(target);
+  // `ended` and the tick backstop can both land on the same frame; open() is
+  // async, so without this the next episode gets opened twice.
+  ctx.advancing = true;
+  open(file.file_path);
 }
 
 export function cancelNext() {
   if (!ctx) return;
-  clearInterval(ctx.countdown);
-  ctx.countdown = null;
   ctx.nextDismissed = true;
+  ctx.nextTarget = null;
   const box = el('next-up');
   if (box) box.hidden = true;
 }
@@ -510,7 +552,7 @@ function onKeyDown(event) {
 
 /** "N" should jump ahead even before the countdown has appeared. */
 function playNextImmediate() {
-  if (!ctx?.located || ctx.located.type !== 'episode') return;
+  if (!ctx?.located || ctx.located.type !== 'episode' || ctx.advancing) return;
   const next = ctx.nextTarget
     || nextEpisode(ctx.located.item, ctx.located.season, ctx.located.episode.episode_number);
   if (!next) {
@@ -518,7 +560,11 @@ function playNextImmediate() {
     return;
   }
   const file = (next.episode.files || [])[0];
-  if (file) open(file.file_path);
+  if (!file) return;
+  // Same guard as playNext: open() is async, and pressing N on the final frame
+  // could otherwise race the tick backstop into opening two players.
+  ctx.advancing = true;
+  open(file.file_path);
 }
 
 export default {

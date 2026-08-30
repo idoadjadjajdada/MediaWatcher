@@ -557,7 +557,9 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
       </div>
 
       <div class="next-up" id="next-up" hidden>
-        <div class="next-up__label">Up next in <span class="next-up__count" id="next-up-count">10</span>s</div>
+        <!-- The count is filled from real remaining playback the moment the
+             card is shown, so it has no meaningful initial value. -->
+        <div class="next-up__label">Up next in <span class="next-up__count" id="next-up-count">—</span>s</div>
         <div class="next-up__title" id="next-up-title"></div>
         <div class="next-up__actions">
           <button class="btn btn--primary" data-action="play-next">Play now</button>
