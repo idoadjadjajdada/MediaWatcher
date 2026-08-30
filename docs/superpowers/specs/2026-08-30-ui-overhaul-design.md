@@ -27,9 +27,11 @@ user: UI first, then access, then playback quality.
 
 - Authentication, network exposure, TLS. Separate sub-project, lands after this.
 - Adaptive bitrate or bandwidth-aware transcoding. Separate sub-project.
-- Changing what the API returns. This is a frontend change; server routes are untouched
-  except where noted for the accent colour, which is **not** in scope (monochrome was
-  chosen, so no colour extraction is needed).
+- Per-title accent colour extraction. Monochrome was chosen, so none is needed.
+
+**Scope note:** this was scoped as a frontend-only change. The audio delay control
+(below) breaks that — it needs the stream route, the transcoder, and one database
+column. It is the only server-side work in this sub-project.
 
 ---
 
@@ -211,6 +213,60 @@ also register as two chrome toggles.
 `shouldOfferNext` / `secondsRemaining` and the next-up countdown keep their current
 behaviour and tests; only their presentation changes.
 
+### Audio delay
+
+Badly muxed releases drift out of sync, and nothing in the app can currently correct it.
+The settings menu gains a third group, below Subtitles and Playback speed:
+
+```
+Audio delay                    0.00s   [Reset]
+   −5s    −1s   −0.5s   −0.1s  −0.05s
+ +0.05s  +0.1s  +0.5s    +1s     +5s
+```
+
+**The buttons nudge cumulatively, they are not absolute values.** Tapping `+0.1s` twice
+leaves the offset at `+0.20s`. This is how VLC and mpv behave and it is the only way to
+converge on a correct value by ear. The readout shows the running total; Reset returns to
+`0.00s`. Range is clamped to ±30s.
+
+Sign convention: **positive delays the audio** (audio was early), negative advances it
+(audio was late). The readout is labelled so the direction is unambiguous without
+experimenting.
+
+Desktop keyboard: `[` and `]` nudge by 0.05s. `j`/`k` are not used — `k` is already
+play/pause.
+
+**How it works.** `/api/stream` gains `?audioOffset=<seconds>`. Non-zero offsets build a
+two-input ffmpeg command so audio can still be stream-copied:
+
+```
+-ss T -i FILE -itsoffset OFFSET -ss T -i FILE -map 0:v:0 -map 1:a:N -c:v copy -c:a copy
+```
+
+A filter (`adelay`, `atrim`) would force an audio re-encode; the second input does not.
+`-itsoffset` must precede the `-i` it applies to, and `-ss` is applied to both inputs so
+seeking stays aligned.
+
+**Direct mode cannot carry an offset.** `direct` streams raw bytes with no ffmpeg in the
+path. When a non-zero offset is set on a file that would otherwise play direct, the
+decision is overridden to `remux` — cheap, still lossless, but it means that file's
+seeking changes from byte-range to restart-at-timestamp for as long as an offset is set.
+The player already handles both shapes.
+
+**Changing the offset restarts the stream** at the current position, the same mechanic as
+seeking in pipe mode. Expect a brief hitch on each nudge. This is inherent to doing it in
+ffmpeg and matches how Plex and Jellyfin behave when transcoding.
+
+**Persistence.** The offset is stored per file so a badly synced release does not have to
+be re-corrected every episode. `progress` gains `audio_offset REAL NOT NULL DEFAULT 0`,
+keyed on the existing `file_path` primary key. `schema.sql` is applied with
+`CREATE TABLE IF NOT EXISTS`, which cannot add a column to an existing table, so the
+column is added by an `ALTER TABLE` guarded in `db/index.js` that swallows the
+"duplicate column name" error. `/api/progress` carries the value in both directions.
+
+When a show has an offset set on one episode, the next episode does **not** inherit it
+automatically — that would silently desync correctly-muxed files. It is per file.
+
 ---
 
 ## Files
@@ -223,8 +279,15 @@ behaviour and tests; only their presentation changes.
 | `public/js/app.js` | Drop `toggle-drawer`; add tab-bar navigation and gesture actions |
 | `public/js/search.js` | Restyle results and suggestions against the new tokens |
 | `public/index.html` | `theme-color` meta, `viewport-fit=cover` already present |
+| `public/js/state.js` | `player.audioOffset` added to state |
+| `public/js/api.js` | `audioOffset` on `streamUrl`; progress payload carries it |
+| `services/transcoder.js` | `buildArgs` two-input `-itsoffset` path; `decide` forced to `remux` when an offset is set |
+| `routes/stream.js` | Read and validate `?audioOffset=` |
+| `db/schema.sql`, `db/index.js` | `progress.audio_offset` column plus its guarded `ALTER TABLE` |
+| `routes/progress.js` | Accept and return `audio_offset` |
 
-`state.js` and `api.js` are untouched — no state shape or endpoint changes.
+Everything below `public/` is the overhaul; the last four rows exist only for the audio
+delay control.
 
 **On file size:** `styles.css` is 1352 lines and rewriting it wholesale in one task is
 both risky and hard to review. It gets split into `base.css` (reset, tokens, type),
@@ -251,6 +314,18 @@ using the installed Playwright and Chromium, checking:
 - Rails scroll and snap; no visible scrollbar track
 - Player controls operate, chrome fades and returns, double-tap seeks by exactly 10s
 - Console is free of errors after each interaction
+
+The audio delay control is additionally covered by node tests, since its logic is
+server-side and testable without a browser:
+
+- `buildArgs` emits a single-input command at offset `0`, and a two-input command with
+  `-itsoffset` before the second `-i` at any non-zero offset
+- both streams stay `copy` in remux mode with an offset applied — the offset must not
+  silently cost losslessness
+- `decide` returns `remux` rather than `direct` when an offset is set
+- offsets are clamped to ±30s and a non-numeric `audioOffset` is treated as `0`
+- the `ALTER TABLE` runs cleanly on a fresh database and on one that already has the
+  column
 
 The existing node suites (`npm test`) and the launcher suite must stay green; neither
 covers this work directly, so they serve as regression guards.
