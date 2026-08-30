@@ -153,6 +153,65 @@ export function searchShows(query, year) {
 }
 
 /**
+ * Combined movie + TV search, used by the suggestion dropdown.
+ * Volatile like the other searches, so it shares the 10-minute memo cache.
+ */
+export function searchMulti(query) {
+  return memo(`multi:${normalize(query)}`, async () => {
+    const data = await request('/search/multi', { query, include_adult: false });
+    return data.results || [];
+  });
+}
+
+/**
+ * Normalise one TMDB search hit into this app's vocabulary.
+ *
+ * TMDB calls television `tv` and carries its name in `name`/`first_air_date`,
+ * while films use `title`/`release_date`. Everything downstream sees only
+ * `type: 'show'`, `title` and `year`.
+ *
+ * Returns null for people and for entries with no usable title.
+ */
+export function toSuggestion(result) {
+  if (!result) return null;
+  if (result.media_type !== 'movie' && result.media_type !== 'tv') return null;
+
+  const type = result.media_type === 'tv' ? 'show' : 'movie';
+  const title = type === 'show' ? result.name : result.title;
+  if (!title) return null;
+
+  const released = type === 'show' ? result.first_air_date : result.release_date;
+  const year = released ? (Number(String(released).slice(0, 4)) || null) : null;
+
+  return {
+    tmdb_id: result.id,
+    type,
+    title,
+    year,
+    poster: posterUrl(result.poster_path),
+    popularity: Number(result.popularity) || 0
+  };
+}
+
+/**
+ * Suggestions for the search box, most popular first.
+ *
+ * A query under two characters is answered locally rather than spending a
+ * TMDB call on something that would match half the catalogue.
+ */
+export async function suggest(query, limit = 8) {
+  const term = String(query || '').trim();
+  if (term.length < 2) return [];
+
+  const results = await searchMulti(term);
+  return results
+    .map(toSuggestion)
+    .filter(Boolean)
+    .sort((a, b) => b.popularity - a.popularity)
+    .slice(0, limit);
+}
+
+/**
  * Score a search hit against the parsed filename. Exact title match dominates,
  * year agreement breaks near-ties, popularity settles the rest — this is what
  * keeps "Inception" off "Inception: The Cobol Job".
@@ -284,6 +343,9 @@ export function clearSearchCache() {
 export default {
   searchMovies,
   searchShows,
+  searchMulti,
+  toSuggestion,
+  suggest,
   findBestMovie,
   findBestShow,
   getMovie,
