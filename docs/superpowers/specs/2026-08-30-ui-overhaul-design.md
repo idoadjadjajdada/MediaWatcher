@@ -210,8 +210,27 @@ Chrome fades after 2.5s idle while playing, returns on pointer move, tap, or any
 Double-tap must not fire when the tap lands on the control bar, and a double-tap must not
 also register as two chrome toggles.
 
-`shouldOfferNext` / `secondsRemaining` and the next-up countdown keep their current
-behaviour and tests; only their presentation changes.
+### Next-up card
+
+The lead rises from 45s to **60s**, and the countdown number only appears in the final
+**10 seconds**.
+
+| Time left | Card |
+|---|---|
+| > 60s | Hidden |
+| 60s → 10s | "Up next" + episode title + Cancel. No number. |
+| 10s → 0 | "Up next in 10… 9… 8…" counting to zero |
+| 0 | Advances |
+
+**Auto-advance stays at the true end of the episode.** It does not fire ten seconds after
+the card appears — that would cut the last fifty seconds and re-introduce a milder form of
+the bug fixed in `45227d8`, where the next episode started while the ending was still
+playing. Credits play in full whether or not Cancel is pressed; Cancel only removes the
+card.
+
+`shouldOfferNext` and `secondsRemaining` keep their signatures and existing tests, which
+reference `NEXT_UP_LEAD_SECONDS` rather than hardcoding it. A new pure
+`shouldCountDown(total, current)` decides when the number appears.
 
 ### Audio delay
 

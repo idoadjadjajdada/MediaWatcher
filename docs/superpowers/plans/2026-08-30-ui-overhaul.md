@@ -2198,6 +2198,115 @@ git commit -m "feat(player): audio delay control with cumulative nudging and per
 
 ---
 
+## Task 11: Next-up timing
+
+**Files:**
+- Modify: `public/js/player.js` (`NEXT_UP_LEAD_SECONDS`, `maybeOfferNext`, new `shouldCountDown`)
+- Modify: `tests/player-nextup.test.mjs`
+
+**Interfaces:**
+- Consumes: `shouldOfferNext`, `secondsRemaining` (already exported)
+- Produces: `COUNTDOWN_WINDOW_SECONDS = 10` and `shouldCountDown(total, current, window)` → boolean
+
+- [ ] **Step 1: Extend the existing test**
+
+Append to `tests/player-nextup.test.mjs`, before the summary block:
+
+```js
+console.log('\nshouldCountDown');
+check('no number a minute out', shouldCountDown(EPISODE, EPISODE - 60) === false);
+check('no number at 11 seconds', shouldCountDown(EPISODE, EPISODE - 11) === false);
+check('number at exactly 10 seconds', shouldCountDown(EPISODE, EPISODE - 10) === true);
+check('number at 3 seconds', shouldCountDown(EPISODE, EPISODE - 3) === true);
+check('number past the end', shouldCountDown(EPISODE, EPISODE + 5) === true);
+check('no number for an unknown duration', shouldCountDown(0, 10) === false);
+check('window is 10 seconds', COUNTDOWN_WINDOW_SECONDS === 10);
+check('lead is a full minute', NEXT_UP_LEAD_SECONDS === 60);
+```
+
+and extend the import on line 20 to:
+
+```js
+const { shouldOfferNext, secondsRemaining, shouldCountDown,
+        NEXT_UP_LEAD_SECONDS, COUNTDOWN_WINDOW_SECONDS } =
+  await import('../public/js/player.js');
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+npm test
+```
+
+Expected: FAIL — `does not provide an export named 'shouldCountDown'`.
+
+- [ ] **Step 3: Implement**
+
+In `public/js/player.js`, change the lead and add the new predicate:
+
+```js
+export const NEXT_UP_LEAD_SECONDS = 60;
+export const COUNTDOWN_WINDOW_SECONDS = 10;
+
+/**
+ * Should the card show a ticking number yet?
+ *
+ * The card itself appears a minute out so there is time to reach for Cancel,
+ * but a number counting from 60 is just noise. It starts in the last ten
+ * seconds and runs to zero, which is the actual end of the episode - the
+ * advance is not ten seconds after the card appears. Firing early is the bug
+ * fixed in 45227d8 and it takes the ending with it.
+ */
+export function shouldCountDown(total, current, window = COUNTDOWN_WINDOW_SECONDS) {
+  if (!Number.isFinite(total) || total <= 0) return false;
+  if (!Number.isFinite(current)) return false;
+  return (total - current) <= window;
+}
+```
+
+In `maybeOfferNext`, replace the counter block:
+
+```js
+  const left = secondsRemaining(total, current);
+  const counter = el('next-up-count');
+  const label = box.querySelector('.next-up__label');
+
+  if (shouldCountDown(total, current)) {
+    if (counter) counter.textContent = String(left);
+    if (label) label.innerHTML = `Up next in <span id="next-up-count">${left}</span>s`;
+  } else if (label && !ctx.plainLabelSet) {
+    ctx.plainLabelSet = true;
+    label.textContent = 'Up next';
+  }
+
+  if (shouldCountDown(total, current)) ctx.plainLabelSet = false;
+```
+
+- [ ] **Step 4: Run the tests**
+
+```bash
+npm test
+```
+
+Expected: PASS, including the eight new checks and all pre-existing ones — they reference `NEXT_UP_LEAD_SECONDS` rather than `45`, so raising it does not invalidate them.
+
+- [ ] **Step 5: Verify by watching an episode end**
+
+Seek to roughly 70 seconds before the end of a Rick and Morty episode and confirm:
+- At ~60s the card appears reading **Up next** with the next episode and a Cancel, no number
+- The number appears only in the last 10 seconds and counts to zero
+- The next episode starts when the current one actually ends, with the credits having played
+- Pressing Cancel removes the card and nothing auto-advances
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add public/js/player.js tests/player-nextup.test.mjs
+git commit -m "feat(player): next-up card a minute out, countdown only in the last 10s"
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
@@ -2221,6 +2330,7 @@ git commit -m "feat(player): audio delay control with cumulative nudging and per
 | Audio delay: clamp ±30s | 9 |
 | Audio delay: `progress.audio_offset` + migration | 9 |
 | Audio delay: menu UI, cumulative, keyboard | 10 |
+| Next-up at 60s, countdown in the last 10s | 11 |
 | Browser verification at 1440/768/375 | 1, then every UI task |
 
 **Type consistency checked:** `posterCard(item, type, { owned, progress })` and `rail(title, cardsHtml, { count })` are defined in Task 4 and called with those exact shapes in Tasks 5 and 6. `buildArgs(filePath, { mode, startSeconds, audioIndex, audioOffset })` and `decide(info, caps, { audioOffset })` are defined in Task 9 and consumed by Task 10 through `api.streamUrl({ audioOffset })`. `clampAudioOffset` is the single clamp, used by both the route and the tests; the client clamps to the same ±30 constant. `classifyTap` / `DOUBLE_TAP_MS` are defined and tested in Task 8 only.
