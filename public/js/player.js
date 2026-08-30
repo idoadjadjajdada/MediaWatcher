@@ -29,7 +29,18 @@ const IDLE_MS = 2600;
  * a three-hour film would have been 27 minutes. Distance from the end behaves
  * the same whatever the runtime.
  */
-export const NEXT_UP_LEAD_SECONDS = 45;
+export const NEXT_UP_LEAD_SECONDS = 60;
+
+/**
+ * How long before the end the number starts ticking.
+ *
+ * The card itself appears a minute out so there is time to reach for Cancel,
+ * but a number counting down from 60 is just noise. It runs in the last ten
+ * seconds and reaches zero at the actual end of the episode - the advance is
+ * NOT ten seconds after the card appears. Firing early is the bug fixed in
+ * 45227d8 and it takes the ending, and any post-credits scene, with it.
+ */
+export const COUNTDOWN_WINDOW_SECONDS = 10;
 const SKIP_SECONDS = 10;
 export const DOUBLE_TAP_MS = 300;
 
@@ -68,6 +79,13 @@ export function shouldOfferNext(total, current, lead = NEXT_UP_LEAD_SECONDS) {
   if (!Number.isFinite(total) || total <= 0) return false;
   if (!Number.isFinite(current) || current < 0) return false;
   return (total - current) <= lead;
+}
+
+/** Is playback inside the final countdown window? */
+export function shouldCountDown(total, current, window = COUNTDOWN_WINDOW_SECONDS) {
+  if (!Number.isFinite(total) || total <= 0) return false;
+  if (!Number.isFinite(current)) return false;
+  return (total - current) <= window;
 }
 
 /** Whole seconds of playback left, never negative. */
@@ -461,8 +479,15 @@ function maybeOfferNext(total, current) {
   // pauses it and seeking backwards takes the card away again. The old version
   // ran a setInterval that advanced regardless of what the video was doing.
   const left = secondsRemaining(total, current);
-  const counter = el('next-up-count');
-  if (counter) counter.textContent = String(left);
+  const label = box.querySelector('.next-up__label');
+
+  if (shouldCountDown(total, current)) {
+    // Plain text for the last ten seconds only. Rebuilding the span each tick
+    // is cheap and avoids caring whether it already exists.
+    if (label) label.innerHTML = `Up next in <span id="next-up-count">${left}</span>s`;
+  } else if (label && label.textContent !== 'Up next') {
+    label.textContent = 'Up next';
+  }
 
   // Advance only once the episode has actually finished. `ended` handles the
   // usual case, but in ffmpeg pipe mode the element's duration is Infinity and
