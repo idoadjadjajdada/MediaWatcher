@@ -113,6 +113,20 @@ async function loadJobs() {
   }
 }
 
+/**
+ * Rails are decoration: a failure leaves Home exactly as it was, with no
+ * toast, because the library above them is still perfectly usable.
+ */
+async function loadDiscover() {
+  patchSlice('discover', { status: 'loading' });
+  try {
+    const payload = await api.getDiscover();
+    patchSlice('discover', { rails: payload.rails || [], status: 'done', error: null });
+  } catch (error) {
+    patchSlice('discover', { rails: [], status: 'error', error: error.message });
+  }
+}
+
 /** Poll only while the Downloads page is open or something is in flight. */
 function syncJobPolling() {
   const needed = state.currentPage === 'downloads'
@@ -520,6 +534,10 @@ async function boot() {
   await loadLibrary();
   await loadJobs();
   syncJobPolling();
+
+  // Deliberately not awaited: Home renders from the library first and the
+  // rails drop in when TMDB answers.
+  loadDiscover();
 }
 
 boot().catch((error) => {

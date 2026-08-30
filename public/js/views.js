@@ -160,6 +160,45 @@ function posterCard(item, type) {
     </article>`;
 }
 
+/**
+ * A discovery card. Owned titles route to the normal library modal so they
+ * behave exactly like a card on the Movies or Shows page.
+ */
+function discoverCard(item) {
+  const poster = item.poster
+    ? `<img class="card__poster" loading="lazy" alt="${esc(item.title)}" src="${esc(item.poster)}">`
+    : `<div class="card__placeholder">${esc(item.title)}</div>`;
+
+  const action = item.owned
+    ? `data-action="open-detail" data-type="${esc(item.type)}" data-id="${item.tmdb_id}"`
+    : `data-action="open-discover" data-type="${esc(item.type)}" data-id="${item.tmdb_id}"`;
+
+  return `
+    <article class="card" ${action} tabindex="0">
+      ${poster}
+      ${item.owned ? '<span class="card__owned">In library</span>' : ''}
+      <div class="card__play"><div class="card__play-button">${playIcon()}</div></div>
+      <div class="card__overlay">
+        <div class="card__title">${esc(item.title)}</div>
+        <div class="card__meta">${item.year || '—'}${item.rating ? ` · ★ ${item.rating}` : ''}</div>
+      </div>
+    </article>`;
+}
+
+/** The discovery section, or nothing at all when no rail loaded. */
+function discoverRails() {
+  const { rails } = state.discover;
+  if (!rails.length) return '';
+
+  return rails.map((rail) => `
+    <section class="section">
+      <div class="section__header">
+        <h2 class="section__title">${esc(rail.title)}</h2>
+      </div>
+      <div class="rail">${rail.items.map(discoverCard).join('')}</div>
+    </section>`).join('');
+}
+
 function continueCard(entry) {
   const { row, item, label, backdrop } = entry;
   const percent = row.duration > 0 ? Math.min(100, (row.position / row.duration) * 100) : 0;
@@ -336,7 +375,9 @@ export function renderHome() {
         <span class="page__count">${recent.length} item${recent.length === 1 ? '' : 's'}</span>
       </div>
       <div class="grid">${recent.map((entry) => posterCard(entry.item, entry.type)).join('')}</div>
-    </section>`;
+    </section>
+
+    ${discoverRails()}`;
 }
 
 function firstEpisodeFile(show) {

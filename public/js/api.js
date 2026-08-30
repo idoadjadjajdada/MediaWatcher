@@ -62,6 +62,8 @@ const q = (params) => {
 export const health = () => get('/api/health');
 
 export const getLibrary = () => get('/api/media/library');
+export const getDiscover = (force = false) => get(`/api/discover?${q({ force: force ? 1 : '' })}`);
+export const getDiscoverDetail = (type, tmdbId) => get(`/api/discover/${type}/${tmdbId}`);
 export const rescan = (force = false) => post(`/api/media/rescan?${q({ force: force ? 1 : '' })}`);
 export const refreshItem = (tmdbId, type) => get(`/api/media/refresh/${tmdbId}?${q({ type })}`);
 
@@ -130,7 +132,7 @@ export const listSubtitles = (filePath) => get(`/api/subs?${q({ path: filePath, 
 
 export default {
   get, post, del, ApiError,
-  health, getLibrary, rescan, refreshItem,
+  health, getLibrary, rescan, refreshItem, getDiscover, getDiscoverDetail,
   searchTorrents, getSources, suggest,
   getJobs, startDownload, cancelJob,
   getContinueWatching, getProgressFor, saveProgress,
