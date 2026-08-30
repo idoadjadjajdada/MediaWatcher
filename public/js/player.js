@@ -31,6 +31,25 @@ const IDLE_MS = 2600;
  */
 export const NEXT_UP_LEAD_SECONDS = 45;
 const SKIP_SECONDS = 10;
+export const DOUBLE_TAP_MS = 300;
+
+/**
+ * Which zone of the video surface a tap landed in.
+ * The outer zones seek; the centre toggles the chrome.
+ *
+ * Must stay in step with .player__ripple's width in player.css - the ripple is
+ * the only feedback the viewer gets, so a hit zone wider than the flash would
+ * seek from somewhere that never lights up.
+ */
+export const TAP_ZONE_RATIO = 0.3;
+
+export function classifyTap(x, width) {
+  if (!Number.isFinite(width) || width <= 0) return 'centre';
+  const edge = width * TAP_ZONE_RATIO;
+  if (x < edge) return 'left';
+  if (x >= width - edge) return 'right';
+  return 'centre';
+}
 const RESUME_MIN = 5;
 const RESUME_MAX_RATIO = 0.95;
 
@@ -463,8 +482,49 @@ function attach() {
 
   node.addEventListener('mousemove', markIdle);
   node.addEventListener('click', (event) => {
-    // Clicking the video itself toggles playback; controls handle their own clicks.
-    if (event.target === video) togglePlay();
+    // Clicking the video itself toggles playback; controls handle their own
+    // clicks. Touch is handled by the gesture block below instead.
+    if (event.target === video && event.pointerType !== 'touch') togglePlay();
+  });
+
+  /* ---- touch gestures ---- */
+  let lastTapAt = 0;
+  let lastTapZone = null;
+
+  const flashRipple = (zone) => {
+    const ripple = el(zone === 'left' ? 'ripple-l' : 'ripple-r');
+    if (!ripple) return;
+    ripple.classList.remove('is-on');
+    void ripple.offsetWidth;   // restart the animation
+    ripple.classList.add('is-on');
+  };
+
+  video.addEventListener('pointerup', (event) => {
+    if (event.pointerType === 'mouse') return;   // mouse keeps click-to-pause
+
+    const rect = video.getBoundingClientRect();
+    const zone = classifyTap(event.clientX - rect.left, rect.width);
+    const now = Date.now();
+    const isDouble = (now - lastTapAt) < DOUBLE_TAP_MS && lastTapZone === zone;
+
+    if (isDouble && zone !== 'centre') {
+      skip(zone === 'left' ? -SKIP_SECONDS : SKIP_SECONDS);
+      flashRipple(zone);
+      lastTapAt = 0;
+      lastTapZone = null;
+      return;
+    }
+
+    lastTapAt = now;
+    lastTapZone = zone;
+
+    // A single tap toggles the chrome, but only once the double-tap window has
+    // closed - otherwise every seek also flickers the controls on and off.
+    setTimeout(() => {
+      if (lastTapAt !== now) return;
+      if (node.classList.contains('is-idle')) markIdle();
+      else node.classList.add('is-idle');
+    }, DOUBLE_TAP_MS);
   });
 
   ctx.saveTimer = setInterval(persist, SAVE_INTERVAL_MS);
