@@ -1,6 +1,6 @@
 @echo off
-REM MediaWatcher — double-click to open the launcher control panel.
-title MediaWatcher Launcher
+REM MediaWatcher - first-run setup, then opens the launcher.
+title MediaWatcher
 cd /d "%~dp0"
 
 where node >nul 2>nul
@@ -22,11 +22,10 @@ if not exist "node_modules" (
 
 if not exist ".env" (
   echo.
-  echo   No .env file yet — creating one from .env.example.
-  echo   Add your TMDB and AllDebrid keys, then start the server.
+  echo   No .env file yet - creating one from .env.example.
+  echo   Add your TMDB and AllDebrid keys in the launcher, then start the server.
   echo.
   copy /y ".env.example" ".env" >nul
 )
 
-node launcher.js
-pause
+call "%~dp0MediaWatcher.bat"
