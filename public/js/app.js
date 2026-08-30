@@ -185,6 +185,14 @@ const ACTIONS = {
     }
   },
 
+  'rail-scroll': (el) => {
+    const wrap = el.closest('.row__wrap');
+    const track = wrap ? wrap.querySelector('.rail') : null;
+    if (!track) return;
+    const dir = Number(el.dataset.dir) || 1;
+    track.scrollBy({ left: dir * Math.round(track.clientWidth * 0.8), behavior: 'smooth' });
+  },
+
   'open-detail': (el) => {
     const id = Number(el.dataset.id);
     const item = el.dataset.type === 'show' ? findShow(id) : findMovie(id);

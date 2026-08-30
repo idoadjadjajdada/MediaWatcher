@@ -6,39 +6,39 @@
   grid-template-columns: var(--rail-w) 1fr;
   grid-template-rows: var(--topbar-h) 1fr;
   grid-template-areas:
-    "rail topbar"
-    "rail main";
+    "navrail topbar"
+    "navrail main";
 }
 
 /* ---- desktop rail ---- */
-.rail {
-  grid-area: rail;
+.navrail {
+  grid-area: navrail;
   display: flex; flex-direction: column; align-items: center;
   gap: var(--space-3);
   padding: var(--space-4) 0;
   border-right: 1px solid var(--line);
   position: sticky; top: 0; height: 100vh;
 }
-.rail__mark {
+.navrail__mark {
   width: 28px; height: 28px; border-radius: var(--radius-sm);
   background: var(--fg); color: #000;
   display: grid; place-items: center; margin-bottom: var(--space-3);
 }
-.rail__mark svg { width: 14px; height: 14px; }
-.rail__nav { display: flex; flex-direction: column; gap: var(--space-2); }
-.rail__item {
+.navrail__mark svg { width: 14px; height: 14px; }
+.navrail__nav { display: flex; flex-direction: column; gap: var(--space-2); }
+.navrail__item {
   position: relative;
   width: 44px; height: 44px; border-radius: var(--radius);
   display: grid; place-items: center;
   color: var(--fg-3);
   transition: color var(--state), background var(--state);
 }
-.rail__item:hover { color: var(--fg); background: var(--surface-2); }
-.rail__item.is-active { color: var(--fg); background: rgba(255, 255, 255, .14); }
-.rail__item--foot { margin-top: auto; }
-.rail__item.is-busy svg { animation: spin 1s linear infinite; }
+.navrail__item:hover { color: var(--fg); background: var(--surface-2); }
+.navrail__item.is-active { color: var(--fg); background: rgba(255, 255, 255, .14); }
+.navrail__item--foot { margin-top: auto; }
+.navrail__item.is-busy svg { animation: spin 1s linear infinite; }
 
-.rail__badge, .tabbar__badge {
+.navrail__badge, .tabbar__badge {
   position: absolute; top: 5px; right: 5px;
   min-width: 16px; height: 16px; padding: 0 4px;
   border-radius: var(--radius-pill);
@@ -48,7 +48,7 @@
 }
 /* An explicit display beats the hidden attribute, so the badge sat there
    reading "0" with nothing downloading. */
-.rail__badge[hidden], .tabbar__badge[hidden] { display: none; }
+.navrail__badge[hidden], .tabbar__badge[hidden] { display: none; }
 
 /* ---- top bar ---- */
 .topbar {
@@ -98,7 +98,7 @@
     grid-template-rows: var(--topbar-h) 1fr auto;
     grid-template-areas: "topbar" "main" "tabbar";
   }
-  .rail { display: none; }
+  .navrail { display: none; }
 
   .topbar { padding: 0 var(--space-4); }
   .topbar__search { max-width: none; }
