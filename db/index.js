@@ -44,6 +44,15 @@ const stmt = {
   `),
   metaDelete: db.prepare('DELETE FROM metadata_cache WHERE tmdb_id = ?'),
 
+  discoverGet: db.prepare('SELECT * FROM discover_cache WHERE key = ?'),
+  discoverUpsert: db.prepare(`
+    INSERT INTO discover_cache (key, data, updated_at)
+    VALUES (@key, @data, @updated_at)
+    ON CONFLICT(key) DO UPDATE SET
+      data = excluded.data,
+      updated_at = excluded.updated_at
+  `),
+
   progressGet: db.prepare('SELECT * FROM progress WHERE file_path = ?'),
   progressUpsert: db.prepare(`
     INSERT INTO progress (
@@ -130,6 +139,40 @@ export function writeMetadata(tmdbId, type, data) {
 
 export function deleteMetadata(tmdbId) {
   return stmt.metaDelete.run(tmdbId).changes > 0;
+}
+
+/* --------------------------------------------------------------------------
+ * discover_cache
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Cached rail payload if it is younger than `ttlMs`, otherwise undefined.
+ * Corrupt JSON is treated as a cache miss rather than an error, matching
+ * readMetadata.
+ *
+ * A negative ttlMs means "always refetch", which is how `force` is expressed.
+ * Note this is the opposite of readMetadata, where negative means never
+ * expire; the difference is deliberate and pinned by a test.
+ */
+export function readDiscover(key, ttlMs) {
+  if (ttlMs < 0) return undefined;
+  const row = stmt.discoverGet.get(key);
+  if (!row) return undefined;
+  // Fresh means age is strictly less than the TTL, so a TTL of zero is always
+  // stale. Comparing timestamps directly made that a race: a read in the same
+  // millisecond as the write looked fresh.
+  if (now() - row.updated_at >= ttlMs) return undefined;
+  try {
+    return JSON.parse(row.data);
+  } catch {
+    log.warn(`corrupt discover_cache row for "${key}", refetching`);
+    return undefined;
+  }
+}
+
+export function writeDiscover(key, data) {
+  stmt.discoverUpsert.run({ key, data: JSON.stringify(data), updated_at: now() });
+  return data;
 }
 
 /* --------------------------------------------------------------------------
