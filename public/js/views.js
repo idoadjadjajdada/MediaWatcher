@@ -38,8 +38,12 @@ const ICONS = {
   mute: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/>',
   fullscreen: '<path d="M3 9V5a2 2 0 0 1 2-2h4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M21 15v4a2 2 0 0 1-2 2h-4"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
-  back10: '<path d="M11 5 4 12l7 7"/><path d="M20 5v14"/>',
-  fwd10: '<path d="m13 5 7 7-7 7"/><path d="M4 5v14"/>',
+  // Circular arrow with a 10 in it — a real "jump back ten seconds", not the
+  // skip-to-previous-track glyph these used to be.
+  back10: '<path d="M11.5 4.5 7 8l4.5 3.5"/><path d="M7.2 8H14a6 6 0 1 1-6 6" stroke-linejoin="round"/><text x="12" y="17.5" font-size="7.5" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle">10</text>',
+  fwd10: '<path d="M12.5 4.5 17 8l-4.5 3.5"/><path d="M16.8 8H10a6 6 0 1 0 6 6" stroke-linejoin="round"/><text x="12" y="17.5" font-size="7.5" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle">10</text>',
+  prevEp: '<path d="M17 5 9 12l8 7"/><path d="M6 5v14"/>',
+  nextEp: '<path d="m7 5 8 7-8 7"/><path d="M18 5v14"/>',
   warning: '<path d="M12 4 2 20h20z"/><path d="M12 10v4M12 17h.01"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   trash: '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/>',
@@ -668,19 +672,28 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
           <span id="time-total">0:00</span>
         </div>
         <div class="player__buttons">
-          <button class="player__btn" data-action="seek-back" aria-label="Back 10 seconds">${icon('back10', 'icon-lg')}</button>
-          <button class="player__btn player__btn--play" data-action="toggle-play" id="play-btn" aria-label="Play">${playIcon('icon-lg')}</button>
-          <button class="player__btn" data-action="seek-forward" aria-label="Forward 10 seconds">${icon('fwd10', 'icon-lg')}</button>
-          <div class="player__volume">
-            <button class="player__btn" data-action="toggle-mute" id="mute-btn" aria-label="Mute">${icon('volume', 'icon')}</button>
-            <input class="range range--vol" id="volume" type="range" min="0" max="100" value="100" aria-label="Volume">
+          <div class="player__buttons-left">
+            <div class="player__volume">
+              <button class="player__btn" data-action="toggle-mute" id="mute-btn" aria-label="Mute">${icon('volume', 'icon')}</button>
+              <input class="range range--vol" id="volume" type="range" min="0" max="100" value="100" aria-label="Volume">
+            </div>
           </div>
-          <div class="player__spacer"></div>
-          <div class="player__menu" id="player-menu">
-            <button class="player__btn" data-action="toggle-menu" aria-label="Settings">${icon('settings', 'icon')}</button>
-            <div class="player__menu-panel" id="menu-panel"></div>
+
+          <div class="player__transport">
+            <button class="player__btn player__btn--ep" data-action="prev-episode" aria-label="Previous episode" title="Previous episode">${icon('prevEp', 'icon')}</button>
+            <button class="player__btn" data-action="seek-back" aria-label="Back 10 seconds" title="Back 10s">${icon('back10', 'icon-lg')}</button>
+            <button class="player__btn player__btn--play" data-action="toggle-play" id="play-btn" aria-label="Play">${playIcon('icon-lg')}</button>
+            <button class="player__btn" data-action="seek-forward" aria-label="Forward 10 seconds" title="Forward 10s">${icon('fwd10', 'icon-lg')}</button>
+            <button class="player__btn player__btn--ep" data-action="next-episode" aria-label="Next episode" title="Next episode">${icon('nextEp', 'icon')}</button>
           </div>
-          <button class="player__btn" data-action="toggle-fullscreen" aria-label="Fullscreen">${icon('fullscreen', 'icon')}</button>
+
+          <div class="player__buttons-right">
+            <div class="player__menu" id="player-menu">
+              <button class="player__btn" data-action="toggle-menu" aria-label="Settings">${icon('settings', 'icon')}</button>
+              <div class="player__menu-panel" id="menu-panel"></div>
+            </div>
+            <button class="player__btn" data-action="toggle-fullscreen" aria-label="Fullscreen">${icon('fullscreen', 'icon')}</button>
+          </div>
         </div>
       </div>
     </div>`;

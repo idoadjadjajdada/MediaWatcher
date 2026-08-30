@@ -116,20 +116,36 @@ export function locateFile(filePath) {
 }
 
 /** The episode after this one, crossing into the next season if needed. */
-export function nextEpisode(show, seasonNumber, episodeNumber) {
+/** Every playable episode of a show, in order, flattened across seasons. */
+function playableEpisodes(show) {
   const flat = [];
-  for (const season of show.seasons) {
+  for (const season of show.seasons || []) {
     for (const episode of season.episodes) {
       if (episode.files && episode.files.length > 0) {
         flat.push({ season: season.number, episode });
       }
     }
   }
+  return flat;
+}
+
+export function nextEpisode(show, seasonNumber, episodeNumber) {
+  const flat = playableEpisodes(show);
   const index = flat.findIndex(
     (entry) => entry.season === seasonNumber && entry.episode.episode_number === episodeNumber
   );
   if (index === -1 || index === flat.length - 1) return null;
   return flat[index + 1];
+}
+
+/** The episode before this one, crossing back into the previous season. */
+export function previousEpisode(show, seasonNumber, episodeNumber) {
+  const flat = playableEpisodes(show);
+  const index = flat.findIndex(
+    (entry) => entry.season === seasonNumber && entry.episode.episode_number === episodeNumber
+  );
+  if (index <= 0) return null;
+  return flat[index - 1];
 }
 
 export function activeJobCount() {

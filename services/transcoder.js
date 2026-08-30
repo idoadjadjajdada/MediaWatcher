@@ -285,6 +285,14 @@ export function buildArgs(filePath, { mode, startSeconds = 0, audioIndex = 0, au
   }
 
   // Fragmented MP4 so playback can start before the file is finished.
+  //
+  // Deliberately plain. Seek latency was measured at ~630ms median from click
+  // to loadeddata, of which ffmpeg accounts for ~180ms to first bytes; the rest
+  // is the browser tearing down and reopening the stream. -probesize,
+  // -analyzeduration, -avoid_negative_ts, -muxdelay and -frag_duration were all
+  // tried and A/B measured: none improved it and frag_duration made it worse
+  // (751ms vs 633ms median). The lever is client-side, not here - see the seek
+  // coalescing in player.js.
   args.push('-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', 'pipe:1');
   return args;
 }

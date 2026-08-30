@@ -14,7 +14,7 @@
  * reads from it, so neither mode needs special-casing anywhere else.
  */
 import * as api from './api.js';
-import { state, setState, locateFile, nextEpisode } from './state.js';
+import { state, setState, locateFile, nextEpisode, previousEpisode } from './state.js';
 import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episodeTag } from './views.js';
 
 const SAVE_INTERVAL_MS = 5000;
@@ -69,6 +69,9 @@ const RESUME_MIN = 5;
 const RESUME_MAX_RATIO = 0.95;
 
 let ctx = null;
+// open() awaits close(), so two rapid calls - a double-clicked next-episode
+// button - can interleave and leave a half-built player behind.
+let opening = false;
 
 /* --------------------------------------------------------------------------
  * Next-episode timing (pure, so it can be tested without a DOM)
@@ -105,6 +108,9 @@ const el = (id) => document.getElementById(id);
 /** Absolute position in the file, whichever mode we are in. */
 function position() {
   if (!ctx?.video) return 0;
+  // While a seek is queued the element still holds the old stream's time, so
+  // the target is the honest answer for the scrub bar and the saved progress.
+  if (ctx.pendingSeek !== null && ctx.pendingSeek !== undefined) return ctx.pendingSeek;
   return ctx.offset + (ctx.video.currentTime || 0);
 }
 
@@ -121,6 +127,16 @@ function duration() {
  * ----------------------------------------------------------------------- */
 
 export async function open(filePath) {
+  if (opening) return;
+  opening = true;
+  try {
+    await openInner(filePath);
+  } finally {
+    opening = false;
+  }
+}
+
+async function openInner(filePath) {
   if (ctx) await close({ save: true });
 
   const located = locateFile(filePath);
@@ -167,6 +183,9 @@ export async function open(filePath) {
     activeTrack: (Array.isArray(tracks) && tracks[0]) || null,
     speed: 1,
     audioOffset: (saved && Number(saved.audio_offset)) || 0,
+    pendingSeek: null,
+    seekTimer: null,
+    wasPlayingBeforeSeek: null,
     advancing: false,
     nextTarget: null,
     video: el('player-video'),
@@ -191,6 +210,7 @@ export async function close({ save = true } = {}) {
   document.removeEventListener('keydown', onKeyDown);
   clearInterval(ctx.saveTimer);
   clearTimeout(ctx.idleTimer);
+  clearTimeout(ctx.seekTimer);
 
   // Dropping the src stops the server-side ffmpeg process straight away.
   ctx.video.removeAttribute('src');
@@ -237,17 +257,47 @@ function load(startAt = 0, { autoplay = true } = {}) {
   tick();
 }
 
+/**
+ * How long to wait before actually restarting ffmpeg on a seek.
+ *
+ * Every pipe-mode seek kills and respawns ffmpeg, so holding an arrow key used
+ * to spawn one process per keypress and each one had to be torn down again.
+ * Coalescing means a burst of presses costs a single restart at the final
+ * position; the scrub bar still tracks every press immediately.
+ */
+const SEEK_COALESCE_MS = 220;
+
 function seekTo(seconds) {
   const total = duration();
   const target = Math.max(0, Math.min(total ? total - 1 : seconds, seconds));
 
   if (ctx.seekable) {
     ctx.video.currentTime = target;
-  } else {
-    const wasPlaying = !ctx.video.paused;
-    load(target, { autoplay: wasPlaying });
+    tick();
+    return;
   }
+
+  // Pipe mode: show the new position at once, but let a burst of presses
+  // settle before paying for an ffmpeg restart.
+  ctx.pendingSeek = target;
+  ctx.offset = target;
+  ctx.video.classList.add('is-seeking');
   tick();
+
+  clearTimeout(ctx.seekTimer);
+  ctx.seekTimer = setTimeout(() => {
+    if (!ctx) return;
+    const wasPlaying = ctx.wasPlayingBeforeSeek ?? !ctx.video.paused;
+    ctx.wasPlayingBeforeSeek = null;
+    const to = ctx.pendingSeek;
+    ctx.pendingSeek = null;
+    ctx.video.classList.remove('is-seeking');
+    load(to, { autoplay: wasPlaying });
+  }, SEEK_COALESCE_MS);
+
+  if (ctx.wasPlayingBeforeSeek === null || ctx.wasPlayingBeforeSeek === undefined) {
+    ctx.wasPlayingBeforeSeek = !ctx.video.paused;
+  }
 }
 
 export function skip(seconds) {
@@ -511,6 +561,37 @@ export function playNext() {
   // async, so without this the next episode gets opened twice.
   ctx.advancing = true;
   open(file.file_path);
+}
+
+/** Jump to the previous playable episode, if there is one. */
+export function playPrevious() {
+  if (!ctx?.located || ctx.located.type !== 'episode' || ctx.advancing) {
+    toast('info', 'No previous episode', 'This is not a show.');
+    return;
+  }
+  const prev = previousEpisode(ctx.located.item, ctx.located.season, ctx.located.episode.episode_number);
+  if (!prev) {
+    toast('info', 'Start of series', 'There is nothing before this in your library.');
+    return;
+  }
+  const file = (prev.episode.files || [])[0];
+  if (file) open(file.file_path);
+}
+
+/** "Next episode" from the control bar, ignoring the up-next countdown. */
+export function playNextEpisode() {
+  if (!ctx?.located || ctx.located.type !== 'episode' || ctx.advancing) {
+    toast('info', 'No next episode', 'This is not a show.');
+    return;
+  }
+  const next = ctx.nextTarget
+    || nextEpisode(ctx.located.item, ctx.located.season, ctx.located.episode.episode_number);
+  if (!next) {
+    toast('info', 'End of series', 'There is no next episode in your library.');
+    return;
+  }
+  const file = (next.episode.files || [])[0];
+  if (file) open(file.file_path);
 }
 
 export function cancelNext() {
