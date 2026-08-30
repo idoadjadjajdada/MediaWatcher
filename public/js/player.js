@@ -14,7 +14,7 @@
  * reads from it, so neither mode needs special-casing anywhere else.
  */
 import * as api from './api.js';
-import { setState, locateFile, nextEpisode } from './state.js';
+import { state, setState, locateFile, nextEpisode } from './state.js';
 import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episodeTag } from './views.js';
 
 const SAVE_INTERVAL_MS = 5000;
@@ -32,6 +32,10 @@ const IDLE_MS = 2600;
 export const NEXT_UP_LEAD_SECONDS = 45;
 const SKIP_SECONDS = 10;
 export const DOUBLE_TAP_MS = 300;
+
+/** Nudge sizes for the audio delay control. Cumulative, not absolute. */
+export const AUDIO_OFFSET_STEPS = [-5, -1, -0.5, -0.1, -0.05, 0.05, 0.1, 0.5, 1, 5];
+const MAX_AUDIO_OFFSET = 30;
 
 /**
  * Which zone of the video surface a tap landed in.
@@ -136,6 +140,7 @@ export async function open(filePath) {
     located,
     info,
     seekable,
+    nativeSeekable: seekable,
     duration: totalDuration,
     offset: 0,
     tracks: Array.isArray(tracks) ? tracks : [],
@@ -143,6 +148,7 @@ export async function open(filePath) {
     // listed before embedded tracks, so [0] is the best available.
     activeTrack: (Array.isArray(tracks) && tracks[0]) || null,
     speed: 1,
+    audioOffset: (saved && Number(saved.audio_offset)) || 0,
     advancing: false,
     nextTarget: null,
     video: el('player-video'),
@@ -176,7 +182,7 @@ export async function close({ save = true } = {}) {
   root().innerHTML = '';
   ctx = null;
 
-  setState({ player: { open: false, src: '', subs: null, resumeAt: 0 } });
+  setState({ player: { open: false, src: '', subs: null, resumeAt: 0, audioOffset: 0 } });
 }
 
 export const isOpen = () => ctx !== null;
@@ -189,7 +195,7 @@ function load(startAt = 0, { autoplay = true } = {}) {
   if (ctx.seekable) {
     // Byte-range mode: load once, then seek inside the element.
     if (!ctx.video.src) {
-      ctx.video.src = api.streamUrl(ctx.filePath);
+      ctx.video.src = api.streamUrl(ctx.filePath, { audioOffset: ctx.audioOffset });
       ctx.offset = 0;
       if (startAt > 0) {
         ctx.video.addEventListener('loadedmetadata', () => { ctx.video.currentTime = startAt; }, { once: true });
@@ -200,7 +206,7 @@ function load(startAt = 0, { autoplay = true } = {}) {
   } else {
     // Pipe mode: the only way to seek is to restart ffmpeg at a timestamp.
     ctx.offset = Math.max(0, startAt);
-    ctx.video.src = api.streamUrl(ctx.filePath, { start: ctx.offset });
+    ctx.video.src = api.streamUrl(ctx.filePath, { start: ctx.offset, audioOffset: ctx.audioOffset });
     ctx.video.load();
   }
 
@@ -291,6 +297,18 @@ function buildMenu() {
       ${ctx.tracks.length === 0 ? '<div class="player__menu-label">None found</div>' : ''}
     </div>
     <div class="player__menu-group">
+      <div class="player__menu-label">Audio delay</div>
+      <div class="audiodelay__head">
+        <span class="audiodelay__value t-num">${ctx.audioOffset > 0 ? '+' : ''}${ctx.audioOffset.toFixed(2)}s</span>
+        <button class="audiodelay__reset" data-action="audio-reset">Reset</button>
+      </div>
+      <div class="audiodelay__hint">Positive delays the audio</div>
+      <div class="audiodelay__grid">
+        ${AUDIO_OFFSET_STEPS.map((step) => `
+          <button class="audiodelay__step" data-action="audio-nudge" data-delta="${step}">${step > 0 ? '+' : ''}${step}s</button>`).join('')}
+      </div>
+    </div>
+    <div class="player__menu-group">
       <div class="player__menu-label">Playback speed</div>
       ${speeds.map((speed) => `
         <button class="player__menu-item${ctx.speed === speed ? ' is-active' : ''}" data-action="set-speed" data-speed="${speed}">${speed}×</button>`).join('')}
@@ -325,6 +343,42 @@ export function setSubtitle(value) {
   buildMenu();
 }
 
+/**
+ * Nudge the audio offset and restart the stream where we are.
+ *
+ * Cumulative, not absolute: tapping +0.1s twice lands on +0.20s. Converging by
+ * ear is the whole point, and it is how VLC and mpv behave.
+ */
+export function nudgeAudioOffset(delta) {
+  if (!ctx) return;
+  const next = Math.max(-MAX_AUDIO_OFFSET, Math.min(MAX_AUDIO_OFFSET,
+    Number((ctx.audioOffset + Number(delta)).toFixed(2))));
+  applyAudioOffset(next);
+}
+
+export function resetAudioOffset() {
+  if (!ctx) return;
+  applyAudioOffset(0);
+}
+
+function applyAudioOffset(value) {
+  if (!ctx || value === ctx.audioOffset) return;
+  ctx.audioOffset = value;
+
+  // The offset lives in the ffmpeg command, so it can only change by restarting
+  // the stream - the same mechanic as seeking in pipe mode. A non-zero offset
+  // always forces ffmpeg, so this is never byte-range seekable while it is set.
+  const at = position();
+  const wasPlaying = !ctx.video.paused;
+  ctx.seekable = value === 0 ? ctx.nativeSeekable : false;
+  ctx.video.removeAttribute('src');
+  load(at, { autoplay: wasPlaying });
+
+  persist().catch(() => {});
+  buildMenu();
+  setState({ player: { ...state.player, audioOffset: value } });
+}
+
 export function setSpeed(speed) {
   if (!ctx) return;
   ctx.speed = Number(speed);
@@ -357,7 +411,8 @@ async function persist(final = false) {
       tmdb_id: located?.item?.tmdb_id,
       parent_tmdb_id: located?.item?.tmdb_id,
       season_number: located?.season,
-      episode_number: located?.episode?.episode_number
+      episode_number: located?.episode?.episode_number,
+      audio_offset: ctx.audioOffset
     });
     if (final) {
       const rows = await api.getContinueWatching().catch(() => null);
@@ -596,6 +651,10 @@ function onKeyDown(event) {
       event.preventDefault(); adjustVolume(-0.1); break;
     case 'm': case 'M':
       toggleMute(); break;
+    case '[':
+      event.preventDefault(); nudgeAudioOffset(-0.05); break;
+    case ']':
+      event.preventDefault(); nudgeAudioOffset(0.05); break;
     case 'f': case 'F':
       toggleFullscreen(); break;
     case 'n': case 'N':

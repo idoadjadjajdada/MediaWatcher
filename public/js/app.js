@@ -397,6 +397,8 @@ const ACTIONS = {
   'toggle-menu': () => player.toggleMenu(),
   'set-subtitle': (el) => player.setSubtitle(el.dataset.track),
   'set-speed': (el) => player.setSpeed(el.dataset.speed),
+  'audio-nudge': (el) => player.nudgeAudioOffset(Number(el.dataset.delta)),
+  'audio-reset': () => player.resetAudioOffset(),
   'play-next': () => player.playNext(),
   'cancel-next': () => player.cancelNext()
 };

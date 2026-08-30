@@ -110,12 +110,13 @@ export const getStreamInfo = (filePath) => {
   return get(`/api/stream/info?${q({ path: filePath, hevc: caps.hevc ? 1 : '', ac3: caps.ac3 ? 1 : '' })}`);
 };
 
-export function streamUrl(filePath, { start = 0, audio } = {}) {
+export function streamUrl(filePath, { start = 0, audio, audioOffset = 0 } = {}) {
   const caps = decoderCapabilities();
   return `/api/stream?${q({
     path: filePath,
     t: start > 0 ? Math.floor(start) : '',
     audio,
+    audioOffset: audioOffset || '',
     hevc: caps.hevc ? 1 : '',
     ac3: caps.ac3 ? 1 : ''
   })}`;
