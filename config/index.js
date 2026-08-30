@@ -67,6 +67,27 @@ function int(name, fallback) {
   return parsed;
 }
 
+/**
+ * Normalise TORRENTIO_CONFIG down to the options segment.
+ *
+ * The configure page hands you a whole install URL, and pasting it verbatim is
+ * the obvious mistake — it produces a request to
+ *   torrentio.strem.fun/torrentio.strem.fun/<opts>/manifest.json/stream/...
+ * which 404s, taking out the only always-on search source. Strip the scheme,
+ * the host, a trailing /manifest.json and any stray slashes so both the full
+ * URL and the bare segment work.
+ */
+export function torrentioSegment(raw) {
+  let segment = String(raw || '').trim();
+  if (!segment) return '';
+
+  segment = segment.replace(/^[a-z]+:\/\//i, '');
+  segment = segment.replace(/^torrentio\.strem\.fun/i, '');
+  segment = segment.replace(/\/?manifest\.json\/?$/i, '');
+  segment = segment.replace(/^\/+|\/+$/g, '');
+  return segment;
+}
+
 /** Resolve a possibly-relative path against the project root. */
 function resolvePath(value, fallback) {
   const raw = value || fallback;
@@ -141,10 +162,23 @@ const config = {
   },
 
   // AllDebrid
+  // AllDebrid.
+  //
+  // v4.1, not v4: AllDebrid discontinued the v4 magnet endpoints, and
+  // /v4/magnet/status now answers with
+  //   DISCONTINUED: This API endpoint has been discontinued
+  // which breaks every download at the polling step. /v4/user still works,
+  // so the failure only shows up once a transfer starts. v4.1 serves the
+  // whole surface (verified against the live API).
   alldebrid: {
+    // Read through str() so the name matches .env and the value is trimmed.
+    // Reading process.env directly here once silently yielded undefined,
+    // because the variable is ALLDEBRID_API_KEY, not ALLDEBRID_APIKEY - and
+    // the required-key check below passes either way, so the app booted fine
+    // and only failed later with an auth error.
     apiKey: str('ALLDEBRID_API_KEY'),
     // Overridable so the download pipeline can be exercised against a local stub.
-    baseUrl: str('ALLDEBRID_BASE_URL', 'https://api.alldebrid.com/v4'),
+    baseUrl: str('ALLDEBRID_BASE_URL', 'https://api.alldebrid.com/v4.1'),
     agent: 'mediawatcher',
     pollIntervalMs: 3000,
     pollTimeoutMs: 600000,
@@ -157,7 +191,7 @@ const config = {
   // is an .env edit, not a code change.
   torrentio: {
     baseUrl: 'https://torrentio.strem.fun',
-    configSegment: str('TORRENTIO_CONFIG'),
+    configSegment: torrentioSegment(str('TORRENTIO_CONFIG')),
     timeoutMs: 15000
   },
 

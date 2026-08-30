@@ -272,34 +272,71 @@ function mergeResults(batches) {
  * @param {number} [options.season]
  * @param {number} [options.episode]
  */
+/**
+ * Resolve a title to the IMDB id Torrentio is keyed on.
+ *
+ * The requested media type is a hint, not a verdict. TMDB will happily match a
+ * *different* work of the requested type — searching "Rick and Morty" as a
+ * movie finds an unrelated film with no IMDB id at all, which leaves Torrentio
+ * nothing to query and fails the only always-on source. Since the type
+ * selector defaults to "movie", that is what a user gets by typing a show name
+ * and pressing Search.
+ *
+ * So: try the requested type, and fall back to the other one when it yields no
+ * IMDB id. An explicitly supplied tmdb_id or imdb_id is authoritative and is
+ * never second-guessed.
+ *
+ * @returns {Promise<{ tmdbId: number|null, imdbId: string|null, type: 'movie'|'show' }>}
+ */
+export async function resolveImdbId({ query, type = 'movie', tmdbId, imdbId } = {}) {
+  const wanted = type === 'show' ? 'show' : 'movie';
+
+  if (imdbId) return { tmdbId: tmdbId ?? null, imdbId, type: wanted };
+
+  try {
+    if (tmdbId) {
+      return { tmdbId, imdbId: await getImdbId(tmdbId, wanted), type: wanted };
+    }
+    if (!query) return { tmdbId: null, imdbId: null, type: wanted };
+
+    const attempt = async (kind) => {
+      const match = kind === 'show' ? await findBestShow(query) : await findBestMovie(query);
+      if (!match) return null;
+      const imdb = await getImdbId(match.id, kind);
+      return imdb ? { tmdbId: match.id, imdbId: imdb, type: kind } : null;
+    };
+
+    const primary = await attempt(wanted);
+    if (primary) return primary;
+
+    const other = wanted === 'show' ? 'movie' : 'show';
+    const fallback = await attempt(other);
+    if (fallback) {
+      log.info(`"${query}" did not resolve as a ${wanted}; using the ${other} match instead`);
+      return fallback;
+    }
+  } catch (error) {
+    log.warn(`could not resolve an IMDB id for "${query || tmdbId}": ${error.message}`);
+  }
+
+  return { tmdbId: null, imdbId: null, type: wanted };
+}
+
 export async function search({ query, type = 'movie', tmdbId, imdbId, season, episode, limit } = {}) {
   if (!query && !tmdbId && !imdbId) {
     throw new SearchError('search requires a query or a tmdb_id', 400);
   }
 
-  // Torrentio is keyed on IMDB ids. A search from the UI carries only free
-  // text, so the title is matched against TMDB first and the id taken from
-  // there — without this, text searches reach only the non-IMDB sources.
-  const mediaType = type === 'show' ? 'show' : 'movie';
-  let resolvedImdb = imdbId || null;
-  let resolvedTmdb = tmdbId || null;
-
-  if (!resolvedImdb) {
-    try {
-      if (!resolvedTmdb && query) {
-        const match = mediaType === 'show' ? await findBestShow(query) : await findBestMovie(query);
-        if (match) resolvedTmdb = match.id;
-      }
-      if (resolvedTmdb) resolvedImdb = await getImdbId(resolvedTmdb, mediaType);
-    } catch (error) {
-      log.warn(`could not resolve an IMDB id for "${query || tmdbId}": ${error.message}`);
-    }
-  }
+  const resolved = await resolveImdbId({ query, type, tmdbId, imdbId });
+  const resolvedImdb = resolved.imdbId;
+  const resolvedTmdb = resolved.tmdbId;
 
   const active = SOURCES.filter((source) => source.enabled());
   if (active.length === 0) throw new SearchError('No search sources are enabled', 503);
 
-  const context = { query, type, tmdbId, imdbId: resolvedImdb, season, episode };
+  // Search the type we actually resolved, not the one that was asked for: a
+  // show found via the fallback has to reach Torrentio's series endpoint.
+  const context = { query, type: resolved.type, tmdbId, imdbId: resolvedImdb, season, episode };
 
   const settled = await Promise.all(active.map(async (source) => {
     const started = Date.now();
@@ -327,6 +364,9 @@ export async function search({ query, type = 'movie', tmdbId, imdbId, season, ep
   return {
     query,
     type,
+    // What the title actually resolved as, which can differ from `type` when
+    // the fallback kicked in. The UI uses this to correct its own selector.
+    resolved_type: resolved.type,
     tmdb_id: resolvedTmdb,
     imdb_id: resolvedImdb,
     total: ranked.length,

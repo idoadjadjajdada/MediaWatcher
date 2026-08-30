@@ -106,7 +106,7 @@ export function renderSearch() {
       ${sources.length ? `
         <div class="source-pills">
           <span>Sources:</span>
-          ${sources.map((source) => `<span class="badge${source.ok ? '' : ' badge--error'}">${esc(source.label || source.id)} · ${source.ok ? source.count : 'failed'}</span>`).join('')}
+          ${sources.map((source) => `<span class="badge${source.ok ? '' : ' badge--error'}"${source.error ? ` title="${esc(source.error)}"` : ''}>${esc(source.label || source.id)} · ${source.ok ? source.count : 'failed'}</span>`).join('')}
         </div>` : ''}
     </div>`;
 
