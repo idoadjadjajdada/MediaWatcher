@@ -53,7 +53,20 @@ function check(scope, name, ok, detail) {
 
 /** Geometry facts gathered inside the page. */
 const COLLECT = () => {
+  /**
+   * Is this element actually rendered?
+   *
+   * Checking the element's own computed style is not enough: a child of a
+   * display:none ancestor reports its own display as normal, so the hidden
+   * desktop rail looked like a pile of 0x0 bugs on mobile. checkVisibility
+   * walks the ancestor chain. An element that IS rendered but measures 0x0 -
+   * the bug this harness exists to catch - still returns true here.
+   */
   const visible = (el) => {
+    if (typeof el.checkVisibility === 'function') {
+      return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    }
+    if (el.getClientRects().length === 0) return false;
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility === 'visible' && s.opacity !== '0';
   };

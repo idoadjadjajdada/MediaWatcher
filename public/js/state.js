@@ -37,8 +37,7 @@ export const state = {
   loading: true,
   error: null,
   lastScanAt: null,
-  scanning: false,
-  drawerOpen: false
+  scanning: false
 };
 
 const subscribers = new Set();

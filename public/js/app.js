@@ -151,14 +151,14 @@ function currentHashPage() {
 
 function onHashChange() {
   const page = currentHashPage();
-  if (page !== state.currentPage) setState({ currentPage: page, drawerOpen: false });
+  if (page !== state.currentPage) setState({ currentPage: page });
 }
 
 function navigate(page) {
   if (!PAGES.includes(page)) return;
   window.location.hash = page;
   // hashchange does not fire when the hash is already correct.
-  if (currentHashPage() === state.currentPage) setState({ drawerOpen: false });
+  if (currentHashPage() === state.currentPage) setState({});
 }
 
 /* --------------------------------------------------------------------------
@@ -168,7 +168,6 @@ function navigate(page) {
 const ACTIONS = {
   navigate: (el) => navigate(el.dataset.page),
 
-  'toggle-drawer': () => setState({ drawerOpen: !state.drawerOpen }),
 
   rescan: async () => {
     setState({ scanning: true });

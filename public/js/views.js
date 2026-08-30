@@ -49,7 +49,10 @@ const ICONS = {
 export function icon(name, className = '') {
   const body = ICONS[name] || '';
   const fill = name === 'play' ? 'currentColor' : 'none';
-  return `<svg class="${className}" viewBox="0 0 24 24" fill="${fill}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+  // Default to a sized class. Called bare, this produced <svg class=""> which
+  // laid out at 0x0 and made the mobile menu button invisible.
+  const cls = className || 'icon';
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="${fill}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 }
 
 export function playIcon(className = '') {
@@ -234,73 +237,63 @@ export function renderShell() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="app-shell">
-      <aside class="sidebar" id="sidebar">
-        <div class="brand">
-          <div class="brand__mark">${playIcon()}</div>
-          <span class="brand__name">MediaWatcher</span>
-        </div>
-        <nav class="nav" id="nav">
+      <aside class="rail" id="rail">
+        <div class="rail__mark">${playIcon()}</div>
+        <nav class="rail__nav">
           ${NAV.map((entry) => `
-            <button class="nav__item" data-action="navigate" data-page="${entry.page}">
-              ${icon(entry.iconName, 'nav__icon')}
-              <span class="nav__label">${entry.label}</span>
-              ${entry.page === 'downloads' ? '<span class="nav__badge" id="jobs-badge" hidden>0</span>' : ''}
+            <button class="rail__item" data-action="navigate" data-page="${entry.page}" aria-label="${entry.label}" title="${entry.label}">
+              ${icon(entry.iconName, 'icon')}
+              ${entry.page === 'downloads' ? '<span class="rail__badge" id="jobs-badge" hidden>0</span>' : ''}
             </button>`).join('')}
         </nav>
-        <div class="sidebar__separator"></div>
-        <div class="sidebar__footer">
-          <button class="btn btn--secondary" style="width:100%" data-action="rescan" id="rescan-btn">
-            ${icon('refresh', 'btn__icon')}<span class="btn__label">Rescan</span>
-          </button>
-        </div>
+        <button class="rail__item rail__item--foot" data-action="rescan" id="rescan-btn" aria-label="Rescan" title="Rescan library">
+          ${icon('refresh', 'icon')}
+        </button>
       </aside>
 
       <header class="topbar">
-        <button class="btn btn--ghost btn--icon topbar__menu" data-action="toggle-drawer" aria-label="Menu">${icon('menu')}</button>
         <div class="topbar__search">
-          ${icon('search', 'topbar__search-icon')}
-          <input class="input" id="global-search" type="search" placeholder="Search your library or find something new…" autocomplete="off">
+          ${icon('search', 'icon-sm')}
+          <input class="input topbar__input" id="global-search" type="search" placeholder="Search" autocomplete="off">
         </div>
-        <div class="topbar__actions">
-          <button class="btn btn--secondary" data-action="add-torrent">${icon('plus', 'btn__icon')}<span class="btn__label">Add Torrent</span></button>
-        </div>
+        <button class="btn btn--secondary topbar__add" data-action="add-torrent" aria-label="Add torrent">
+          ${icon('plus', 'icon-sm')}<span class="btn__label">Add</span>
+        </button>
       </header>
 
       <main class="main" id="main"></main>
+
+      <nav class="tabbar" id="tabbar">
+        ${NAV.map((entry) => `
+          <button class="tabbar__item" data-action="navigate" data-page="${entry.page}">
+            ${icon(entry.iconName, 'icon')}
+            <span class="tabbar__label">${entry.label}</span>
+            ${entry.page === 'downloads' ? '<span class="tabbar__badge" id="jobs-badge-m" hidden>0</span>' : ''}
+          </button>`).join('')}
+      </nav>
     </div>`;
 }
 
 /** Cheap per-render updates that don't need the shell rebuilt. */
 export function updateShell() {
-  document.querySelectorAll('.nav__item').forEach((node) => {
+  // Both nav surfaces exist in the DOM at all times; CSS decides which is shown.
+  document.querySelectorAll('.rail__item, .tabbar__item').forEach((node) => {
+    if (!node.dataset.page) return;
     node.classList.toggle('is-active', node.dataset.page === state.currentPage);
   });
 
-  const badge = document.getElementById('jobs-badge');
-  if (badge) {
-    const count = activeJobCount();
+  const count = activeJobCount();
+  for (const id of ['jobs-badge', 'jobs-badge-m']) {
+    const badge = document.getElementById(id);
+    if (!badge) continue;
     badge.hidden = count === 0;
     badge.textContent = String(count);
-  }
-
-  const sidebar = document.getElementById('sidebar');
-  if (sidebar) sidebar.classList.toggle('is-open', state.drawerOpen);
-
-  const scrim = document.querySelector('.drawer-scrim');
-  if (state.drawerOpen && !scrim) {
-    const node = document.createElement('div');
-    node.className = 'drawer-scrim';
-    node.dataset.action = 'toggle-drawer';
-    document.body.appendChild(node);
-  } else if (!state.drawerOpen && scrim) {
-    scrim.remove();
   }
 
   const rescan = document.getElementById('rescan-btn');
   if (rescan) {
     rescan.disabled = state.scanning;
-    const label = rescan.querySelector('.btn__label');
-    if (label) label.textContent = state.scanning ? 'Scanning…' : 'Rescan';
+    rescan.classList.toggle('is-busy', state.scanning);
   }
 }
 
