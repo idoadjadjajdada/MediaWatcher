@@ -427,22 +427,24 @@ export function renderMovies() {
   const { movies } = state.library;
 
   if (movies.length === 0) {
-    return `
-      <div class="page__header"><h1 class="page__title">Movies</h1></div>
+    return `<div class="page">
+      <div class="page__head"><h1 class="t-hero">Movies</h1></div>
       ${emptyState({
     iconName: 'film',
     title: 'No movies yet',
     text: 'Add files under library/movies and press Rescan, or find something to download.',
     action: { label: 'Search for a movie', action: 'navigate', page: 'search' }
-  })}`;
+  })}</div>`;
   }
 
   return `
-    <div class="page__header">
-      <h1 class="page__title">Movies</h1>
-      <span class="page__count">${movies.length} title${movies.length === 1 ? '' : 's'}</span>
-    </div>
-    <div class="grid">${movies.map((movie) => posterCard(movie, 'movie')).join('')}</div>`;
+    <div class="page">
+      <div class="page__head">
+        <h1 class="t-hero">Movies</h1>
+        <span class="t-meta">${movies.length} title${movies.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="grid">${movies.map((movie) => posterCard(movie, 'movie', { owned: true })).join('')}</div>
+    </div>`;
 }
 
 export function renderShows() {
@@ -450,43 +452,45 @@ export function renderShows() {
   const { shows } = state.library;
 
   if (shows.length === 0) {
-    return `
-      <div class="page__header"><h1 class="page__title">Shows</h1></div>
+    return `<div class="page">
+      <div class="page__head"><h1 class="t-hero">Shows</h1></div>
       ${emptyState({
     iconName: 'tv',
     title: 'No shows yet',
     text: 'Add files under library/shows/<Show Name>/Season 01 and press Rescan.',
     action: { label: 'Search for a show', action: 'navigate', page: 'search' }
-  })}`;
+  })}</div>`;
   }
 
   return `
-    <div class="page__header">
-      <h1 class="page__title">Shows</h1>
-      <span class="page__count">${shows.length} title${shows.length === 1 ? '' : 's'}</span>
-    </div>
-    <div class="grid">${shows.map((show) => posterCard(show, 'show')).join('')}</div>`;
+    <div class="page">
+      <div class="page__head">
+        <h1 class="t-hero">Shows</h1>
+        <span class="t-meta">${shows.length} title${shows.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="grid">${shows.map((show) => posterCard(show, 'show', { owned: true })).join('')}</div>
+    </div>`;
 }
 
 export function renderDownloads() {
   const { jobs } = state;
 
   const header = `
-    <div class="page__header">
-      <h1 class="page__title">Downloads</h1>
-      ${jobs.length ? `<span class="page__count">${jobs.length} job${jobs.length === 1 ? '' : 's'}</span>` : ''}
+    <div class="page__head">
+      <h1 class="t-hero">Downloads</h1>
+      ${jobs.length ? `<span class="t-meta">${jobs.length} job${jobs.length === 1 ? '' : 's'}</span>` : ''}
     </div>`;
 
   if (jobs.length === 0) {
-    return header + emptyState({
+    return `<div class="page">${header}${emptyState({
       iconName: 'download',
       title: 'Nothing downloading',
       text: 'Downloads you start from Search show up here with live progress.',
       action: { label: 'Find something', action: 'navigate', page: 'search' }
-    });
+    })}</div>`;
   }
 
-  return header + `<div class="job-list">${jobs.map(jobRow).join('')}</div>`;
+  return `<div class="page">${header}<div class="job-list">${jobs.map(jobRow).join('')}</div></div>`;
 }
 
 function jobRow(job) {
@@ -497,7 +501,7 @@ function jobRow(job) {
     ? `<button class="btn btn--secondary" data-action="retry-job" data-id="${esc(job.id)}">Retry</button>
        <button class="btn btn--danger" data-action="cancel-job" data-id="${esc(job.id)}">Remove</button>`
     : job.status === 'complete'
-      ? `<button class="btn btn--secondary" data-action="open-folder" data-path="${esc(job.file_path || '')}">${icon('folder', 'btn__icon')}<span class="btn__label">Open Folder</span></button>
+      ? `<button class="btn btn--secondary" data-action="open-folder" data-path="${esc(job.file_path || '')}">${icon('folder', 'icon-sm')}<span class="btn__label">Open Folder</span></button>
          <button class="btn btn--ghost btn--icon" data-action="cancel-job" data-id="${esc(job.id)}" aria-label="Remove">${icon('trash')}</button>`
       : `<button class="btn btn--danger" data-action="cancel-job" data-id="${esc(job.id)}">Cancel</button>`;
 
@@ -548,7 +552,7 @@ export function renderDetailModal(item) {
         <div class="modal__body">
           <h2 class="modal__title">${esc(item.title)}</h2>
           <div class="modal__chips">
-            ${item.rating ? `<span class="badge badge--rating">★ ${item.rating}</span>` : ''}
+            ${item.rating ? `<span class="badge">★ ${item.rating}</span>` : ''}
             ${item.year ? `<span class="badge">${item.year}</span>` : ''}
             ${formatRuntime(item.runtime) ? `<span class="badge">${formatRuntime(item.runtime)}</span>` : ''}
             ${(item.genres || []).map((genre) => `<span class="badge">${esc(genre)}</span>`).join('')}
@@ -557,9 +561,9 @@ export function renderDetailModal(item) {
             <button class="modal__more" data-action="expand-overview">Show more</button>` : ''}
           <div class="modal__actions">
             ${firstFile
-    ? `<button class="btn btn--primary btn--lg" data-action="play" data-path="${esc(firstFile.file_path)}">${playIcon('btn__icon')}Play</button>`
+    ? `<button class="btn btn--primary" data-action="play" data-path="${esc(firstFile.file_path)}">${playIcon('icon-sm')}Play</button>`
     : ''}
-            <button class="btn ${unowned ? 'btn--primary' : 'btn--secondary'} btn--lg"
+            <button class="btn ${unowned ? 'btn--primary' : 'btn--secondary'}"
                     data-action="find-torrents"
                     data-type="${isShow ? 'show' : 'movie'}"
                     data-id="${item.tmdb_id}"
