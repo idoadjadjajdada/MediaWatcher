@@ -26,17 +26,18 @@ releases will not play in a browser unless it is installed.
 
 ## Quick start
 
-**Double-click `start.bat`.** It installs dependencies on first run, creates
-`.env` if it is missing, and opens the launcher — a small control panel with
-Start/Stop/Restart buttons, pre-flight checks, and a live server log.
+**Double-click `MediaWatcher.bat`.** That opens the launcher — a desktop control
+panel for starting and stopping the server, with pre-flight checks, live library
+stats and a colour-coded server log.
+
+First time out, run `start.bat` instead: it installs dependencies, creates `.env`
+from `.env.example`, and then opens the same launcher.
 
 From a terminal instead:
 
 ```bash
 npm install
 cp .env.example .env      # then open .env and paste your two API keys
-npm run launcher          # control panel on http://localhost:3999
-# ...or skip the launcher entirely:
 npm start                 # server only, logs in the terminal
 ```
 
@@ -44,18 +45,24 @@ Either way the app itself is at <http://localhost:3000>.
 
 ### The launcher
 
-`npm run launcher` opens a page on port 3999 that:
+`MediaWatcher.bat` opens a WPF window that:
 
 - starts, stops and restarts the server, showing pid and uptime
-- runs pre-flight checks — Node version, `.env`, both API keys, ffmpeg, library folder
-- streams the server log live, colour-coded by level
+- runs pre-flight checks — Node version, `.env`, both API keys, ffmpeg, library
+  folder, dependencies, port availability — and offers a one-click fix for each
+  failure it can repair itself (`npm install`, creating `.env`, installing ffmpeg
+  via winget)
+- shows live library counts and any active downloads, read from the server's own API
+- streams the server log, colour-coded by level, with follow and clear
 - triggers a rescan, opens the app, or opens your library folder
 - lets you pick a log level for the next start
 
-It is standalone (Node built-ins only) and keeps working while the server is
-stopped or misconfigured, which is when you most need to see why. Like the app,
-it binds to `127.0.0.1` only — it can start and stop processes, so it must never
-be exposed to a network.
+It is a single PowerShell script driving a XAML window — no installs beyond what
+Windows already ships. All HTTP runs off the UI thread, so a hung server never
+freezes the window. Like the app, everything it talks to is on `127.0.0.1`.
+
+The previous WinForms launcher is kept as `MediaWatcher.winforms.ps1` if you need
+a fallback.
 
 The first launch creates `library/movies`, `library/shows`, `temp/` and
 `db/mediawatcher.db`, then scans whatever is already in the library.
