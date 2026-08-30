@@ -1,0 +1,366 @@
+# MediaWatcher
+
+A self-hosted library for your movies and TV shows: it scans your files, enriches
+them with metadata from TMDB, finds new releases through a debrid service and
+public indexers, and plays everything back in the browser with resume, subtitles
+and next-episode autoplay.
+
+No build step, no framework, no bundler. Node on the back, vanilla ES modules on
+the front.
+
+---
+
+## Requirements
+
+| | |
+|---|---|
+| **Node.js** | 20 LTS or newer (developed and tested on 24) |
+| **ffmpeg** | Strongly recommended — see [Playback](#playback) |
+| **TMDB API key** | Free, from <https://www.themoviedb.org/settings/api> |
+| **AllDebrid API key** | Paid account, from <https://alldebrid.com/apikeys> |
+
+`ffmpeg` is optional in the sense that the app runs without it, but most `.mkv`
+releases will not play in a browser unless it is installed.
+
+---
+
+## Quick start
+
+**Double-click `start.bat`.** It installs dependencies on first run, creates
+`.env` if it is missing, and opens the launcher — a small control panel with
+Start/Stop/Restart buttons, pre-flight checks, and a live server log.
+
+From a terminal instead:
+
+```bash
+npm install
+cp .env.example .env      # then open .env and paste your two API keys
+npm run launcher          # control panel on http://localhost:3999
+# ...or skip the launcher entirely:
+npm start                 # server only, logs in the terminal
+```
+
+Either way the app itself is at <http://localhost:3000>.
+
+### The launcher
+
+`npm run launcher` opens a page on port 3999 that:
+
+- starts, stops and restarts the server, showing pid and uptime
+- runs pre-flight checks — Node version, `.env`, both API keys, ffmpeg, library folder
+- streams the server log live, colour-coded by level
+- triggers a rescan, opens the app, or opens your library folder
+- lets you pick a log level for the next start
+
+It is standalone (Node built-ins only) and keeps working while the server is
+stopped or misconfigured, which is when you most need to see why. Like the app,
+it binds to `127.0.0.1` only — it can start and stop processes, so it must never
+be exposed to a network.
+
+The first launch creates `library/movies`, `library/shows`, `temp/` and
+`db/mediawatcher.db`, then scans whatever is already in the library.
+
+### Installing ffmpeg
+
+```powershell
+winget install Gyan.FFmpeg        # Windows
+brew install ffmpeg               # macOS
+sudo apt install ffmpeg           # Debian/Ubuntu
+```
+
+If it is not on your `PATH`, set `FFMPEG_PATH` and `FFPROBE_PATH` in `.env` to
+the absolute paths. The server logs which state it is in at boot:
+
+```
+INFO  [app] ffmpeg found — incompatible files will be remuxed on the fly
+```
+
+---
+
+## Organising your library
+
+The scanner reads filenames first and folder structure second. Any of these work:
+
+```
+library/
+├── movies/
+│   ├── Blade Runner 2049 (2017)/
+│   │   ├── Blade Runner 2049 (2017).mkv
+│   │   └── Blade Runner 2049 (2017).en.srt
+│   ├── Inception.2010.1080p.BluRay.x264-SPARKS.mkv
+│   └── Arrival (2016)/
+│       └── movie.mkv                      ← folder name is enough
+└── shows/
+    └── Severance/
+        └── Season 01/
+            ├── Severance.S01E01.1080p.WEB-DL.mkv
+            ├── Severance.S01E02.mkv
+            └── Severance.S01E02.srt
+```
+
+Filename patterns, tried in order:
+
+| Pattern | Example |
+|---|---|
+| `SxxExx` (multi-episode too) | `Show.S01E05.mkv`, `Show.S01E05.E06.mkv` |
+| `1x05` | `Show.1x05.mkv` |
+| `Season X Episode Y` | `Show.Season 1 Episode 5.mkv` |
+| Year in brackets | `Movie.(2023).mkv` |
+| Bare year | `Movie.2023.1080p.mkv` |
+| Folder inference | `shows/Name/Season 01/…`, `movies/Name (2023)/…` |
+
+Anything that matches none of these is listed under `unknown` in
+`GET /api/media/library` rather than being silently dropped.
+
+**Subtitles** are matched to a video by filename stem, with or without a
+language suffix: `Movie.srt` and `Movie.en.srt` both attach to `Movie.mkv`.
+Subtitles embedded inside an MKV are found automatically too.
+
+**Duplicates collapse.** The same show in two different folders becomes one
+library entry, because entries are deduped by TMDB id rather than by path.
+
+Files dropped into the library are picked up automatically within a few seconds —
+the Rescan button is only there for when you want to force it.
+
+---
+
+## Playback
+
+Quality is never reduced unless your browser genuinely cannot decode the file.
+Each file is probed once and served the cheapest possible way:
+
+| Mode | When | What happens to the video |
+|---|---|---|
+| **direct** | Browser can play the file as-is (MP4 with H.264/AAC) | Raw bytes, byte-for-byte, with range requests. ffmpeg is not involved. |
+| **remux** | Codecs are fine, container is not (H.264/AAC in MKV) | Container swap only. **Video and audio are copied bit-for-bit.** |
+| **remux-audio** | Video is fine, audio is not (DTS, TrueHD) | **Video copied bit-for-bit**, only the audio re-encoded to AAC. |
+| **transcode** | The video codec itself is undecodable | Video re-encoded. The only lossy path. |
+
+The player tells the server what it can decode (HEVC, AC3), so on a machine with
+HEVC hardware decoding a 4K HEVC file is *copied*, not re-encoded. The badge in
+the top-right of the player shows which mode is in use.
+
+Seeking works differently in the two shapes, and the player handles both: in
+direct mode it is a normal byte-range seek; in ffmpeg modes the stream restarts
+at a timestamp, so seek accuracy is bounded by the source's keyframe interval.
+
+### Known limits
+
+- **No hardware-accelerated transcoding.** A full HEVC → H.264 transcode is
+  CPU-bound. It works, but on a weak machine it will not keep up with 4K.
+- **Bitmap subtitles (PGS/VobSub) cannot be shown.** They are images, and turning
+  them into WebVTT would need OCR. Text-based tracks (SRT, ASS, embedded SubRip)
+  are fine.
+- **ASS styling is not rendered.** ASS tracks are served as plain text; the
+  `<track>` element has no ASS renderer.
+
+---
+
+## Search and downloads
+
+Searching queries every configured source in parallel and merges the results,
+deduplicating by infohash. One dead source never fails a search — you only get an
+error if *every* source fails.
+
+| Source | Needs | Notes |
+|---|---|---|
+| **AllDebrid cache** | your API key | Instant downloads when a torrent is already cached |
+| **Torrentio** | nothing | Public Stremio addon; which trackers it queries is configurable |
+| **Jackett** | a local Jackett install | Optional. Gives you any tracker Jackett supports |
+
+### Adding more indexers
+
+**Torrentio** — pick your trackers at <https://torrentio.strem.fun/configure>,
+then copy the options segment out of the generated URL into `.env`:
+
+```ini
+TORRENTIO_CONFIG=providers=yts,eztv,1337x,thepiratebay,torrentgalaxy|sort=qualitysize
+```
+
+**Jackett** — run Jackett, add whatever trackers you want in its dashboard, then:
+
+```ini
+JACKETT_URL=http://127.0.0.1:9117
+JACKETT_API_KEY=your-jackett-key
+JACKETT_INDEXERS=all
+```
+
+Leave `JACKETT_URL` empty and the source is skipped entirely.
+
+**Anything else** — add one `search()` function and one line to the `SOURCES`
+array in `services/torrentSearch.js`. A source only has to return
+`{ title, infoHash, magnet, size_bytes, seeders, source }`; ranking, badges,
+deduplication and the whole download path are source-agnostic.
+
+### Result ranking
+
+Results are scored on resolution, source (BluRay > WEB-DL > WEBRip > HDTV > CAM),
+codec, and seeders, with penalties for AI-upscaled releases and for "REMUX"
+labels on suspiciously small files. Sorted best-first. The **Hide low-quality
+upscaled** toggle filters penalised releases out entirely.
+
+### Downloading
+
+Choosing a result uploads the magnet to AllDebrid, waits for it to be ready,
+unlocks a direct link, streams it to `temp/`, then moves it into the right
+library folder:
+
+```
+library/movies/{Title} ({year})/{Title} ({year}).mkv
+library/shows/{Title}/Season {NN}/{Title} - S{NN}E{NN} - {Episode}.mkv
+```
+
+The file only appears in the library once the byte count matches, so a
+half-downloaded file is never scanned or played. Retrying a failed job is the
+same Download call again.
+
+---
+
+## Architecture
+
+```
+                      browser (vanilla ES modules, no build)
+   app.js ── router + one delegated click handler
+     ├── views.js ..... pages, cards, modal, toasts
+     ├── search.js .... search UI + filters
+     ├── player.js .... <video>, resume, subtitles, next-episode
+     ├── state.js ..... observable store  (subscribe / setState)
+     └── api.js ....... fetch wrappers
+                                │  HTTP (localhost only)
+ ───────────────────────────────┼────────────────────────────────────
+                                ▼
+   server.js ── express, helmet CSP, cors, static
+     │
+     ├── routes/media ......... library, rescan, refresh
+     ├── routes/torrents ...... search, download, jobs
+     ├── routes/progress ...... watch positions
+     ├── routes/stream ........ range requests + ffmpeg modes
+     └── routes/subs .......... sidecar + embedded subtitles
+                │
+                ▼
+   services/
+     scanner ......... walk → parse filenames → enrich → dedupe by tmdb_id
+     tmdb ............ TMDB client, 30-day cache, concurrency-8 pool
+     torrentSearch ... source registry, merge, dedupe by infohash
+     qualityRanker ... scoring + badges
+     alldebrid ....... v4 client
+     downloader ...... magnet → debrid → temp → library, queue of 2
+     organizer ....... path building, sanitising, library path guard
+     transcoder ...... ffprobe + direct/remux/transcode decisions
+     watcher ......... chokidar → debounced rescan
+                │
+                ▼
+   db/  better-sqlite3 (WAL)
+     metadata_cache · progress · download_jobs
+```
+
+**Caching.** TMDB detail payloads live in SQLite for 30 days; search responses
+are held in memory for 10 minutes. The library object itself is kept in memory
+and rebuilt on rescan. Scans are single-flight — concurrent callers share one run.
+
+**Performance.** Files are grouped by unique title *before* any TMDB call, so a
+1000-episode library costs a handful of lookups, not a thousand. A full rescan of
+1000 files takes about 100 ms once metadata is cached.
+
+---
+
+## API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | Liveness |
+| `GET` | `/api/media/library` | Full library: `{ movies, shows, unknown, last_scan_at }` |
+| `POST` | `/api/media/rescan` | Background rescan (202). `?wait=1` blocks, `?force=1` bypasses the TMDB cache |
+| `GET` | `/api/media/refresh/:tmdb_id` | Force a TMDB refetch for one item |
+| `GET` | `/api/search?q=&type=` | Ranked results from every source |
+| `GET` | `/api/torrents/sources` | Which sources are configured |
+| `POST` | `/api/torrents/download` | Queue a download |
+| `GET` | `/api/torrents/jobs` | All jobs, newest first, with live progress |
+| `DELETE` | `/api/torrents/jobs/:id` | Cancel and remove |
+| `GET` | `/api/progress` | Continue Watching. `?file_path=` returns one row |
+| `POST` | `/api/progress` | Save a position (auto-completes past 95%) |
+| `GET` | `/api/stream?path=` | Video, with range support or ffmpeg piping |
+| `GET` | `/api/stream/info?path=` | Playback mode, duration, tracks, and why |
+| `GET` | `/api/subs?path=` | Subtitles as WebVTT. `?list=1` enumerates tracks |
+
+---
+
+## Configuration
+
+Everything lives in `.env`. Only the first two are required.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TMDB_API_KEY` | — | **Required.** Metadata |
+| `ALLDEBRID_API_KEY` | — | **Required.** Downloads |
+| `LIBRARY_PATH` | `./library` | Where your media lives |
+| `TEMP_PATH` | `./temp` | In-progress downloads |
+| `PORT` | `3000` | HTTP port |
+| `TMDB_LANGUAGE` | `en-US` | Metadata language |
+| `LOG_LEVEL` | `info` | `error` · `warn` · `info` · `debug` |
+| `SCAN_INTERVAL_MS` | `5000` | Minimum gap between watcher-triggered rescans |
+| `TORRENTIO_CONFIG` | empty | Torrentio options segment |
+| `JACKETT_URL` / `JACKETT_API_KEY` | empty | Enables the Jackett source |
+| `SEARCH_SOURCE_TIMEOUT_MS` | `20000` | Per-source ceiling |
+| `FFMPEG_PATH` / `FFPROBE_PATH` | `ffmpeg` / `ffprobe` | Override if not on `PATH` |
+| `FFMPEG_ENABLED` | `1` | Set `0` to force raw byte streaming only |
+| `TRANSCODE_*` | see `.env.example` | Re-encode quality settings |
+
+---
+
+## Troubleshooting
+
+**"MediaWatcher cannot start: required configuration is missing"**
+You have no `.env`, or a key is blank. `cp .env.example .env` and fill both in.
+
+**A file plays as audio only, or not at all**
+Your browser cannot decode it and ffmpeg is missing. Check the boot log for
+`ffmpeg NOT found`. Install it, or check `GET /api/stream/info?path=…` which
+reports the chosen mode and the reason for it.
+
+**Playback stutters on a 4K file**
+Look at the mode badge. If it says *Transcode*, the CPU is re-encoding in real
+time. Either use a browser/machine with HEVC hardware decoding, or keep an
+H.264 copy of that title.
+
+**Nothing appears after adding files**
+Check the filename against the pattern table above. Unparseable files are listed
+in the `unknown` array of `GET /api/media/library` with a reason. Also confirm
+files are under `library/movies` or `library/shows`.
+
+**A show appears twice**
+Two folders matched different TMDB entries. Open one and use *Find More*, or hit
+`GET /api/media/refresh/:tmdb_id` to force a metadata refetch.
+
+**Search returns nothing**
+`GET /api/torrents/sources` shows what is enabled. With only AllDebrid and
+Torrentio configured, obscure titles may genuinely have no results — add Jackett
+for more coverage.
+
+**Downloads sit at 50%**
+That is the boundary between AllDebrid fetching the torrent and the local
+transfer. An uncached torrent has to download on AllDebrid's side first; the bar
+moves again once the direct link is unlocked.
+
+**`better-sqlite3` fails to install**
+It needs a prebuilt binary for your Node version. If none exists you will need
+build tools (`npm install --global windows-build-tools` on Windows, `build-essential`
+on Linux). Switching to an LTS Node release usually avoids this entirely.
+
+**Resetting**
+Deleting `db/mediawatcher.db` is safe — you lose the metadata cache, watch
+progress and download history, not your media. It is rebuilt on next start.
+
+---
+
+## Notes
+
+- The server binds to `127.0.0.1` only. It holds API keys and serves local files,
+  so exposing it to a network needs a deliberate reverse proxy with auth in front.
+- `.env` is gitignored; `.env.example` is not. Keep real keys out of the example.
+- Press `Ctrl+C` to stop the server cleanly. On Windows, a kill from Task Manager
+  cannot run the shutdown handler — that is safe, since SQLite runs in WAL mode
+  and recovers on next open.
+- Keyboard shortcuts in the player: `Space`/`K` play-pause, `←`/`→` ±10s,
+  `↑`/`↓` volume, `M` mute, `F` fullscreen, `N` next episode, `Esc` exit
+  fullscreen or close. Press `/` anywhere to jump to the search box.

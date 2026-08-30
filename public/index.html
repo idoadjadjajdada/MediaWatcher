@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="MediaWatcher — self-hosted movie and TV library">
+  <title>MediaWatcher</title>
+
+  <!-- Posters and backdrops come from here; warming the connection early. -->
+  <link rel="preconnect" href="https://image.tmdb.org" crossorigin>
+
+  <!-- Inline so there is no favicon request to 404 on. -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23a855f7'/><stop offset='1' stop-color='%23ec4899'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M13 10.5v11l9-5.5z' fill='%23fff'/></svg>">
+
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <!--
+    Everything below #app is rendered by views.js. The roots after it are
+    siblings on purpose: re-rendering a page must not tear down an open modal,
+    a playing video, or a toast that is mid-dismiss.
+  -->
+  <div id="app">
+    <div class="boot">
+      <div class="spinner spinner--lg"></div>
+      <p class="boot__label">Loading your library…</p>
+    </div>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="player-root"></div>
+  <div id="toast-root" class="toast-stack" role="status" aria-live="polite"></div>
+
+  <noscript>
+    <div class="noscript">MediaWatcher needs JavaScript enabled.</div>
+  </noscript>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

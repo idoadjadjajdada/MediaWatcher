@@ -1,0 +1,30 @@
+# Secrets
+.env
+
+# Dependencies
+node_modules/
+
+# User media and in-progress downloads
+library/
+temp/
+
+# SQLite database (and WAL sidecars)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs and OS noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+
+# Brainstorming artifacts
+.superpowers/
