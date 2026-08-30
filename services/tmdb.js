@@ -211,6 +211,47 @@ export async function suggest(query, limit = 8) {
     .slice(0, limit);
 }
 
+/* --------------------------------------------------------------------------
+ * Discovery lists
+ *
+ * These return bare results with no `media_type`, so every caller has to know
+ * which type it asked for. That is why the rail mapper takes the type as an
+ * argument rather than reading it off the payload.
+ * ----------------------------------------------------------------------- */
+
+const DISCOVER_WINDOW_DAYS = 60;
+
+/** Popular titles released within the last DISCOVER_WINDOW_DAYS. */
+export function discoverRecent(type) {
+  const since = new Date(Date.now() - DISCOVER_WINDOW_DAYS * 86400000)
+    .toISOString().slice(0, 10);
+  const path = type === 'show' ? '/discover/tv' : '/discover/movie';
+  const dateField = type === 'show' ? 'first_air_date.gte' : 'primary_release_date.gte';
+
+  return memo(`recent:${type}:${since}`, async () => {
+    const data = await request(path, { [dateField]: since, sort_by: 'popularity.desc', include_adult: false });
+    return data.results || [];
+  });
+}
+
+/** The acclaimed back catalogue. */
+export function topRated(type) {
+  const path = type === 'show' ? '/tv/top_rated' : '/movie/top_rated';
+  return memo(`top:${type}`, async () => {
+    const data = await request(path);
+    return data.results || [];
+  });
+}
+
+/** TMDB's own "if you liked this" list for one title. */
+export function recommendations(tmdbId, type) {
+  const path = type === 'show' ? `/tv/${tmdbId}/recommendations` : `/movie/${tmdbId}/recommendations`;
+  return memo(`recs:${type}:${tmdbId}`, async () => {
+    const data = await request(path);
+    return data.results || [];
+  });
+}
+
 /**
  * Score a search hit against the parsed filename. Exact title match dominates,
  * year agreement breaks near-ties, popularity settles the rest — this is what
@@ -372,6 +413,9 @@ export default {
   findBestShow,
   rankMovies,
   rankShows,
+  discoverRecent,
+  topRated,
+  recommendations,
   getMovie,
   getShow,
   getDetails,

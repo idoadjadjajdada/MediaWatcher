@@ -1320,3 +1320,33 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .suggestion__title { font-weight: 600; }
 .suggestion__year { color: var(--text-dim); font-size: 12px; }
 .suggestion__type { margin-left: auto; }
+
+/* Poster cards in a rail need an explicit width. `.rail` is a flex row and
+   only ever held `.card--backdrop` before, which carries its own
+   `flex: 0 0 300px`; a plain `.card` has no width rule and would collapse. */
+.rail .card {
+  flex: 0 0 168px;
+  width: 168px;
+}
+
+/* Marks a discovery card that is already in the library. */
+.card__owned {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: 2;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(10, 10, 10, .82);
+  border: 1px solid var(--success);
+  color: var(--success);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.modal__hint {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: var(--space-3);
+}

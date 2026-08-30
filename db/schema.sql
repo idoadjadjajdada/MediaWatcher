@@ -46,3 +46,12 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status
   ON download_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created
   ON download_jobs(created_at DESC);
+
+-- Discovery rails. Cached because recommendations cost one TMDB call per
+-- owned title and the lists change slowly. Keyed by rail id, not tmdb_id,
+-- which is why this cannot share metadata_cache.
+CREATE TABLE IF NOT EXISTS discover_cache (
+  key TEXT PRIMARY KEY,
+  data TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);

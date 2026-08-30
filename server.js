@@ -14,6 +14,7 @@ import cors from 'cors';
 import config, { ensureRuntimeDirs, log } from './config/index.js';
 import { closeDatabase } from './db/index.js';
 import mediaRouter from './routes/media.js';
+import discoverRouter from './routes/discover.js';
 import torrentsRouter from './routes/torrents.js';
 import progressRouter from './routes/progress.js';
 import streamRouter from './routes/stream.js';
@@ -105,6 +106,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/media', mediaRouter);
+app.use('/api/discover', discoverRouter);
 app.use('/api', torrentsRouter);          // /api/search + /api/torrents/*
 app.use('/api/progress', progressRouter);
 app.use('/api/stream', streamRouter);

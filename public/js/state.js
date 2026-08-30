@@ -28,6 +28,9 @@ export const state = {
     error: null,
     filters: { quality: 'all', hideUpscaled: true }
   },
+  // Browsable titles that are not in the library. Loaded once after the
+  // library so Home never blocks on TMDB.
+  discover: { rails: [], status: 'idle', error: null },
   player: { open: false, src: '', subs: null, resumeAt: 0 },
 
   // UI bookkeeping
