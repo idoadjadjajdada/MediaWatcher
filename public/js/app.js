@@ -216,14 +216,60 @@ const ACTIONS = {
     player.open(path).catch((error) => views.toast('error', 'Could not open player', error.message));
   },
 
-  'find-more': (el) => {
-    const id = Number(el.dataset.id);
-    const item = el.dataset.type === 'show' ? findShow(id) : findMovie(id);
-    if (!item) return;
+  /**
+   * Search for a title by TMDB id.
+   *
+   * Works for both library items and discovery items: the id is authoritative,
+   * so no title matching happens at all. Shows land on the Search page with the
+   * season and episode fields ready, which is the one place in the app that
+   * picks an episode.
+   */
+  'find-torrents': (el) => {
+    const type = el.dataset.type === 'show' ? 'show' : 'movie';
+    const title = el.dataset.title || '';
+    const tmdbId = Number(el.dataset.id) || null;
+
     setState({ currentItem: null });
-    patchSlice('search', { type: el.dataset.type === 'show' ? 'show' : 'movie' });
+    patchSlice('search', { type, tmdbId, suggestions: [] });
     navigate('search');
-    search.runSearch(item.title, el.dataset.type === 'show' ? 'show' : 'movie');
+    search.runSearch(title, type, state.search.season, state.search.episode);
+  },
+
+  'open-discover': async (el) => {
+    const type = el.dataset.type === 'show' ? 'show' : 'movie';
+    const tmdbId = Number(el.dataset.id);
+    if (!Number.isFinite(tmdbId)) return;
+
+    try {
+      const details = await api.getDiscoverDetail(type, tmdbId);
+      const released = type === 'show' ? details.first_air_date : details.release_date;
+
+      setState({
+        currentItem: {
+          tmdb_id: details.id,
+          media_type: type,
+          owned: false,
+          title: type === 'show' ? details.name : details.title,
+          year: Number(String(released || '').slice(0, 4)) || null,
+          // Built here because the detail endpoint returns raw TMDB records;
+          // the sizes match config.tmdb posterSize/backdropSize/profileSize.
+          poster: details.poster_path ? `https://image.tmdb.org/t/p/w500${details.poster_path}` : null,
+          backdrop: details.backdrop_path ? `https://image.tmdb.org/t/p/w1280${details.backdrop_path}` : null,
+          rating: typeof details.vote_average === 'number' ? Number(details.vote_average.toFixed(1)) : null,
+          overview: details.overview || '',
+          genres: (details.genres || []).map((genre) => genre.name),
+          runtime: details.runtime || (details.episode_run_time || [])[0] || null,
+          cast: (details.credits?.cast || []).slice(0, 10).map((person) => ({
+            id: person.id,
+            name: person.name,
+            character: person.character || null,
+            profile: person.profile_path ? `https://image.tmdb.org/t/p/w185${person.profile_path}` : null
+          }))
+        }
+      });
+    } catch (error) {
+      views.toast('error', 'Could not load that title', error.message);
+    }
   },
 
   'add-torrent': () => {

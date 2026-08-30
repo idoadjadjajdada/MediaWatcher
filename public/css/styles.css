@@ -1344,3 +1344,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-weight: 700;
   letter-spacing: .02em;
 }
+
+.modal__hint {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: var(--space-3);
+}

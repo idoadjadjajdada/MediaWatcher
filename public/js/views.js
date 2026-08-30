@@ -499,8 +499,11 @@ export function renderDetailModal(item) {
     return;
   }
 
-  const isShow = Boolean(item.seasons);
+  // A discovery item has no files and no library-shaped seasons, so it carries
+  // its type explicitly. Library items keep the old inference.
+  const isShow = item.media_type ? item.media_type === 'show' : Boolean(item.seasons);
   const firstFile = isShow ? firstEpisodeFile(item) : (item.files || [])[0];
+  const unowned = item.owned === false;
 
   root.innerHTML = `
     <div class="modal-backdrop" data-action="close-modal-backdrop">
@@ -523,8 +526,15 @@ export function renderDetailModal(item) {
             ${firstFile
     ? `<button class="btn btn--primary btn--lg" data-action="play" data-path="${esc(firstFile.file_path)}">${playIcon('btn__icon')}Play</button>`
     : ''}
-            <button class="btn btn--secondary btn--lg" data-action="find-more" data-type="${isShow ? 'show' : 'movie'}" data-id="${item.tmdb_id}">Find More</button>
+            <button class="btn ${unowned ? 'btn--primary' : 'btn--secondary'} btn--lg"
+                    data-action="find-torrents"
+                    data-type="${isShow ? 'show' : 'movie'}"
+                    data-id="${item.tmdb_id}"
+                    data-title="${esc(item.title)}">${unowned ? 'Find torrents' : 'Find More'}</button>
           </div>
+          ${unowned && isShow
+    ? '<p class="modal__hint">Shows are indexed one episode at a time — pick a season and episode on the next screen.</p>'
+    : ''}
 
           ${(item.cast || []).length ? `
             <h3 style="margin-bottom:16px">Cast</h3>
@@ -539,7 +549,10 @@ export function renderDetailModal(item) {
                 </div>`).join('')}
             </div>` : ''}
 
-          ${isShow ? `
+          ${/* Gated on having the data, not on being a show: a discovery item
+                is a show with no seasons array at all, and this used to lean on
+                isShow being derived from item.seasons. */
+    isShow && Array.isArray(item.seasons) && item.seasons.length ? `
             <h3 style="margin:24px 0 8px">Episodes</h3>
             ${item.seasons.map((season, index) => renderSeason(item, season, index === 0)).join('')}` : ''}
         </div>
