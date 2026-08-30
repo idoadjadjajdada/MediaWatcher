@@ -36,7 +36,8 @@ router.post('/', wrap(async (req, res) => {
     season_number: body.season_number,
     episode_number: body.episode_number,
     title: body.title,
-    completed: body.completed
+    completed: body.completed,
+    audio_offset: body.audio_offset
   });
 
   res.json(row);

@@ -110,7 +110,9 @@ router.get('/info', async (req, res, next) => {
     if (!resolved) return;
 
     const info = await transcoder.probe(resolved.filePath);
-    const decision = transcoder.decide(info, capsFrom(req));
+    const decision = transcoder.decide(info, capsFrom(req), {
+      audioOffset: transcoder.clampAudioOffset(req.query.audioOffset)
+    });
 
     res.json({
       path: resolved.filePath,
@@ -185,6 +187,7 @@ function streamBytes(req, res, filePath, size) {
 function streamViaFfmpeg(req, res, filePath, decision) {
   const startSeconds = Math.max(0, Number(req.query.t) || 0);
   const audioIndex = Math.max(0, Number(req.query.audio) || 0);
+  const audioOffset = transcoder.clampAudioOffset(req.query.audioOffset);
 
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Cache-Control', 'no-cache');
@@ -199,7 +202,8 @@ function streamViaFfmpeg(req, res, filePath, decision) {
   const { stream, kill } = transcoder.openStream(filePath, {
     mode: decision.mode,
     startSeconds,
-    audioIndex
+    audioIndex,
+    audioOffset
   });
 
   let finished = false;
@@ -233,13 +237,16 @@ router.get('/', async (req, res, next) => {
 
     const { filePath, stats } = resolved;
 
-    // Escape hatch: ?mode=direct always serves raw bytes.
-    if (req.query.mode === 'direct') {
+    const audioOffset = transcoder.clampAudioOffset(req.query.audioOffset);
+
+    // Escape hatch: ?mode=direct serves raw bytes - but an offset needs ffmpeg,
+    // so it cannot be honoured alongside one.
+    if (req.query.mode === 'direct' && audioOffset === 0) {
       return streamBytes(req, res, filePath, stats.size);
     }
 
     const info = await transcoder.probe(filePath);
-    const decision = transcoder.decide(info, capsFrom(req));
+    const decision = transcoder.decide(info, capsFrom(req), { audioOffset });
 
     if (decision.mode === 'direct') {
       return streamBytes(req, res, filePath, stats.size);

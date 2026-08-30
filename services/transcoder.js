@@ -29,6 +29,19 @@ const OPTIONAL_AUDIO = new Set(['ac3', 'eac3']);
 // ffprobe reports mkv and webm under one format name, so the extension decides.
 const BROWSER_CONTAINERS = new Set(['.mp4', '.m4v', '.mov', '.webm']);
 
+export const MAX_AUDIO_OFFSET = 30;
+
+/**
+ * Seconds to shift audio by. Positive delays it, negative advances it.
+ * Anything unparseable is no offset at all rather than an error - this comes
+ * straight off a query string.
+ */
+export function clampAudioOffset(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return 0;
+  return Math.max(-MAX_AUDIO_OFFSET, Math.min(MAX_AUDIO_OFFSET, seconds));
+}
+
 /* --------------------------------------------------------------------------
  * Availability
  * ----------------------------------------------------------------------- */
@@ -170,7 +183,8 @@ export async function probe(filePath) {
  * @param {object|null} info  probe() result
  * @param {object} caps       client capabilities, e.g. { hevc: true, ac3: true }
  */
-export function decide(info, caps = {}) {
+export function decide(info, caps = {}, options = {}) {
+  const audioOffset = clampAudioOffset(options.audioOffset);
   if (!info) {
     return { mode: 'direct', reasons: ['no probe data — serving raw bytes'], seekable: true };
   }
@@ -198,6 +212,13 @@ export function decide(info, caps = {}) {
   else if (videoOk) mode = 'remux-audio';
   else mode = 'transcode';
 
+  // direct streams raw bytes with no ffmpeg in the path, so it cannot carry an
+  // audio offset. Promote to remux: still a stream copy, still lossless.
+  if (audioOffset !== 0 && mode === 'direct') {
+    mode = 'remux';
+    reasons.push(`audio offset ${audioOffset}s requires ffmpeg — remuxing instead of direct`);
+  }
+
   if (mode === 'direct') reasons.push('plays natively — streaming untouched bytes');
 
   return {
@@ -218,14 +239,31 @@ export function decide(info, caps = {}) {
  * Streaming
  * ----------------------------------------------------------------------- */
 
-function buildArgs(filePath, { mode, startSeconds = 0, audioIndex = 0 }) {
+export function buildArgs(filePath, { mode, startSeconds = 0, audioIndex = 0, audioOffset = 0 }) {
   const args = ['-hide_banner', '-loglevel', 'error'];
+  const offset = clampAudioOffset(audioOffset);
 
   // Seeking before -i is the fast path: ffmpeg jumps rather than decoding to
   // the timestamp. With -c copy it lands on the nearest keyframe.
-  if (startSeconds > 0) args.push('-ss', String(startSeconds));
+  const seek = () => { if (startSeconds > 0) args.push('-ss', String(startSeconds)); };
 
-  args.push('-i', filePath, '-map', '0:v:0', '-map', `0:a:${audioIndex}?`, '-sn', '-dn');
+  seek();
+  args.push('-i', filePath);
+
+  if (offset !== 0) {
+    // A second, time-shifted view of the same file. Audio can still be copied
+    // this way; an adelay/atrim filter would force a re-encode and cost the
+    // losslessness that makes remux worth having.
+    // -itsoffset must precede the -i it applies to.
+    args.push('-itsoffset', String(offset));
+    seek();
+    args.push('-i', filePath);
+    args.push('-map', '0:v:0', '-map', `1:a:${audioIndex}?`);
+  } else {
+    args.push('-map', '0:v:0', '-map', `0:a:${audioIndex}?`);
+  }
+
+  args.push('-sn', '-dn');
 
   if (mode === 'transcode') {
     args.push(
