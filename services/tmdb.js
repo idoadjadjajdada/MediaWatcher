@@ -243,26 +243,38 @@ function matchScore(candidate, wantedTitle, wantedYear) {
   return score;
 }
 
-function bestOf(results, title, year) {
-  if (!results || results.length === 0) return null;
+/** Every candidate, best match first. */
+function rankAll(results, title, year) {
+  if (!results || results.length === 0) return [];
   return results
     .map((candidate) => ({ candidate, score: matchScore(candidate, title, year) }))
-    .sort((a, b) => b.score - a.score)[0].candidate;
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.candidate);
+}
+
+/** Ranked movie candidates for a parsed filename or free-text query. */
+export async function rankMovies(title, year) {
+  let results = await searchMovies(title, year);
+  // A wrong year in the filename shouldn't sink the lookup.
+  if (results.length === 0 && year) results = await searchMovies(title);
+  return rankAll(results, title, year);
+}
+
+/** Ranked show candidates. */
+export async function rankShows(title, year) {
+  let results = await searchShows(title, year);
+  if (results.length === 0 && year) results = await searchShows(title);
+  return rankAll(results, title, year);
 }
 
 /** Best movie match for a parsed filename, or null. */
 export async function findBestMovie(title, year) {
-  let results = await searchMovies(title, year);
-  // A wrong year in the filename shouldn't sink the lookup.
-  if (results.length === 0 && year) results = await searchMovies(title);
-  return bestOf(results, title, year);
+  return (await rankMovies(title, year))[0] ?? null;
 }
 
 /** Best show match for a parsed filename, or null. */
 export async function findBestShow(title, year) {
-  let results = await searchShows(title, year);
-  if (results.length === 0 && year) results = await searchShows(title);
-  return bestOf(results, title, year);
+  return (await rankShows(title, year))[0] ?? null;
 }
 
 /* --------------------------------------------------------------------------
@@ -348,6 +360,8 @@ export default {
   suggest,
   findBestMovie,
   findBestShow,
+  rankMovies,
+  rankShows,
   getMovie,
   getShow,
   getDetails,

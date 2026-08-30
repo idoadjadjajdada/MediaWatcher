@@ -70,6 +70,20 @@ await check('returns nulls rather than throwing for an unmatchable title', async
   equal(result.tmdbId, null, 'and no TMDB id either');
 });
 
+await check('prefers a movie over a show for a film title with punctuation', async () => {
+  const result = await resolveImdbId({ query: 'spider-man', type: 'movie' });
+  equal(result.type, 'movie', 'spider-man is a film, not a series');
+});
+
+// The top TMDB movie hit for this is an unreleased film with no IMDB id. The
+// resolver must walk to the next movie rather than jumping to television.
+await check('walks past a candidate with no IMDB id instead of switching type', async () => {
+  const result = await resolveImdbId({ query: 'spiderman', type: 'movie' });
+  equal(result.type, 'movie', 'should stay a movie');
+  equal(typeof result.imdbId === 'string' && result.imdbId.startsWith('tt'), true,
+    'and should still find an IMDB id');
+});
+
 console.log('');
 if (failures === 0) {
   console.log(`${total} checks, all passed\n`);

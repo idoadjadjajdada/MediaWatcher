@@ -13,7 +13,7 @@ import axios from 'axios';
 import config, { createLogger } from '../config/index.js';
 import { rankResults } from './qualityRanker.js';
 import * as alldebrid from './alldebrid.js';
-import { getImdbId, findBestMovie, findBestShow } from './tmdb.js';
+import { getImdbId, rankMovies, rankShows } from './tmdb.js';
 
 const log = createLogger('search');
 
@@ -299,11 +299,21 @@ export async function resolveImdbId({ query, type = 'movie', tmdbId, imdbId } = 
     }
     if (!query) return { tmdbId: null, imdbId: null, type: wanted };
 
+    /**
+     * First candidate of this media type that actually has an IMDB id.
+     *
+     * TMDB will return unreleased or obscure entries with no IMDB id on file;
+     * taking only the top hit and giving up made "spiderman" resolve to a
+     * television series. Five is enough to clear those without turning one
+     * search into a dozen round trips.
+     */
     const attempt = async (kind) => {
-      const match = kind === 'show' ? await findBestShow(query) : await findBestMovie(query);
-      if (!match) return null;
-      const imdb = await getImdbId(match.id, kind);
-      return imdb ? { tmdbId: match.id, imdbId: imdb, type: kind } : null;
+      const candidates = kind === 'show' ? await rankShows(query) : await rankMovies(query);
+      for (const candidate of candidates.slice(0, 5)) {
+        const imdb = await getImdbId(candidate.id, kind);
+        if (imdb) return { tmdbId: candidate.id, imdbId: imdb, type: kind };
+      }
+      return null;
     };
 
     const primary = await attempt(wanted);
