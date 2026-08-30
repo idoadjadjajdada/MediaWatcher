@@ -636,21 +636,24 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
     <div class="player" id="player" tabindex="-1">
       <video class="player__video" id="player-video" playsinline></video>
 
+      <div class="player__touch" id="player-touch" aria-hidden="true">
+        <div class="player__ripple player__ripple--l" id="ripple-l"><span>-10s</span></div>
+        <div class="player__ripple player__ripple--r" id="ripple-r"><span>+10s</span></div>
+      </div>
+
       <div class="player__spinner"><div class="spinner spinner--lg"></div></div>
 
       <div class="player__top">
-        <button class="player__btn" data-action="close-player" aria-label="Back">${icon('back')}</button>
+        <button class="player__btn" data-action="close-player" aria-label="Back">${icon('back', 'icon-lg')}</button>
         <div class="player__heading">
           <div class="player__title">${esc(title)}</div>
           ${subtitle ? `<div class="player__subtitle">${esc(subtitle)}</div>` : ''}
         </div>
-        ${modeLabel ? `<span class="badge ${lossless ? 'badge--source' : 'badge--warning'} player__mode">${esc(modeLabel)}</span>` : ''}
+        ${modeLabel ? `<span class="badge${lossless ? '' : ' badge--warn'} player__mode">${esc(modeLabel)}</span>` : ''}
       </div>
 
       <div class="next-up" id="next-up" hidden>
-        <!-- The count is filled from real remaining playback the moment the
-             card is shown, so it has no meaningful initial value. -->
-        <div class="next-up__label">Up next in <span class="next-up__count" id="next-up-count">—</span>s</div>
+        <div class="next-up__label">Up next</div>
         <div class="next-up__title" id="next-up-title"></div>
         <div class="next-up__actions">
           <button class="btn btn--primary" data-action="play-next">Play now</button>
@@ -659,25 +662,25 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
       </div>
 
       <div class="player__controls">
-        <div class="player__scrub">
-          <span class="player__time" id="time-current">0:00</span>
-          <input class="range" id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
-          <span class="player__time" id="time-total">0:00</span>
+        <input class="range" id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+        <div class="player__times t-num">
+          <span id="time-current">0:00</span>
+          <span id="time-total">0:00</span>
         </div>
         <div class="player__buttons">
-          <button class="player__btn player__btn--play" data-action="toggle-play" id="play-btn" aria-label="Play">${playIcon()}</button>
-          <button class="player__btn" data-action="seek-back" aria-label="Back 10 seconds">${icon('back10')}</button>
-          <button class="player__btn" data-action="seek-forward" aria-label="Forward 10 seconds">${icon('fwd10')}</button>
+          <button class="player__btn" data-action="seek-back" aria-label="Back 10 seconds">${icon('back10', 'icon-lg')}</button>
+          <button class="player__btn player__btn--play" data-action="toggle-play" id="play-btn" aria-label="Play">${playIcon('icon-lg')}</button>
+          <button class="player__btn" data-action="seek-forward" aria-label="Forward 10 seconds">${icon('fwd10', 'icon-lg')}</button>
           <div class="player__volume">
-            <button class="player__btn" data-action="toggle-mute" id="mute-btn" aria-label="Mute">${icon('volume')}</button>
-            <input class="range" id="volume" type="range" min="0" max="100" value="100" aria-label="Volume">
+            <button class="player__btn" data-action="toggle-mute" id="mute-btn" aria-label="Mute">${icon('volume', 'icon')}</button>
+            <input class="range range--vol" id="volume" type="range" min="0" max="100" value="100" aria-label="Volume">
           </div>
           <div class="player__spacer"></div>
           <div class="player__menu" id="player-menu">
-            <button class="player__btn" data-action="toggle-menu" aria-label="Settings">${icon('settings')}</button>
+            <button class="player__btn" data-action="toggle-menu" aria-label="Settings">${icon('settings', 'icon')}</button>
             <div class="player__menu-panel" id="menu-panel"></div>
           </div>
-          <button class="player__btn" data-action="toggle-fullscreen" aria-label="Fullscreen">${icon('fullscreen')}</button>
+          <button class="player__btn" data-action="toggle-fullscreen" aria-label="Fullscreen">${icon('fullscreen', 'icon')}</button>
         </div>
       </div>
     </div>`;

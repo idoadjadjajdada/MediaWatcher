@@ -1,1 +1,134 @@
 /* Player chrome. */
+
+.player { position: fixed; inset: 0; z-index: var(--z-player); background: #000; }
+.player__video {
+  width: 100%; height: 100%; object-fit: contain; background: #000;
+  /* Stops the browser's own double-tap-to-zoom fighting the seek gesture. */
+  touch-action: manipulation;
+}
+
+.player__top, .player__controls { transition: opacity var(--state), transform var(--state); }
+.player.is-idle .player__top { opacity: 0; transform: translateY(-8px); pointer-events: none; }
+.player.is-idle .player__controls { opacity: 0; transform: translateY(8px); pointer-events: none; }
+.player.is-idle { cursor: none; }
+
+.player__top {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 3;
+  display: flex; align-items: flex-start; gap: var(--space-3);
+  padding: var(--space-4);
+  background: linear-gradient(180deg, rgba(0, 0, 0, .82), transparent);
+}
+.player__heading { min-width: 0; }
+.player__title { font-size: 15px; font-weight: 700; letter-spacing: -.2px; }
+.player__subtitle { font-size: 11px; color: var(--fg-2); margin-top: 2px; }
+.player__mode { margin-left: auto; flex: none; }
+
+.player__controls {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  padding: var(--space-6) var(--space-4) var(--space-4);
+  background: linear-gradient(0deg, rgba(0, 0, 0, .9), transparent);
+}
+.player__times {
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: var(--fg-2); margin-top: var(--space-2);
+}
+.player__buttons { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-2); }
+.player__spacer { margin-left: auto; }
+.player__btn {
+  width: 44px; height: 44px; display: grid; place-items: center;
+  border-radius: var(--radius); color: var(--fg);
+  transition: background var(--state);
+}
+.player__btn:hover { background: rgba(255, 255, 255, .14); }
+.player__btn--play svg { width: 28px; height: 28px; }
+.player__volume { display: flex; align-items: center; gap: var(--space-2); }
+
+.range {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 22px; background: transparent; cursor: pointer;
+}
+.range::-webkit-slider-runnable-track {
+  height: 3px; border-radius: 2px;
+  background: linear-gradient(90deg,
+    var(--fg) 0 calc(var(--fill, 0) * 1%),
+    rgba(255, 255, 255, .24) calc(var(--fill, 0) * 1%) 100%);
+}
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 13px; height: 13px; border-radius: 50%; background: var(--fg); margin-top: -5px;
+  opacity: 0; transition: opacity var(--state);
+}
+.range:hover::-webkit-slider-thumb, .range:active::-webkit-slider-thumb { opacity: 1; }
+.range--vol { width: 84px; }
+
+.player__spinner { position: absolute; inset: 0; display: none; place-items: center; z-index: 2; }
+.player.is-buffering .player__spinner { display: grid; }
+
+/* Touch gesture surface - invisible; the ripples are the only feedback. */
+.player__touch { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.player__ripple {
+  position: absolute; top: 0; bottom: 0; width: 30%;
+  display: grid; place-items: center; opacity: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, .18), transparent 62%);
+}
+.player__ripple span { font-size: 13px; font-weight: 700; }
+.player__ripple--l { left: 0; }
+.player__ripple--r { right: 0; }
+.player__ripple.is-on { animation: fade-in 420ms var(--ease) reverse both; }
+
+.player__menu { position: relative; }
+.player__menu-panel {
+  display: none; position: absolute; right: 0; bottom: 52px; width: 250px;
+  padding: var(--space-3); background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  max-height: 60vh; overflow-y: auto;
+}
+.player__menu.is-open .player__menu-panel { display: block; }
+.player__menu-group + .player__menu-group {
+  margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--line);
+}
+.player__menu-label {
+  font-size: 10px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase;
+  color: var(--fg-3); margin-bottom: var(--space-2);
+}
+.player__menu-item {
+  display: block; width: 100%; min-height: 40px; padding: 0 var(--space-3);
+  text-align: left; border-radius: var(--radius-sm); font-size: 12px;
+}
+.player__menu-item:hover { background: var(--surface-2); }
+.player__menu-item.is-active { background: var(--fg); color: #000; font-weight: 700; }
+
+.next-up {
+  position: absolute; right: var(--space-5); bottom: 132px; z-index: 4; width: 300px;
+  padding: var(--space-4); background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  animation: rise-in var(--enter) both;
+}
+.next-up[hidden] { display: none; }
+.next-up__label { font-size: 10px; color: var(--fg-3); text-transform: uppercase; letter-spacing: .9px; }
+.next-up__title { font-weight: 700; font-size: 13px; margin: var(--space-2) 0 var(--space-3); }
+.next-up__actions { display: flex; gap: var(--space-2); }
+
+/* ---- audio delay ---- */
+.audiodelay__head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); }
+.audiodelay__value { font-size: 15px; font-weight: 700; }
+.audiodelay__reset {
+  margin-left: auto; font-size: 11px; color: var(--fg-3);
+  min-height: 32px; padding: 0 var(--space-2); border-radius: var(--radius-sm);
+}
+.audiodelay__reset:hover { color: var(--fg); background: var(--surface-2); }
+.audiodelay__hint { font-size: 10px; color: var(--fg-3); margin-bottom: var(--space-2); }
+.audiodelay__grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.audiodelay__step {
+  min-height: 34px; border-radius: var(--radius-sm); border: 1px solid var(--line);
+  font-size: 10px; font-weight: 600; color: var(--fg-2);
+}
+.audiodelay__step:hover { background: var(--surface-2); color: var(--fg); }
+
+@media (max-width: 767px) {
+  .player__volume { display: none; }
+  .player__controls { padding: var(--space-6) var(--space-3) var(--space-3); }
+  .next-up { left: var(--space-4); right: var(--space-4); width: auto; bottom: 140px; }
+  .player__menu-panel { position: fixed; left: var(--space-4); right: var(--space-4); bottom: 140px; width: auto; }
+  .audiodelay__step { min-height: 44px; }
+}
