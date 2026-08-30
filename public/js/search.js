@@ -71,6 +71,9 @@ export async function runSearch(query, type, season, episode) {
     params.season = wantedSeason;
     params.episode = wantedEpisode;
   }
+  // A picked suggestion carries its TMDB id, which the resolver treats as
+  // authoritative - no title matching, so no way for a typo to matter.
+  if (state.search.tmdbId) params.tmdb_id = state.search.tmdbId;
 
   try {
     const outcome = await api.searchTorrents(params);
@@ -116,13 +119,15 @@ export async function downloadResult(index) {
  * ----------------------------------------------------------------------- */
 
 export function renderSearch() {
-  const { query, type, season, episode, filters, status, results, sources, error } = state.search;
+  const { query, type, season, episode, suggestions, filters, status, results, sources, error } = state.search;
   const visible = applyFilters(results, filters);
 
   const toolbar = `
     <div class="search-toolbar">
       <div class="search-toolbar__row">
-        <input class="input" id="search-input" placeholder="Title to search for…" value="${esc(query)}" autocomplete="off">
+        <input class="input" id="search-input" placeholder="Title to search for…" value="${esc(query)}"
+               autocomplete="off" data-action="suggest-input"
+               role="combobox" aria-expanded="${suggestions.length > 0}">
         <select class="select" id="search-type" data-action="set-search-type">
           <option value="movie"${type === 'movie' ? ' selected' : ''}>Movie</option>
           <option value="show"${type === 'show' ? ' selected' : ''}>Show</option>
@@ -138,6 +143,18 @@ export function renderSearch() {
           </label>` : ''}
         <button class="btn btn--primary" data-action="run-search">${icon('search', 'btn__icon')}<span class="btn__label">Search</span></button>
       </div>
+      ${suggestions.length ? `
+        <div class="suggestions" id="suggestions" role="listbox">
+          ${suggestions.map((entry, index) => `
+            <button class="suggestion" role="option" data-action="pick-suggestion" data-index="${index}">
+              ${entry.poster
+    ? `<img class="suggestion__poster" loading="lazy" alt="" src="${esc(entry.poster)}">`
+    : '<span class="suggestion__poster suggestion__poster--empty"></span>'}
+              <span class="suggestion__title">${esc(entry.title)}</span>
+              ${entry.year ? `<span class="suggestion__year">${entry.year}</span>` : ''}
+              <span class="badge suggestion__type">${entry.type === 'show' ? 'Show' : 'Movie'}</span>
+            </button>`).join('')}
+        </div>` : ''}
       <div class="search-toolbar__row">
         <div class="chips">
           ${QUALITY_FILTERS.map((filter) => `

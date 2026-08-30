@@ -153,6 +153,65 @@ export function searchShows(query, year) {
 }
 
 /**
+ * Combined movie + TV search, used by the suggestion dropdown.
+ * Volatile like the other searches, so it shares the 10-minute memo cache.
+ */
+export function searchMulti(query) {
+  return memo(`multi:${normalize(query)}`, async () => {
+    const data = await request('/search/multi', { query, include_adult: false });
+    return data.results || [];
+  });
+}
+
+/**
+ * Normalise one TMDB search hit into this app's vocabulary.
+ *
+ * TMDB calls television `tv` and carries its name in `name`/`first_air_date`,
+ * while films use `title`/`release_date`. Everything downstream sees only
+ * `type: 'show'`, `title` and `year`.
+ *
+ * Returns null for people and for entries with no usable title.
+ */
+export function toSuggestion(result) {
+  if (!result) return null;
+  if (result.media_type !== 'movie' && result.media_type !== 'tv') return null;
+
+  const type = result.media_type === 'tv' ? 'show' : 'movie';
+  const title = type === 'show' ? result.name : result.title;
+  if (!title) return null;
+
+  const released = type === 'show' ? result.first_air_date : result.release_date;
+  const year = released ? (Number(String(released).slice(0, 4)) || null) : null;
+
+  return {
+    tmdb_id: result.id,
+    type,
+    title,
+    year,
+    poster: posterUrl(result.poster_path),
+    popularity: Number(result.popularity) || 0
+  };
+}
+
+/**
+ * Suggestions for the search box, most popular first.
+ *
+ * A query under two characters is answered locally rather than spending a
+ * TMDB call on something that would match half the catalogue.
+ */
+export async function suggest(query, limit = 8) {
+  const term = String(query || '').trim();
+  if (term.length < 2) return [];
+
+  const results = await searchMulti(term);
+  return results
+    .map(toSuggestion)
+    .filter(Boolean)
+    .sort((a, b) => b.popularity - a.popularity)
+    .slice(0, limit);
+}
+
+/**
  * Score a search hit against the parsed filename. Exact title match dominates,
  * year agreement breaks near-ties, popularity settles the rest — this is what
  * keeps "Inception" off "Inception: The Cobol Job".
@@ -162,8 +221,18 @@ function matchScore(candidate, wantedTitle, wantedYear) {
   const original = normalize(candidate.original_title || candidate.original_name);
   const wanted = normalize(wantedTitle);
 
+  // Spacing is not a meaningful difference between titles, so "thematrix"
+  // counts as an exact match for "The Matrix". Without this, TMDB's results
+  // for that query rank a stray file name (thematrix061702_ROUGHV.5.wmv)
+  // above the film, because the file name *starts with* the query while
+  // "the matrix" simply does not equal "thematrix".
+  const squashed = wanted.replace(/ /g, '');
+  const titleSquashed = title.replace(/ /g, '');
+  const originalSquashed = original.replace(/ /g, '');
+
   let score = 0;
-  if (title === wanted || original === wanted) score += 10;
+  if (title === wanted || original === wanted
+    || titleSquashed === squashed || originalSquashed === squashed) score += 10;
   else if (title.startsWith(wanted) || wanted.startsWith(title)) score += 6;
   else if (title.includes(wanted) || wanted.includes(title)) score += 3;
 
@@ -184,26 +253,38 @@ function matchScore(candidate, wantedTitle, wantedYear) {
   return score;
 }
 
-function bestOf(results, title, year) {
-  if (!results || results.length === 0) return null;
+/** Every candidate, best match first. */
+function rankAll(results, title, year) {
+  if (!results || results.length === 0) return [];
   return results
     .map((candidate) => ({ candidate, score: matchScore(candidate, title, year) }))
-    .sort((a, b) => b.score - a.score)[0].candidate;
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.candidate);
+}
+
+/** Ranked movie candidates for a parsed filename or free-text query. */
+export async function rankMovies(title, year) {
+  let results = await searchMovies(title, year);
+  // A wrong year in the filename shouldn't sink the lookup.
+  if (results.length === 0 && year) results = await searchMovies(title);
+  return rankAll(results, title, year);
+}
+
+/** Ranked show candidates. */
+export async function rankShows(title, year) {
+  let results = await searchShows(title, year);
+  if (results.length === 0 && year) results = await searchShows(title);
+  return rankAll(results, title, year);
 }
 
 /** Best movie match for a parsed filename, or null. */
 export async function findBestMovie(title, year) {
-  let results = await searchMovies(title, year);
-  // A wrong year in the filename shouldn't sink the lookup.
-  if (results.length === 0 && year) results = await searchMovies(title);
-  return bestOf(results, title, year);
+  return (await rankMovies(title, year))[0] ?? null;
 }
 
 /** Best show match for a parsed filename, or null. */
 export async function findBestShow(title, year) {
-  let results = await searchShows(title, year);
-  if (results.length === 0 && year) results = await searchShows(title);
-  return bestOf(results, title, year);
+  return (await rankShows(title, year))[0] ?? null;
 }
 
 /* --------------------------------------------------------------------------
@@ -284,8 +365,13 @@ export function clearSearchCache() {
 export default {
   searchMovies,
   searchShows,
+  searchMulti,
+  toSuggestion,
+  suggest,
   findBestMovie,
   findBestShow,
+  rankMovies,
+  rankShows,
   getMovie,
   getShow,
   getDetails,

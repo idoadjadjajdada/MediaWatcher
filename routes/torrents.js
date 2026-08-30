@@ -8,6 +8,7 @@ import express from 'express';
 import { createLogger } from '../config/index.js';
 import * as torrentSearch from '../services/torrentSearch.js';
 import * as downloader from '../services/downloader.js';
+import * as tmdb from '../services/tmdb.js';
 import { listJobs, getJob } from '../db/index.js';
 
 const log = createLogger('api:torrents');
@@ -48,6 +49,23 @@ async function searchHandler(req, res) {
     res.status(status).json({ error: error.message, sources: error.details || null });
   }
 }
+
+/**
+ * GET /api/search/suggest?q=&limit=
+ * Titles for the search box dropdown. Never fails the caller: a TMDB outage
+ * closes the dropdown rather than blocking the search box.
+ */
+router.get('/search/suggest', wrap(async (req, res) => {
+  const query = String(req.query.q || '').trim();
+  const limit = Math.min(20, Math.max(1, Number(req.query.limit) || 8));
+
+  try {
+    res.json(await tmdb.suggest(query, limit));
+  } catch (error) {
+    log.warn(`suggest "${query}" failed: ${error.message}`);
+    res.json([]);
+  }
+}));
 
 router.get('/search', wrap(searchHandler));
 router.get('/torrents/search', wrap(searchHandler));

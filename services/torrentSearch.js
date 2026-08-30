@@ -13,7 +13,7 @@ import axios from 'axios';
 import config, { createLogger } from '../config/index.js';
 import { rankResults } from './qualityRanker.js';
 import * as alldebrid from './alldebrid.js';
-import { getImdbId, findBestMovie, findBestShow } from './tmdb.js';
+import { getImdbId, rankMovies, rankShows } from './tmdb.js';
 
 const log = createLogger('search');
 
@@ -272,6 +272,82 @@ function mergeResults(batches) {
  * @param {number} [options.season]
  * @param {number} [options.episode]
  */
+// Words that commonly get swallowed when a title is typed without spaces.
+// Ordered longest-first so "and" wins before "an" can split it badly.
+const JOINERS = ['and', 'the', 'of', 'an', 'in', 'on'];
+
+/**
+ * Re-insert a space around the first joiner found in a run-together title:
+ * "rickandmorty" -> "rick and morty", "thematrix" -> "the matrix".
+ * Returns the input unchanged when nothing sensible can be split.
+ */
+function splitJoined(text) {
+  const lower = text.toLowerCase();
+
+  for (const word of JOINERS) {
+    if (lower.startsWith(word) && lower.length > word.length + 2) {
+      return `${word} ${lower.slice(word.length)}`;
+    }
+    const at = lower.indexOf(word, 1);
+    if (at > 0 && at + word.length < lower.length) {
+      return `${lower.slice(0, at)} ${word} ${lower.slice(at + word.length)}`;
+    }
+  }
+  return text;
+}
+
+/**
+ * Query variants to try, in order, stopping at the first that resolves.
+ *
+ * TMDB does no fuzzy matching at all — one wrong character returns an empty
+ * list — so a typed query gets a few deliberate re-shapings rather than one
+ * take-it-or-leave-it lookup.
+ *
+ * This fixes run-together words, stray punctuation, and wrong or extra
+ * trailing words. It cannot fix a misspelling *inside* a word: "inceptoin"
+ * has no valid variant. The suggestion dropdown covers that case.
+ */
+export function queryVariants(raw, { includeLossy = true } = {}) {
+  const seen = new Set();
+  const variants = [];
+
+  const push = (value) => {
+    const cleaned = String(value || '').trim().replace(/\s+/g, ' ');
+    if (cleaned.length < 2) return;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    variants.push(cleaned);
+  };
+
+  const original = String(raw || '').trim();
+  if (original.length < 2) return [];
+
+  push(original);
+  push(original.replace(/[^\p{L}\p{N}]+/gu, ' '));
+
+  if (!/\s/.test(original) && original.length > 8) {
+    push(splitJoined(original));
+  }
+
+  // Everything above preserves the meaning of the query. Trailing-word removal
+  // does not — "Rick and Morty" becomes "Rick and", which matches an unrelated
+  // film — so it is kept separate and only reached once the intact title has
+  // been tried against both media types.
+  if (!includeLossy) return variants;
+
+  // Drop trailing words one at a time, down to a floor of two tokens and four
+  // characters so a query can never degrade to something like "the".
+  const tokens = original.replace(/[^\p{L}\p{N}\s]+/gu, ' ').trim().split(/\s+/);
+  for (let count = tokens.length - 1; count >= 2; count -= 1) {
+    const candidate = tokens.slice(0, count).join(' ');
+    if (candidate.length < 4) break;
+    push(candidate);
+  }
+
+  return variants;
+}
+
 /**
  * Resolve a title to the IMDB id Torrentio is keyed on.
  *
@@ -299,21 +375,45 @@ export async function resolveImdbId({ query, type = 'movie', tmdbId, imdbId } = 
     }
     if (!query) return { tmdbId: null, imdbId: null, type: wanted };
 
-    const attempt = async (kind) => {
-      const match = kind === 'show' ? await findBestShow(query) : await findBestMovie(query);
-      if (!match) return null;
-      const imdb = await getImdbId(match.id, kind);
-      return imdb ? { tmdbId: match.id, imdbId: imdb, type: kind } : null;
+    /**
+     * First candidate of this media type that actually has an IMDB id.
+     *
+     * TMDB will return unreleased or obscure entries with no IMDB id on file;
+     * taking only the top hit and giving up made "spiderman" resolve to a
+     * television series. Five is enough to clear those without turning one
+     * search into a dozen round trips.
+     */
+    const attempt = async (kind, term) => {
+      const candidates = kind === 'show' ? await rankShows(term) : await rankMovies(term);
+      for (const candidate of candidates.slice(0, 5)) {
+        const imdb = await getImdbId(candidate.id, kind);
+        if (imdb) return { tmdbId: candidate.id, imdbId: imdb, type: kind };
+      }
+      return null;
     };
 
-    const primary = await attempt(wanted);
-    if (primary) return primary;
-
     const other = wanted === 'show' ? 'movie' : 'show';
-    const fallback = await attempt(other);
-    if (fallback) {
-      log.info(`"${query}" did not resolve as a ${wanted}; using the ${other} match instead`);
-      return fallback;
+
+    // Two tiers, least destructive first. Meaning-preserving variants are tried
+    // against both media types before any lossy one is tried at all: searching
+    // "Rick and Morty" as a movie must reach the series, not a film that
+    // happens to match the truncated "Rick and".
+    const safe = queryVariants(query, { includeLossy: false });
+    const lossy = queryVariants(query).filter((variant) => !safe.includes(variant));
+
+    for (const tier of [safe, lossy]) {
+      for (const kind of [wanted, other]) {
+        for (const variant of tier) {
+          const hit = await attempt(kind, variant);
+          if (!hit) continue;
+
+          if (variant !== query) log.info(`"${query}" resolved as "${variant}"`);
+          if (kind !== wanted) {
+            log.info(`"${query}" did not resolve as a ${wanted}; using the ${other} match instead`);
+          }
+          return hit;
+        }
+      }
     }
   } catch (error) {
     log.warn(`could not resolve an IMDB id for "${query || tmdbId}": ${error.message}`);

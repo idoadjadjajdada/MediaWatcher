@@ -28,13 +28,48 @@ const RENDERERS = {
   downloads: views.renderDownloads
 };
 
+// Replacing main's innerHTML destroys the focused control, which makes the
+// browser fire `change` on it. That reaches the delegated listener and can call
+// render() again mid-assignment, which throws NotFoundError. One render at a
+// time; the outer pass already reflects the latest state.
+let rendering = false;
+
 function render() {
   const main = document.getElementById('main');
-  if (!main) return;
+  if (!main || rendering) return;
+  rendering = true;
+  try {
+    renderInner(main);
+  } finally {
+    rendering = false;
+  }
+}
+
+function renderInner(main) {
+
+  // Rendering replaces the page wholesale, which drops focus and the caret.
+  // That was tolerable when only a click could trigger it, but typing in the
+  // search box re-renders on every keystroke, so the focused control has to
+  // survive the swap.
+  const active = document.activeElement;
+  const focusedId = active && active.id && main.contains(active) ? active.id : null;
+  const caretStart = focusedId && active.selectionStart != null ? active.selectionStart : null;
+  const caretEnd = focusedId && active.selectionEnd != null ? active.selectionEnd : null;
 
   const renderer = RENDERERS[state.currentPage] || views.renderHome;
   main.innerHTML = `<div class="page">${renderer()}</div>`;
   views.updateShell();
+
+  if (focusedId) {
+    const restored = document.getElementById(focusedId);
+    if (restored) {
+      restored.focus();
+      if (caretStart != null && typeof restored.setSelectionRange === 'function') {
+        // Number inputs throw on setSelectionRange; their caret is not ours to manage.
+        try { restored.setSelectionRange(caretStart, caretEnd); } catch { /* not a text field */ }
+      }
+    }
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -192,7 +227,26 @@ const ACTIONS = {
 
   'run-search': () => {
     const live = liveSearch();
+    patchSlice('search', { suggestions: [] });
     search.runSearch(live.query, live.type, live.season, live.episode);
+  },
+
+  // Deliberately does not patch state on every keystroke: that would re-render
+  // the page under the caret. The typed value lives in the DOM and is read by
+  // liveSearch(); it is folded into state when suggestions land.
+  'suggest-input': (el) => {
+    if (state.search.tmdbId) patchSlice('search', { tmdbId: null });
+    scheduleSuggest(el.value);
+  },
+
+  'pick-suggestion': (el) => {
+    const entry = state.search.suggestions[Number(el.dataset.index)];
+    if (!entry) return;
+    const live = liveSearch();
+    patchSlice('search', {
+      query: entry.title, type: entry.type, tmdbId: entry.tmdb_id, suggestions: []
+    });
+    search.runSearch(entry.title, entry.type, live.season, live.episode);
   },
 
   // Switching to Show reveals the season/episode boxes, so this has to
@@ -279,6 +333,36 @@ const ACTIONS = {
   'play-next': () => player.playNext(),
   'cancel-next': () => player.cancelNext()
 };
+
+const SUGGEST_DEBOUNCE_MS = 250;
+let suggestTimer = null;
+let suggestSeq = 0;
+
+/**
+ * Fetch suggestions 250ms after typing stops. Replies carry a sequence number
+ * so a slow response for an older query cannot overwrite a newer one.
+ */
+function scheduleSuggest(value) {
+  clearTimeout(suggestTimer);
+  const term = String(value || '').trim();
+
+  if (term.length < 2) {
+    if (state.search.suggestions.length > 0) patchSlice('search', { suggestions: [] });
+    return;
+  }
+
+  suggestTimer = setTimeout(async () => {
+    const seq = ++suggestSeq;
+    try {
+      const suggestions = await api.suggest(term);
+      // Carry the query too: the re-render reads it back out of state, and
+      // without it the box would revert to whatever was last searched.
+      if (seq === suggestSeq) patchSlice('search', { suggestions, query: term });
+    } catch {
+      // A failed lookup just leaves the dropdown closed.
+    }
+  }, SUGGEST_DEBOUNCE_MS);
+}
 
 /**
  * Whatever is in the search controls right now. Re-rendering the page would
@@ -422,6 +506,7 @@ async function boot() {
   window.addEventListener('hashchange', onHashChange);
   document.addEventListener('click', onClick);
   document.addEventListener('change', onClick);
+  document.addEventListener('input', onClick);
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('error', onResourceError, true);
 
