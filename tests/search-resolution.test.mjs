@@ -7,7 +7,7 @@
  *
  * Run: npm test
  */
-import { resolveImdbId } from '../services/torrentSearch.js';
+import { resolveImdbId, queryVariants } from '../services/torrentSearch.js';
 
 let total = 0;
 let failures = 0;
@@ -82,6 +82,85 @@ await check('walks past a candidate with no IMDB id instead of switching type', 
   equal(result.type, 'movie', 'should stay a movie');
   equal(typeof result.imdbId === 'string' && result.imdbId.startsWith('tt'), true,
     'and should still find an IMDB id');
+});
+
+console.log('\nqueryVariants');
+
+const variantsOf = (input) => queryVariants(input);
+
+// These are synchronous, but check() takes a function, so each is wrapped.
+await check('keeps the query as typed first', async () => {
+  equal(variantsOf('Rick and Morty')[0], 'Rick and Morty', 'the typed query is tried first');
+});
+
+await check('strips punctuation into a variant', async () => {
+  equal(variantsOf('spider-man').includes('spider man'), true, 'hyphen becomes a space');
+});
+
+await check('splits run-together words', async () => {
+  equal(variantsOf('rickandmorty').includes('rick and morty'), true, 'embedded "and" is split out');
+});
+
+await check('splits a leading joiner', async () => {
+  equal(variantsOf('thematrix').includes('the matrix'), true, 'leading "the" is split out');
+});
+
+await check('drops a trailing word', async () => {
+  equal(variantsOf('rick and mortey').includes('rick and'), true, 'the bad trailing word is dropped');
+});
+
+await check('never degrades to a single short token', async () => {
+  equal(variantsOf('rick and mortey').every((v) => v.length >= 4), true, 'no variant shorter than four characters');
+});
+
+await check('de-duplicates', async () => {
+  const variants = variantsOf('Inception');
+  equal(new Set(variants.map((v) => v.toLowerCase())).size, variants.length, 'no repeated variants');
+});
+
+await check('an empty query yields nothing', async () => {
+  equal(variantsOf('').length, 0, 'nothing to try');
+});
+
+await check('a one-character query yields nothing', async () => {
+  equal(variantsOf('a').length, 0, 'too short to be a title');
+});
+
+await check('does not mangle a query that already has spaces', async () => {
+  equal(variantsOf('rick and morty').includes('rick  and  morty'), false, 'no double spacing');
+});
+
+await check('separates lossy variants from meaning-preserving ones', async () => {
+  const safe = queryVariants('Rick and Morty', { includeLossy: false });
+  const all = queryVariants('Rick and Morty');
+  equal(safe.includes('Rick and'), false, 'truncation is not a safe variant');
+  equal(all.includes('Rick and'), true, 'but it is still available as a last resort');
+});
+
+await check('resolves a run-together title', async () => {
+  const result = await resolveImdbId({ query: 'rickandmorty', type: 'show' });
+  equal(result.imdbId, 'tt2861424', 'rickandmorty should reach Rick and Morty');
+});
+
+await check('resolves a title with a wrong trailing word', async () => {
+  const result = await resolveImdbId({ query: 'rick and mortey', type: 'show' });
+  equal(result.imdbId, 'tt2861424', 'trailing-word removal should reach it');
+});
+
+// Spacing is not a meaningful difference between titles. Without this, TMDB's
+// results for "thematrix" rank a stray file name above The Matrix, because the
+// file name starts with the query while "the matrix" does not equal it.
+await check('ignores spacing when scoring a title match', async () => {
+  const result = await resolveImdbId({ query: 'thematrix', type: 'movie' });
+  equal(result.imdbId, 'tt0133093', 'thematrix should reach The Matrix (1999)');
+});
+
+// Documents the known limitation rather than pretending it is fixed: a
+// misspelling inside a word has no valid variant, and autocomplete is what
+// covers that case.
+await check('a misspelling inside a word still finds nothing', async () => {
+  const result = await resolveImdbId({ query: 'inceptoin', type: 'movie' });
+  equal(result.imdbId, null, 'no variant of inceptoin is a real title');
 });
 
 console.log('');

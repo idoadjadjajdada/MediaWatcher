@@ -221,8 +221,18 @@ function matchScore(candidate, wantedTitle, wantedYear) {
   const original = normalize(candidate.original_title || candidate.original_name);
   const wanted = normalize(wantedTitle);
 
+  // Spacing is not a meaningful difference between titles, so "thematrix"
+  // counts as an exact match for "The Matrix". Without this, TMDB's results
+  // for that query rank a stray file name (thematrix061702_ROUGHV.5.wmv)
+  // above the film, because the file name *starts with* the query while
+  // "the matrix" simply does not equal "thematrix".
+  const squashed = wanted.replace(/ /g, '');
+  const titleSquashed = title.replace(/ /g, '');
+  const originalSquashed = original.replace(/ /g, '');
+
   let score = 0;
-  if (title === wanted || original === wanted) score += 10;
+  if (title === wanted || original === wanted
+    || titleSquashed === squashed || originalSquashed === squashed) score += 10;
   else if (title.startsWith(wanted) || wanted.startsWith(title)) score += 6;
   else if (title.includes(wanted) || wanted.includes(title)) score += 3;
 
