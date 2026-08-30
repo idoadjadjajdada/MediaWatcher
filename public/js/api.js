@@ -68,6 +68,9 @@ export const refreshItem = (tmdbId, type) => get(`/api/media/refresh/${tmdbId}?$
 export const searchTorrents = (params) => get(`/api/search?${q(params)}`);
 export const getSources = () => get('/api/torrents/sources');
 
+/** Titles for the search box dropdown. Answers [] rather than failing. */
+export const suggest = (query, limit = 8) => get(`/api/search/suggest?${q({ q: query, limit })}`);
+
 export const getJobs = () => get('/api/torrents/jobs');
 export const startDownload = (payload) => post('/api/torrents/download', payload);
 export const cancelJob = (id) => del(`/api/torrents/jobs/${encodeURIComponent(id)}`);
@@ -128,7 +131,7 @@ export const listSubtitles = (filePath) => get(`/api/subs?${q({ path: filePath, 
 export default {
   get, post, del, ApiError,
   health, getLibrary, rescan, refreshItem,
-  searchTorrents, getSources,
+  searchTorrents, getSources, suggest,
   getJobs, startDownload, cancelJob,
   getContinueWatching, getProgressFor, saveProgress,
   getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities

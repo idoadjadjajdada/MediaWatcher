@@ -18,6 +18,10 @@ export const state = {
     // returns nothing at all. Only used when type === 'show'.
     season: 1,
     episode: 1,
+    // Set when a suggestion is picked. Searching by TMDB id skips title
+    // matching altogether, so a typo cannot reach the resolver at all.
+    tmdbId: null,
+    suggestions: [],
     results: [],
     sources: [],
     status: 'idle',           // idle | loading | done | error
