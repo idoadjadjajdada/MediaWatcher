@@ -167,8 +167,12 @@ async function openInner(filePath) {
     if (!limit || saved.position < limit) resumeAt = saved.position;
   }
 
+  // A tone-mapped file is a transcode, but saying so alone reads as an
+  // unexplained quality loss. Name the actual reason instead.
   const modeLabel = info && info.mode !== 'direct'
-    ? `${info.mode === 'remux' ? 'Remux' : info.mode === 'remux-audio' ? 'Audio remux' : 'Transcode'}${info.lossless ? ' · lossless' : ''}`
+    ? (info.tonemapped
+      ? `HDR → SDR${info.tonemap_height ? ` · ${info.tonemap_height}p` : ''}`
+      : `${info.mode === 'remux' ? 'Remux' : info.mode === 'remux-audio' ? 'Audio remux' : 'Transcode'}${info.lossless ? ' · lossless' : ''}`)
     : null;
 
   root().innerHTML = renderPlayer({ title, subtitle, modeLabel, lossless: info?.lossless !== false });

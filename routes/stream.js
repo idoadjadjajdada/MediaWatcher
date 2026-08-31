@@ -121,6 +121,8 @@ router.get('/info', async (req, res, next) => {
       mode: decision.mode,
       lossless: decision.lossless,
       seekable: decision.seekable,
+      tonemapped: Boolean(decision.tonemapped),
+      tonemap_height: decision.tonemapHeight ?? null,
       reasons: decision.reasons,
       duration: decision.duration,
       video: decision.video || null,
@@ -184,10 +186,14 @@ function streamBytes(req, res, filePath, size) {
  * ffmpeg streaming
  * ----------------------------------------------------------------------- */
 
-function streamViaFfmpeg(req, res, filePath, decision) {
+async function streamViaFfmpeg(req, res, filePath, decision) {
   const startSeconds = Math.max(0, Number(req.query.t) || 0);
   const audioIndex = Math.max(0, Number(req.query.audio) || 0);
   const audioOffset = transcoder.clampAudioOffset(req.query.audioOffset);
+
+  // Only asked for when tone mapping, where the CPU is already saturated doing
+  // the colour conversion. A plain transcode is fine on libx264.
+  const encoder = decision.tonemapped ? await transcoder.hardwareEncoder() : null;
 
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Cache-Control', 'no-cache');
@@ -203,7 +209,10 @@ function streamViaFfmpeg(req, res, filePath, decision) {
     mode: decision.mode,
     startSeconds,
     audioIndex,
-    audioOffset
+    audioOffset,
+    tonemap: Boolean(decision.tonemapped),
+    height: decision.video?.height ?? null,
+    encoder
   });
 
   let finished = false;
@@ -253,7 +262,7 @@ router.get('/', async (req, res, next) => {
     }
 
     log.info(`${decision.mode}: ${path.basename(filePath)} — ${decision.reasons.join('; ')}`);
-    return streamViaFfmpeg(req, res, filePath, decision);
+    return await streamViaFfmpeg(req, res, filePath, decision);
   } catch (error) {
     next(error);
   }

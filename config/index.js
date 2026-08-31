@@ -221,6 +221,9 @@ const config = {
     // Audio re-encode settings (used when the source is DTS/TrueHD/etc).
     audioBitrate: str('TRANSCODE_AUDIO_BITRATE', '192k'),
     audioChannels: int('TRANSCODE_AUDIO_CHANNELS', 2),
+    // Use a GPU encoder when one is available. Only consulted for HDR tone
+    // mapping, where the CPU is already busy with the colour conversion.
+    hardwareEncode: str('FFMPEG_HARDWARE_ENCODE', '1') !== '0',
     // Video re-encode settings (last resort — only when the codec is undecodable).
     videoPreset: str('TRANSCODE_VIDEO_PRESET', 'veryfast'),
     videoCrf: int('TRANSCODE_VIDEO_CRF', 20),
