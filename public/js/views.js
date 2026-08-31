@@ -681,7 +681,15 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
       </aside>
 
       <div class="player__controls">
-        <input class="range" id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+        <div class="player__scrub" id="scrub">
+          <input class="range" id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+          <div class="player__band" id="preview-band" aria-hidden="true"></div>
+          <div class="player__ball" id="preview-ball" aria-hidden="true"></div>
+          <div class="player__card" id="preview-card" aria-hidden="true">
+            <div class="player__card-frame" id="preview-frame"></div>
+            <div class="player__card-time t-num" id="preview-time">0:00</div>
+          </div>
+        </div>
         <div class="player__times t-num">
           <span id="time-current">0:00</span>
           <span id="time-total">0:00</span>

@@ -19,6 +19,7 @@ import {
 } from './state.js';
 import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episodeTag } from './views.js';
 import { clampPicture, pictureFilter, loadPicture, savePicture, PICTURE_MIN, PICTURE_MAX } from './picture.js';
+import { previewFraction, cardLeft } from './preview.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -331,7 +332,7 @@ function tick() {
   const seek = el('seek');
   const fraction = total > 0 ? Math.min(1, current / total) : 0;
   if (document.activeElement !== seek) seek.value = String(Math.round(fraction * 1000));
-  seek.style.setProperty('--fill', (fraction * 100).toFixed(2));
+  setFill(fraction * 100);
 
   const playBtn = el('play-btn');
   playBtn.innerHTML = ctx.video.paused ? playIcon() : pauseIcon();
@@ -339,6 +340,50 @@ function tick() {
 
   if (ctx.nextTarget && !shouldOfferNext(total, current)) withdrawNextOffer();
   maybeOfferNext(total, current);
+}
+
+/**
+ * Write the played-so-far percentage.
+ *
+ * It goes on the wrapper as well as the input because the landing band has to
+ * compare --fill against --preview, and CSS can only do that when both live on
+ * the same element. Both are bare numbers, consumed as calc(var(--x) * 1%).
+ */
+function setFill(percent) {
+  const value = percent.toFixed(2);
+  el('seek')?.style.setProperty('--fill', value);
+  el('scrub')?.style.setProperty('--fill', value);
+}
+
+/* --------------------------------------------------------------------------
+ * Seek preview
+ * ----------------------------------------------------------------------- */
+
+/** Show the ball, band and card at a fraction along the track. */
+function showPreview(fraction) {
+  const scrub = el('scrub');
+  const card = el('preview-card');
+  if (!scrub || !card) return;
+
+  const percent = fraction * 100;
+  scrub.style.setProperty('--preview', percent.toFixed(2));
+  // The band spans between the two points, so it needs to know which side of
+  // playback the cursor is on to pick its anchor edge.
+  scrub.classList.toggle('is-behind', percent < (Number(scrub.style.getPropertyValue('--fill')) || 0));
+  scrub.classList.add('is-previewing');
+
+  const total = duration();
+  el('preview-time').textContent = Number.isFinite(total) && total > 0
+    ? formatTime(fraction * total)
+    : '--:--';
+
+  const trackWidth = scrub.getBoundingClientRect().width;
+  const cardWidth = card.getBoundingClientRect().width;
+  card.style.left = `${cardLeft(fraction, trackWidth, cardWidth)}px`;
+}
+
+function hidePreview() {
+  el('scrub')?.classList.remove('is-previewing');
 }
 
 function setVolumeUi() {
@@ -785,7 +830,7 @@ function attach() {
     const total = duration();
     if (!total) return;
     const fraction = Number(event.target.value) / 1000;
-    event.target.style.setProperty('--fill', (fraction * 100).toFixed(2));
+    setFill(fraction * 100);
     if (ctx.seekable) seekTo(fraction * total);
   });
   // In pipe mode, restarting ffmpeg on every drag frame would be brutal, so the
@@ -795,6 +840,17 @@ function attach() {
     if (!total || ctx.seekable) return;
     seekTo((Number(event.target.value) / 1000) * total);
   });
+
+  const scrub = el('scrub');
+  scrub.addEventListener('pointermove', (event) => {
+    const rect = scrub.getBoundingClientRect();
+    showPreview(previewFraction(event.clientX - rect.left, rect.width));
+  });
+  scrub.addEventListener('pointerleave', hidePreview);
+  // Touch has no hover, so the preview follows the finger through a drag and
+  // clears when it lifts.
+  scrub.addEventListener('pointerup', hidePreview);
+  scrub.addEventListener('pointercancel', hidePreview);
 
   el('volume').addEventListener('input', (event) => {
     const value = Number(event.target.value) / 100;

@@ -260,3 +260,55 @@
 .player__ep-row.is-missing { opacity: .38; cursor: default; }
 .player__ep-tag { flex: none; opacity: .68; font-size: 12px; }
 .player__ep-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- seek preview ----
+   A native range input cannot carry a second thumb, so the ball and band are a
+   layer over the track. --fill and --preview are bare numbers consumed as
+   calc(var(--x) * 1%), matching the existing track gradient above.
+
+   CSS abs() is not dependable yet, so the band picks its anchor edge from the
+   .is-behind class that showPreview toggles rather than computing a magnitude. */
+.player__scrub { position: relative; }
+.player__scrub .range { position: relative; z-index: 2; }
+
+.player__band, .player__ball, .player__card {
+  position: absolute; pointer-events: none;
+  opacity: 0; transition: opacity var(--state);
+}
+.player__scrub.is-previewing .player__band,
+.player__scrub.is-previewing .player__ball,
+.player__scrub.is-previewing .player__card { opacity: 1; }
+
+/* The stretch between where playback is and where you would land. */
+.player__band {
+  top: 50%; height: 5px; margin-top: -2.5px; z-index: 1;
+  left: calc(var(--fill, 0) * 1%);
+  width: calc((var(--preview, 0) - var(--fill, 0)) * 1%);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, .58);
+}
+.player__scrub.is-behind .player__band {
+  left: calc(var(--preview, 0) * 1%);
+  width: calc((var(--fill, 0) - var(--preview, 0)) * 1%);
+}
+
+.player__ball {
+  top: 50%; z-index: 3;
+  left: calc(var(--preview, 0) * 1%);
+  width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .45);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .45);
+}
+
+.player__card {
+  bottom: calc(100% + 10px); left: 0; z-index: 4;
+  width: 168px; padding: 4px;
+  border-radius: var(--radius); background: var(--surface);
+  border: 1px solid var(--line); box-shadow: var(--shadow);
+}
+.player__card-frame {
+  width: 160px; height: 90px; border-radius: var(--radius-sm);
+  background: var(--surface-2) center / cover no-repeat;
+}
+.player__card-time { text-align: center; padding: 4px 0 2px; font-size: 11px; color: var(--fg-2); }
