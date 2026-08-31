@@ -38,6 +38,9 @@ const ICONS = {
   mute: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/>',
   fullscreen: '<path d="M3 9V5a2 2 0 0 1 2-2h4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M21 15v4a2 2 0 0 1-2 2h-4"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
+  cc: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9.5 10.5a2 2 0 1 0 0 3M15.5 10.5a2 2 0 1 0 0 3"/>',
+  sync: '<path d="M4 8h12l-3-3M20 16H8l3 3"/><path d="M4 8v2M20 16v-2"/>',
+  brightness: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.5 1.5M17.6 17.6l1.5 1.5M19.1 4.9l-1.5 1.5M6.4 17.6l-1.5 1.5"/>',
   // Circular arrow with a 10 in it — a real "jump back ten seconds", not the
   // skip-to-previous-track glyph these used to be.
   back10: '<path d="M11.5 4.5 7 8l4.5 3.5"/><path d="M7.2 8H14a6 6 0 1 1-6 6" stroke-linejoin="round"/><text x="12" y="17.5" font-size="7.5" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle">10</text>',
@@ -687,10 +690,26 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
             <button class="player__btn player__btn--ep" data-action="next-episode" aria-label="Next episode" title="Next episode">${icon('nextEp', 'icon')}</button>
           </div>
 
-          <div class="player__buttons-right">
-            <div class="player__menu" id="player-menu">
-              <button class="player__btn" data-action="toggle-menu" aria-label="Settings">${icon('settings', 'icon')}</button>
-              <div class="player__menu-panel" id="menu-panel"></div>
+          <div class="player__buttons-right" id="player-settings">
+            <div class="player__pop">
+              <button class="player__btn" data-action="toggle-popover" data-popover="subs"
+                aria-label="Subtitles" title="Subtitles">${icon('cc', 'icon')}</button>
+              <div class="player__pop-panel" id="popover-subs" hidden></div>
+            </div>
+            <div class="player__pop">
+              <button class="player__btn" data-action="toggle-popover" data-popover="sync"
+                aria-label="Audio delay" title="Audio delay">${icon('sync', 'icon')}</button>
+              <div class="player__pop-panel" id="popover-sync" hidden></div>
+            </div>
+            <div class="player__pop">
+              <button class="player__btn player__btn--rate" data-action="toggle-popover" data-popover="speed"
+                aria-label="Playback speed" title="Playback speed" id="rate-btn">1&times;</button>
+              <div class="player__pop-panel" id="popover-speed" hidden></div>
+            </div>
+            <div class="player__pop">
+              <button class="player__btn" data-action="toggle-popover" data-popover="picture"
+                aria-label="Picture" title="Brightness and contrast">${icon('brightness', 'icon')}</button>
+              <div class="player__pop-panel" id="popover-picture" hidden></div>
             </div>
             <button class="player__btn" data-action="toggle-fullscreen" aria-label="Fullscreen">${icon('fullscreen', 'icon')}</button>
           </div>

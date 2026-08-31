@@ -16,6 +16,7 @@
 import * as api from './api.js';
 import { state, setState, locateFile, nextEpisode, previousEpisode } from './state.js';
 import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episodeTag } from './views.js';
+import { clampPicture, pictureFilter, loadPicture, savePicture, PICTURE_MIN, PICTURE_MAX } from './picture.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -183,6 +184,8 @@ async function openInner(filePath) {
     activeTrack: (Array.isArray(tracks) && tracks[0]) || null,
     speed: 1,
     audioOffset: (saved && Number(saved.audio_offset)) || 0,
+    // Global, not per-file: brightness tracks the room, not the master.
+    picture: loadPicture(),
     pendingSeek: null,
     seekTimer: null,
     wasPlayingBeforeSeek: null,
@@ -193,6 +196,8 @@ async function openInner(filePath) {
   };
 
   setState({ player: { open: true, src: filePath, subs: ctx.tracks, resumeAt } });
+
+  ctx.video.style.filter = pictureFilter(ctx.picture);
 
   buildMenu();
   attach();
@@ -344,7 +349,11 @@ function markIdle() {
   clearTimeout(ctx.idleTimer);
   ctx.node.classList.remove('is-idle');
   ctx.idleTimer = setTimeout(() => {
-    if (ctx && !ctx.video.paused) ctx.node.classList.add('is-idle');
+    // A panel left open over a hidden control bar floats unanchored.
+    if (ctx && !ctx.video.paused) {
+      closePopovers();
+      ctx.node.classList.add('is-idle');
+    }
   }, IDLE_MS);
 }
 
@@ -352,35 +361,66 @@ function markIdle() {
  * Subtitles + settings menu
  * ----------------------------------------------------------------------- */
 
-function buildMenu() {
-  const speeds = [0.75, 1, 1.25, 1.5, 2];
-  el('menu-panel').innerHTML = `
-    <div class="player__menu-group">
-      <div class="player__menu-label">Subtitles</div>
-      <button class="player__menu-item${ctx.activeTrack ? '' : ' is-active'}" data-action="set-subtitle" data-track="off">Off</button>
-      ${ctx.tracks.map((track, index) => `
-        <button class="player__menu-item${ctx.activeTrack === track ? ' is-active' : ''}" data-action="set-subtitle" data-track="${index}">
-          ${esc(track.label || track.lang || 'Track')}${track.source === 'embedded' ? ' (embedded)' : ''}
-        </button>`).join('')}
-      ${ctx.tracks.length === 0 ? '<div class="player__menu-label">None found</div>' : ''}
+const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
+
+function buildSubsPopover() {
+  el('popover-subs').innerHTML = `
+    <div class="player__menu-label">Subtitles</div>
+    <button class="player__menu-item${ctx.activeTrack ? '' : ' is-active'}" data-action="set-subtitle" data-track="off">Off</button>
+    ${ctx.tracks.map((track, index) => `
+      <button class="player__menu-item${ctx.activeTrack === track ? ' is-active' : ''}" data-action="set-subtitle" data-track="${index}">
+        ${esc(track.label || track.lang || 'Track')}${track.source === 'embedded' ? ' (embedded)' : ''}
+      </button>`).join('')}
+    ${ctx.tracks.length === 0 ? '<div class="player__menu-label">None found</div>' : ''}`;
+}
+
+function buildSyncPopover() {
+  el('popover-sync').innerHTML = `
+    <div class="player__menu-label">Audio delay</div>
+    <div class="audiodelay__head">
+      <span class="audiodelay__value t-num">${ctx.audioOffset > 0 ? '+' : ''}${ctx.audioOffset.toFixed(2)}s</span>
+      <button class="audiodelay__reset" data-action="audio-reset">Reset</button>
     </div>
-    <div class="player__menu-group">
-      <div class="player__menu-label">Audio delay</div>
-      <div class="audiodelay__head">
-        <span class="audiodelay__value t-num">${ctx.audioOffset > 0 ? '+' : ''}${ctx.audioOffset.toFixed(2)}s</span>
-        <button class="audiodelay__reset" data-action="audio-reset">Reset</button>
-      </div>
-      <div class="audiodelay__hint">Positive delays the audio</div>
-      <div class="audiodelay__grid">
-        ${AUDIO_OFFSET_STEPS.map((step) => `
-          <button class="audiodelay__step" data-action="audio-nudge" data-delta="${step}">${step > 0 ? '+' : ''}${step}s</button>`).join('')}
-      </div>
-    </div>
-    <div class="player__menu-group">
-      <div class="player__menu-label">Playback speed</div>
-      ${speeds.map((speed) => `
-        <button class="player__menu-item${ctx.speed === speed ? ' is-active' : ''}" data-action="set-speed" data-speed="${speed}">${speed}×</button>`).join('')}
+    <div class="audiodelay__hint">Positive delays the audio</div>
+    <div class="audiodelay__grid">
+      ${AUDIO_OFFSET_STEPS.map((step) => `
+        <button class="audiodelay__step" data-action="audio-nudge" data-delta="${step}">${step > 0 ? '+' : ''}${step}s</button>`).join('')}
     </div>`;
+}
+
+function buildSpeedPopover() {
+  el('popover-speed').innerHTML = `
+    <div class="player__menu-label">Playback speed</div>
+    ${SPEEDS.map((speed) => `
+      <button class="player__menu-item${ctx.speed === speed ? ' is-active' : ''}" data-action="set-speed" data-speed="${speed}">${speed}&times;</button>`).join('')}`;
+  const rate = el('rate-btn');
+  if (rate) rate.innerHTML = `${ctx.speed}&times;`;
+}
+
+function buildPicturePopover() {
+  el('popover-picture').innerHTML = `
+    <div class="player__menu-label">Picture</div>
+    <div class="picture__row">
+      <span class="picture__name">Brightness</span>
+      <span class="picture__value t-num" id="brightness-value">${ctx.picture.brightness}%</span>
+    </div>
+    <input class="range range--picture" id="brightness" type="range"
+      min="${PICTURE_MIN}" max="${PICTURE_MAX}" value="${ctx.picture.brightness}" aria-label="Brightness">
+    <div class="picture__row">
+      <span class="picture__name">Contrast</span>
+      <span class="picture__value t-num" id="contrast-value">${ctx.picture.contrast}%</span>
+    </div>
+    <input class="range range--picture" id="contrast" type="range"
+      min="${PICTURE_MIN}" max="${PICTURE_MAX}" value="${ctx.picture.contrast}" aria-label="Contrast">
+    <button class="audiodelay__reset" data-action="picture-reset">Reset</button>`;
+}
+
+/** Rebuild every popover. Cheap, and keeps the four in step with ctx. */
+function buildMenu() {
+  buildSubsPopover();
+  buildSyncPopover();
+  buildSpeedPopover();
+  buildPicturePopover();
 }
 
 function applyTrack(track) {
@@ -454,8 +494,59 @@ export function setSpeed(speed) {
   buildMenu();
 }
 
-export function toggleMenu() {
-  el('player-menu')?.classList.toggle('is-open');
+const POPOVERS = ['subs', 'sync', 'speed', 'picture'];
+
+/** Close every popover. Safe to call when none is open. */
+export function closePopovers() {
+  for (const name of POPOVERS) {
+    const panel = el(`popover-${name}`);
+    if (panel) panel.hidden = true;
+  }
+}
+
+/**
+ * Open one popover, closing the others.
+ *
+ * Exclusive by construction rather than by CSS: four panels open at once over
+ * a 1440px control bar would overlap each other, and only one can be the one
+ * you meant to open.
+ */
+export function togglePopover(name) {
+  const panel = el(`popover-${name}`);
+  if (!panel) return;
+  const wasOpen = !panel.hidden;
+  closePopovers();
+  panel.hidden = wasOpen;
+}
+
+/**
+ * Apply and store a picture setting. A repaint, not a stream restart.
+ *
+ * This deliberately does NOT rebuild the popover. Replacing the panel's
+ * innerHTML would destroy the very slider being dragged, and the drag would
+ * die after its first input event - the same failure that once killed typing
+ * in the search box. Only the readouts and the slider positions are touched.
+ */
+export function setPicture({ brightness, contrast }) {
+  if (!ctx) return;
+  ctx.picture = { brightness: clampPicture(brightness), contrast: clampPicture(contrast) };
+  ctx.video.style.filter = pictureFilter(ctx.picture);
+  savePicture(ctx.picture);
+
+  const label = (id, value) => {
+    const node = el(id);
+    if (node) node.textContent = `${value}%`;
+  };
+  label('brightness-value', ctx.picture.brightness);
+  label('contrast-value', ctx.picture.contrast);
+
+  // Keep the sliders in step when the change came from Reset rather than a drag.
+  for (const [id, value] of [['brightness', ctx.picture.brightness], ['contrast', ctx.picture.contrast]]) {
+    const input = el(id);
+    if (input && document.activeElement !== input && Number(input.value) !== value) {
+      input.value = String(value);
+    }
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -641,6 +732,14 @@ function attach() {
     ctx.video.muted = value === 0;
   });
 
+  // Bound on the panel, not the inputs: setPicture rebuilds the panel, which
+  // would replace listeners attached to the sliders themselves mid-drag.
+  el('popover-picture').addEventListener('input', (event) => {
+    const input = event.target;
+    if (input.id !== 'brightness' && input.id !== 'contrast') return;
+    setPicture({ ...ctx.picture, [input.id]: Number(input.value) });
+  });
+
   node.addEventListener('mousemove', markIdle);
   node.addEventListener('click', (event) => {
     // Clicking the video itself toggles playback; controls handle their own
@@ -794,5 +893,6 @@ function playNextImmediate() {
 
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
-  skip, setSubtitle, setSpeed, toggleMenu, playNext, cancelNext
+  skip, setSubtitle, setSpeed, togglePopover, closePopovers, setPicture,
+  playNext, cancelNext
 };
