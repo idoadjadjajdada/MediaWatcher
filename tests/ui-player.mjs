@@ -215,8 +215,21 @@ if (!(await openFirst('episode'))) {
 
   console.log('\nseek preview');
   const box = await (await page.$('#scrub')).boundingBox();
-  // Pin playback so the band has a known span to measure against.
-  await page.evaluate(() => document.getElementById('scrub').style.setProperty('--fill', '30.00'));
+
+  await page.evaluate(() => document.getElementById('player-video').pause());
+  await page.waitForTimeout(400);
+
+  /**
+   * Where playback currently is, as a percentage.
+   *
+   * Read live rather than pinned. tick() rewrites --fill from the real
+   * position, so any value this test forces can be overwritten a frame later -
+   * which is exactly what made the band-direction check flaky. Deriving the
+   * hover targets from the live value instead means the assertion holds
+   * wherever playback happens to be.
+   */
+  const liveFill = () => page.evaluate(
+    () => Number(document.getElementById('scrub').style.getPropertyValue('--fill')) || 0);
 
   const readPreview = () => page.evaluate(() => {
     const node = document.getElementById('scrub');
@@ -238,16 +251,22 @@ if (!(await openFirst('episode'))) {
     };
   });
 
-  await page.mouse.move(box.x + box.width * 0.75, box.y + box.height / 2);
+  // Halfway between playback and the right-hand end: always ahead of --fill.
+  const fillAhead = await liveFill();
+  const aheadAt = (fillAhead + (100 - fillAhead) / 2) / 100;
+  await page.mouse.move(box.x + box.width * aheadAt, box.y + box.height / 2);
   await page.waitForTimeout(180);
   let p = await readPreview();
 
   check('hovering marks the scrub as previewing', p.previewing === true);
-  check('--preview lands near 75', Math.abs(p.preview - 75) < 2, p.preview);
+  check('--preview follows the cursor',
+    Math.abs(p.preview - aheadAt * 100) < 2, { preview: p.preview, expected: aheadAt * 100 });
   check('the ball is visible', p.ballOpacity > 0.5, p.ballOpacity);
   check('the ball sits under the cursor',
-    Math.abs(p.ballCentre - (p.trackLeft + p.trackWidth * 0.75)) < 6, { ballCentre: p.ballCentre });
-  check('the band renders ahead of playback', p.bandWidth > 0 && p.behind === false, p.bandWidth);
+    Math.abs(p.ballCentre - (p.trackLeft + p.trackWidth * aheadAt)) < 6, { ballCentre: p.ballCentre });
+  check('the band renders ahead of playback',
+    p.bandWidth > 0 && p.behind === false,
+    { bandWidth: p.bandWidth, behind: p.behind, fill: fillAhead, hoveredAt: aheadAt * 100 });
   check('the card has real size', p.cardWidth > 100, p.cardWidth);
   // Thumbnails may still be generating, so assert the box holds its shape
   // rather than asserting a picture is present.
@@ -270,11 +289,16 @@ if (!(await openFirst('episode'))) {
   check('a painted frame comes from the thumbs endpoint',
     painted === 'none' || painted.includes('/api/thumbs'), painted.slice(0, 80));
 
-  await page.mouse.move(box.x + box.width * 0.10, box.y + box.height / 2);
+  // Halfway between the left-hand end and playback: always behind --fill.
+  const fillBehind = await liveFill();
+  const behindAt = (fillBehind / 2) / 100;
+  await page.mouse.move(box.x + box.width * behindAt, box.y + box.height / 2);
   await page.waitForTimeout(180);
   p = await readPreview();
-  check('scrubbing back flags the band as behind', p.behind === true);
-  check('the band renders behind playback too', p.bandWidth > 0, p.bandWidth);
+  check('scrubbing back flags the band as behind', p.behind === true,
+    { fill: fillBehind, hoveredAt: behindAt * 100, preview: p.preview });
+  check('the band renders behind playback too', p.bandWidth > 0,
+    { bandWidth: p.bandWidth, fill: fillBehind, hoveredAt: behindAt * 100 });
 
   // Both extremes: the card must clamp rather than overhang the track.
   for (const [label, fraction] of [['left', 0.005], ['right', 0.995]]) {
