@@ -442,12 +442,39 @@ function Receive-ApiResult {
 function Start-Server {
   if ($null -ne $script:ServerHandle) { return }
   $level = [string]$CmbLogLevel.SelectedItem.Content
+
+  # Clear the port before binding it. A server spawned by a previous launcher
+  # outlives the window that started it, so the usual failure is "already in
+  # use" against an orphan of our own making rather than a real conflict.
+  Clear-Port | Out-Null
+
   Set-ServerStatus 'starting'
   $script:ServerHandle = Start-MwServer -Config $script:Config -LogLevel $level -Queue $script:OutputQueue
   if ($null -eq $script:PollerHandle) {
     $script:PollerHandle = Start-ApiPoller -Config $script:Config -ResultQueue $script:ResultQueue
   }
   Update-ButtonStates | Out-Null
+}
+
+<#
+  Terminate anything of ours squatting the configured port.
+
+  Our own running child is excluded, so this can never shoot the server the
+  launcher is currently managing.
+#>
+function Clear-Port {
+  $ownPid = 0
+  if ($null -ne $script:ServerHandle -and $null -ne $script:ServerHandle.Process) {
+    try { $ownPid = $script:ServerHandle.Process.Id } catch { $ownPid = 0 }
+  }
+
+  $result = Stop-MwPortOwner -Port $script:Config.Port -ExcludePid $ownPid `
+    -Queue $script:OutputQueue
+
+  if ($result.Killed.Count -eq 0 -and $result.Foreign.Count -eq 0) {
+    Write-MwQueueNotice $script:OutputQueue "port $($script:Config.Port) is free"
+  }
+  return $result
 }
 
 function Stop-Server {
@@ -479,6 +506,13 @@ $BtnLibrary.Add_Click({
     Write-MwQueueNotice $script:OutputQueue "library folder does not exist: $($script:Config.LibraryPath)"
   }
 })
+$BtnFreePort.Add_Click({
+  $result = Clear-Port
+  if ($result.Killed.Count -gt 0) {
+    Write-MwQueueNotice $script:OutputQueue "freed port $($script:Config.Port) - stopped $($result.Killed.Count) process(es)"
+  }
+})
+
 $BtnClearLog.Add_Click({ $LogItems.Items.Clear() })
 $BtnRescan.Add_Click({
   if ($null -eq $script:PollerHandle) {

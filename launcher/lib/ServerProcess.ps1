@@ -95,6 +95,114 @@ function Start-StreamedCommand {
   return @{ Process = $process; Subscriptions = $subscriptions; Tag = $Tag; StartedAt = (Get-Date) }
 }
 
+<#
+.SYNOPSIS
+  Processes listening on a port, classified by whether they are ours to kill.
+
+.DESCRIPTION
+  A node server spawned by the launcher outlives it when the launcher window is
+  closed - the parent dies, the child keeps the port, and the next launch finds
+  3000 taken by an orphan nobody owns.
+
+  Only a node process running a server.js is reported as `Ours`. Anything else
+  holding the port is reported as foreign and left alone: silently killing an
+  unrelated app that happens to use 3000 would be a far worse failure than
+  refusing to start.
+
+  There is deliberately no working-directory check. Windows does not expose
+  another process's CWD through Win32_Process - `Path` is node.exe's own
+  location - so a root comparison looks reassuring while always being false,
+  which is worse than not checking at all. The port itself is the scope: the
+  launcher owns it by configuration, and only a node server.js is touched.
+
+  Emits objects to the pipeline rather than returning an array. `,$owners`
+  would wrap an empty result into a one-element array, so a free port would
+  report one owner; callers wrap with @() instead, which is 0 when empty.
+#>
+function Get-MwPortOwner {
+  param(
+    [Parameter(Mandatory)][int]$Port,
+    [int]$ExcludePid = 0
+  )
+
+  $pids = @()
+  try {
+    $pids = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop |
+      Select-Object -ExpandProperty OwningProcess -Unique)
+  } catch {
+    # Get-NetTCPConnection is missing on some builds; netstat is always there.
+    $pattern = ':' + $Port + '\s'
+    $pids = @(netstat -ano 2>$null |
+      Where-Object { $_ -match $pattern -and $_ -match 'LISTENING' } |
+      ForEach-Object { ($_ -split '\s+')[-1] } |
+      Sort-Object -Unique)
+  }
+
+  foreach ($rawPid in $pids) {
+    $procId = 0
+    if (-not [int]::TryParse([string]$rawPid, [ref]$procId)) { continue }
+    if ($procId -le 4 -or $procId -eq $ExcludePid) { continue }
+
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue
+    if ($null -eq $proc) { continue }
+
+    $commandLine = [string]$proc.CommandLine
+    $isNode = $proc.Name -eq 'node.exe'
+    $isServer = $commandLine -match 'server\.js'
+
+    [pscustomobject]@{
+      ProcessId   = $procId
+      Name        = $proc.Name
+      CommandLine = $commandLine
+      Ours        = [bool]($isNode -and $isServer)
+    }
+  }
+}
+
+<#
+.SYNOPSIS
+  Terminate orphaned MediaWatcher servers holding a port.
+
+.OUTPUTS
+  A hashtable: Killed (pids terminated), Foreign (pids left alone).
+#>
+function Stop-MwPortOwner {
+  param(
+    [Parameter(Mandatory)][int]$Port,
+    [int]$ExcludePid = 0,
+    $Queue = $null
+  )
+
+  # @() is load-bearing: an empty pipeline becomes an empty array here, where a
+  # bare assignment would give $null and @($null).Count is 1.
+  $owners = @(Get-MwPortOwner -Port $Port -ExcludePid $ExcludePid)
+  $killed = @()
+  $foreign = @()
+
+  foreach ($owner in $owners) {
+    if (-not $owner.Ours) {
+      $foreign += $owner.ProcessId
+      if ($Queue) {
+        # ASCII only inside strings here: this file is read as ANSI by Windows
+        # PowerShell 5.1, so a UTF-8 dash arrives as three bytes of garbage and
+        # breaks the parse. Comments survive it; quoted strings do not.
+        Write-MwQueueNotice $Queue "port $Port is held by $($owner.Name) (pid $($owner.ProcessId)) - not ours, leaving it alone"
+      }
+      continue
+    }
+
+    try {
+      & taskkill /PID $owner.ProcessId /T /F 2>&1 | Out-Null
+      $killed += $owner.ProcessId
+      if ($Queue) { Write-MwQueueNotice $Queue "stopped orphaned server on port $Port (pid $($owner.ProcessId))" }
+    } catch {
+      if ($Queue) { Write-MwQueueNotice $Queue "could not stop pid $($owner.ProcessId): $($_.Exception.Message)" }
+    }
+  }
+
+  return @{ Killed = $killed; Foreign = $foreign }
+}
+
 function Start-MwServer {
   param(
     [Parameter(Mandatory)][hashtable]$Config,
