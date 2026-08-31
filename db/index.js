@@ -89,9 +89,27 @@ const stmt = {
         THEN excluded.audio_offset ELSE progress.audio_offset END,
       updated_at = excluded.updated_at
   `),
+  /**
+   * One row per title, not per file.
+   *
+   * A part-watched show used to contribute an entry for every episode you had
+   * ever left unfinished, so Continue Watching filled up with the same series
+   * several times over. Partitioning on the show id (falling back to the movie
+   * id, then the path for anything unmatched) keeps only the most recent.
+   */
   progressContinue: db.prepare(`
-    SELECT * FROM progress
-    WHERE completed = 0 AND position > 5
+    SELECT * FROM (
+      SELECT *, ROW_NUMBER() OVER (
+        PARTITION BY COALESCE(parent_tmdb_id, tmdb_id, file_path)
+        -- updated_at has millisecond resolution, so two rows written in the
+        -- same tick would otherwise pick a winner arbitrarily. Highest episode
+        -- wins the tie, which is the one you most plausibly reached.
+        ORDER BY updated_at DESC, season_number DESC, episode_number DESC
+      ) AS rn
+      FROM progress
+      WHERE completed = 0 AND position > 5
+    )
+    WHERE rn = 1
     ORDER BY updated_at DESC
     LIMIT ?
   `),

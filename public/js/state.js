@@ -195,6 +195,89 @@ export function episodeRows(show, seasonNumber, currentSeason, currentEpisode) {
     });
 }
 
+/**
+ * Shape one Continue Watching row into everything its card needs.
+ *
+ * An episode shows its own still, its own description and its own air year -
+ * the show's poster and first-aired year say nothing about where you actually
+ * are. A movie keeps its poster, because that is how you recognise a film.
+ *
+ * Returns null when the path is no longer in the library, which happens after
+ * a file is moved or deleted between the progress row being written and Home
+ * being rendered.
+ */
+export function continueEntry(row, library) {
+  if (!row?.file_path || !library) return null;
+
+  // Against the library passed in rather than module state, so this is
+  // testable without standing up the whole app.
+  const located = locateIn(library, row.file_path);
+  if (!located) return null;
+
+  const duration = Number(row.duration) || 0;
+  const position = Number(row.position) || 0;
+  const progress = duration > 0 ? position / duration : 0;
+
+  if (located.type === 'episode') {
+    const { item: show, season, episode } = located;
+    const year = episode.air_date
+      ? (Number(String(episode.air_date).slice(0, 4)) || null)
+      : (show.year ?? null);
+
+    return {
+      type: 'episode',
+      tmdb_id: show.tmdb_id,
+      filePath: row.file_path,
+      art: stillThumb(episode.still) || show.poster || null,
+      title: show.title,
+      subtitle: `${episodeTagOf(season, episode.episode_number)}${episode.title ? ` · ${episode.title}` : ''}`,
+      description: episode.overview || '',
+      year,
+      progress,
+      position
+    };
+  }
+
+  const movie = located.item;
+  return {
+    type: 'movie',
+    tmdb_id: movie.tmdb_id,
+    filePath: row.file_path,
+    art: movie.poster || null,
+    title: movie.title,
+    subtitle: '',
+    description: movie.overview || '',
+    year: movie.year ?? null,
+    progress,
+    position
+  };
+}
+
+/** SxxExx, kept here so state.js does not have to import from views.js. */
+function episodeTagOf(season, episode) {
+  const pad = (n) => String(n ?? 0).padStart(2, '0');
+  return `S${pad(season)}E${pad(episode)}`;
+}
+
+/** locateFile against an explicit library rather than the module's state. */
+function locateIn(library, filePath) {
+  for (const movie of library.movies || []) {
+    if ((movie.files || []).some((file) => file.file_path === filePath)) {
+      return { type: 'movie', item: movie, file: movie.files.find((f) => f.file_path === filePath) };
+    }
+  }
+  for (const show of library.shows || []) {
+    for (const season of show.seasons || []) {
+      for (const episode of season.episodes || []) {
+        if ((episode.files || []).some((file) => file.file_path === filePath)) {
+          return { type: 'episode', item: show, season: season.number, episode };
+        }
+      }
+    }
+  }
+  return null;
+}
+
 export function activeJobCount() {
   return state.jobs.filter((job) => job.status === 'downloading' || job.status === 'queued').length;
 }

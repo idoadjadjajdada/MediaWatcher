@@ -10,6 +10,7 @@ import { state, setState, subscribe, patchSlice, findMovie, findShow } from './s
 import * as views from './views.js';
 import * as search from './search.js';
 import * as player from './player.js';
+import * as preview from './preview.js';
 
 const PAGES = ['home', 'movies', 'shows', 'search', 'downloads'];
 const JOB_POLL_MS = 3000;
@@ -398,6 +399,7 @@ const ACTIONS = {
   },
 
   // --- player ---
+  'resume': (el) => player.open(el.dataset.path),
   'close-player': () => player.close(),
   'toggle-play': () => player.togglePlay(),
   'seek-back': () => player.skip(-10),
@@ -419,6 +421,56 @@ const ACTIONS = {
   'play-next': () => player.playNext(),
   'cancel-next': () => player.cancelNext()
 };
+
+/* --------------------------------------------------------------------------
+ * Continue Watching hover frame
+ *
+ * A movie card shows its poster, so nothing on it says where you stopped.
+ * Hovering fetches the generated frame nearest that position from the same
+ * thumbnail service the seek bar uses, and fades it over the poster.
+ *
+ * Loaded on hover rather than up front: these are full-size requests, and most
+ * cards are never hovered. Failure is silent - the poster simply stays.
+ * ----------------------------------------------------------------------- */
+
+const hoverFrames = new Map();
+
+async function loadHoverFrame(card) {
+  const filePath = card.dataset.path;
+  const position = Number(card.dataset.position) || 0;
+  const target = card.querySelector('.continue__frame');
+  if (!filePath || !target || card.dataset.frameState) return;
+
+  card.dataset.frameState = 'loading';
+  try {
+    // Not memoised while still generating: asking again is what nudges the
+    // server to keep going, and the answer changes as frames land.
+    let meta = hoverFrames.get(filePath);
+    if (!meta) {
+      const response = await fetch(api.thumbMetaUrl(filePath));
+      if (!response.ok) throw new Error(String(response.status));
+      meta = await response.json();
+      if (meta.ready) hoverFrames.set(filePath, meta);
+    }
+    if (!meta.interval || !meta.total) throw new Error('no frames yet');
+
+    const index = Math.min(preview.frameIndex(position, meta.interval), meta.total - 1);
+    const url = api.thumbUrl(filePath, index);
+    await new Promise((resolve, reject) => {
+      const probe = new Image();
+      probe.onload = resolve;
+      probe.onerror = reject;
+      probe.src = url;
+    });
+    target.style.backgroundImage = `url("${url}")`;
+    card.dataset.frameState = 'ready';
+  } catch {
+    // Frames are generated on demand, so "not there yet" is the normal first
+    // answer. Clearing the flag lets the next hover try again rather than
+    // marking the card as permanently posterless.
+    delete card.dataset.frameState;
+  }
+}
 
 const SUGGEST_DEBOUNCE_MS = 250;
 let suggestTimer = null;
@@ -593,6 +645,13 @@ async function boot() {
   document.addEventListener('click', onClick);
   document.addEventListener('change', onClick);
   document.addEventListener('input', onClick);
+  // Delegated so it survives re-renders, and capture-phase because pointerover
+  // does not bubble from every nested element consistently across browsers.
+  document.addEventListener('pointerover', (event) => {
+    const card = event.target.closest?.('.continue--movie');
+    if (card) loadHoverFrame(card);
+  });
+
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('error', onResourceError, true);
 

@@ -6,7 +6,7 @@
  * delegation on [data-action] — CSP forbids inline handlers, and delegation
  * means a re-render never leaves dead listeners behind.
  */
-import { state, activeJobCount, locateFile } from './state.js';
+import { state, activeJobCount, locateFile, continueEntry } from './state.js';
 
 /* --------------------------------------------------------------------------
  * Primitives
@@ -185,6 +185,42 @@ export function posterCard(item, type, { owned = false, progress = null } = {}) 
 }
 
 /** A horizontal row. One component for every row in the app. */
+/**
+ * A Continue Watching card.
+ *
+ * Episodes get their own still, label, description and air year, because the
+ * show's poster and first-aired year tell you nothing about where you are.
+ * Movies keep their poster - that is how a film is recognised - and reveal a
+ * frame from where you stopped on hover, loaded lazily by app.js.
+ */
+export function continueCard(entry) {
+  const isEpisode = entry.type === 'episode';
+  const art = entry.art
+    ? `<img class="continue__img" loading="lazy" alt="" src="${esc(entry.art)}">`
+    : `<div class="card__placeholder">${esc(entry.title)}</div>`;
+
+  const width = Math.max(2, Math.min(100, entry.progress * 100));
+
+  return `
+    <article class="continue ${isEpisode ? 'continue--episode' : 'continue--movie'}"
+      data-action="resume" data-path="${esc(entry.filePath)}"
+      data-position="${entry.position}" tabindex="0"
+      aria-label="Resume ${esc(entry.title)}${entry.subtitle ? `, ${esc(entry.subtitle)}` : ''}">
+      <div class="continue__art">
+        ${art}
+        ${isEpisode ? '' : '<div class="continue__frame" aria-hidden="true"></div>'}
+        <div class="continue__play">${playIcon('icon-lg')}</div>
+        <div class="card__owned"><span style="width:${width.toFixed(1)}%"></span></div>
+      </div>
+      <div class="continue__body">
+        <div class="continue__title t-card">${esc(entry.title)}</div>
+        ${entry.subtitle ? `<div class="continue__sub">${esc(entry.subtitle)}</div>` : ''}
+        <div class="continue__meta">${entry.year || ''}</div>
+        ${entry.description ? `<div class="continue__desc">${esc(entry.description)}</div>` : ''}
+      </div>
+    </article>`;
+}
+
 export function rail(title, cardsHtml, { count = null } = {}) {
   return `
     <section class="row">
@@ -301,13 +337,11 @@ export function renderHome() {
   const hero = pickHero(state.library, state.progress);
   const ownedIds = new Set(all.map((entry) => entry.tmdb_id));
 
-  const continueCards = state.progress.map((row) => {
-    const located = locateFile(row.file_path);
-    if (!located) return '';
-    const pct = row.duration > 0 ? row.position / row.duration : 0;
-    return posterCard(located.item, located.type === 'episode' ? 'show' : 'movie',
-      { owned: true, progress: pct });
-  }).filter(Boolean).join('');
+  const continueCards = state.progress
+    .map((row) => continueEntry(row, state.library))
+    .filter(Boolean)
+    .map(continueCard)
+    .join('');
 
   /* Library rails, collapsed by size. With a handful of titles, "Recently
      added" and "Your library" are the same posters twice, directly under
