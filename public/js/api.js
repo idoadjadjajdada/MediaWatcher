@@ -78,6 +78,8 @@ export const startDownload = (payload) => post('/api/torrents/download', payload
 export const cancelJob = (id) => del(`/api/torrents/jobs/${encodeURIComponent(id)}`);
 
 export const getContinueWatching = () => get('/api/progress');
+/** Every row, completed included — the detail page marks watched episodes. */
+export const getAllProgress = () => get('/api/progress?all=1');
 export const getProgressFor = (filePath) => get(`/api/progress?${q({ file_path: filePath })}`);
 export const saveProgress = (payload) => post('/api/progress', payload);
 
@@ -139,7 +141,7 @@ export default {
   health, getLibrary, rescan, refreshItem, getDiscover, getDiscoverDetail,
   searchTorrents, getSources, suggest,
   getJobs, startDownload, cancelJob,
-  getContinueWatching, getProgressFor, saveProgress,
+  getContinueWatching, getAllProgress, getProgressFor, saveProgress,
   getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities,
   thumbMetaUrl, thumbUrl
 };

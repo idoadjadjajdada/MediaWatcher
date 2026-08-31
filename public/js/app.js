@@ -6,7 +6,9 @@
  * CSP, which forbids inline handlers.
  */
 import * as api from './api.js';
-import { state, setState, subscribe, patchSlice, findMovie, findShow } from './state.js';
+import {
+  state, setState, subscribe, patchSlice, findMovie, findShow, progressByPath
+} from './state.js';
 import * as views from './views.js';
 import * as search from './search.js';
 import * as player from './player.js';
@@ -79,14 +81,18 @@ function renderInner(main) {
 
 async function loadLibrary() {
   try {
-    const [library, progress] = await Promise.all([
+    const [library, progress, allProgress] = await Promise.all([
       api.getLibrary(),
-      api.getContinueWatching().catch(() => [])
+      api.getContinueWatching().catch(() => []),
+      // Every row rather than the Continue Watching subset: the detail page
+      // needs completed episodes too, to mark them as seen.
+      api.getAllProgress().catch(() => [])
     ]);
 
     setState({
       library: { movies: library.movies, shows: library.shows, unknown: library.unknown },
       progress,
+      watched: progressByPath(allProgress),
       lastScanAt: library.last_scan_at,
       scanning: Boolean(library.scanning),
       loading: false,
@@ -636,6 +642,25 @@ function onStateChange() {
     previousPage = state.currentPage;
     syncJobPolling();
   }
+
+  // Progress only loaded at boot, so Continue Watching and the watched marks
+  // on a show page stayed at whatever they were when the tab opened. Closing
+  // the player is the moment they are certain to be wrong.
+  if (previousPlayerOpen && !state.player.open) refreshProgress();
+  previousPlayerOpen = state.player.open;
+}
+
+let previousPlayerOpen = false;
+
+async function refreshProgress() {
+  const [progress, allProgress] = await Promise.all([
+    api.getContinueWatching().catch(() => null),
+    api.getAllProgress().catch(() => null)
+  ]);
+  const patch = {};
+  if (progress) patch.progress = progress;
+  if (allProgress) patch.watched = progressByPath(allProgress);
+  if (Object.keys(patch).length) setState(patch);
 }
 
 async function boot() {

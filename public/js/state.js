@@ -8,6 +8,10 @@
 export const state = {
   library: { movies: [], shows: [], unknown: [] },
   progress: [],
+  // Every progress row, keyed by file path. The show detail page marks each
+  // episode watched or part-watched from this; `progress` above is only the
+  // Continue Watching subset and deliberately holds one row per show.
+  watched: {},
   jobs: [],
   currentPage: 'home',
   currentItem: null,          // item behind the detail modal
@@ -276,6 +280,44 @@ function locateIn(library, filePath) {
     }
   }
   return null;
+}
+
+/** Progress rows keyed by file path, for O(1) lookup while rendering. */
+export function progressByPath(rows) {
+  const index = {};
+  for (const row of rows || []) {
+    if (row?.file_path) index[row.file_path] = row;
+  }
+  return index;
+}
+
+/**
+ * Watch progress under one episode: how far in, and whether it counts as seen.
+ *
+ * Ignores the first few seconds so merely opening an episode does not leave a
+ * sliver of progress on it, and treats the last 5% as watched whether or not
+ * the completed flag has been written yet - the flag is set by the player on
+ * save, so it lags a viewer who closes the tab on the credits.
+ */
+export const WATCH_STARTED_SECONDS = 5;
+export const WATCH_COMPLETE_RATIO = 0.95;
+
+export function watchState(row) {
+  const position = Number(row?.position) || 0;
+  const duration = Number(row?.duration) || 0;
+  const started = position > WATCH_STARTED_SECONDS;
+
+  if (!started) return { started: false, watched: false, percent: 0, remaining: 0 };
+
+  const ratio = duration > 0 ? position / duration : 0;
+  const watched = Boolean(row?.completed) || (duration > 0 && ratio >= WATCH_COMPLETE_RATIO);
+
+  return {
+    started: true,
+    watched,
+    percent: watched ? 100 : Math.max(0, Math.min(100, ratio * 100)),
+    remaining: duration > 0 ? Math.max(0, Math.round(duration - position)) : 0
+  };
 }
 
 export function activeJobCount() {

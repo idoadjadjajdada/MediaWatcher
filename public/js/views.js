@@ -6,7 +6,7 @@
  * delegation on [data-action] — CSP forbids inline handlers, and delegation
  * means a re-render never leaves dead listeners behind.
  */
-import { state, activeJobCount, locateFile, continueEntry } from './state.js';
+import { state, activeJobCount, locateFile, continueEntry, watchState } from './state.js';
 
 /* --------------------------------------------------------------------------
  * Primitives
@@ -30,6 +30,7 @@ const ICONS = {
   download: '<path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
   refresh: '<path d="M20 11A8 8 0 1 0 12 20"/><path d="M20 5v6h-6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  check: '<path d="m4.5 12.5 5 5 10-11"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
   chevron: '<path d="m9 6 6 6-6 6"/>',
   back: '<path d="m15 18-6-6 6-6"/>',
@@ -649,17 +650,28 @@ function renderSeason(show, season, open) {
       <div class="season__episodes">
         ${season.episodes.map((episode) => {
     const file = (episode.files || [])[0];
+    // Watch state comes from every progress row, not the Continue Watching
+    // subset, so an episode you finished still reads as watched here.
+    const seen = watchState(file ? state.watched[file.file_path] : null);
+
     return `
-          <div class="episode"${file ? ` data-action="play" data-path="${esc(file.file_path)}"` : ''}>
-            ${episode.still
+          <div class="episode${seen.watched ? ' is-watched' : ''}${seen.started && !seen.watched ? ' is-started' : ''}"
+            ${file ? ` data-action="play" data-path="${esc(file.file_path)}"` : ''}>
+            <div class="episode__art">
+              ${episode.still
     ? `<img class="episode__still" loading="lazy" alt="" src="${esc(episode.still)}">`
     : '<div class="episode__still"></div>'}
+              ${seen.started ? `<div class="episode__bar"><span style="width:${seen.percent.toFixed(1)}%"></span></div>` : ''}
+              ${seen.watched ? `<div class="episode__seen" title="Watched">${icon('check')}</div>` : ''}
+            </div>
             <div>
               <div class="episode__title">
                 <span class="episode__number">${episode.episode_number ?? '–'}.</span>
                 ${esc(episode.title || 'Untitled episode')}
               </div>
               ${episode.overview ? `<div class="episode__overview">${esc(episode.overview)}</div>` : ''}
+              ${seen.started && !seen.watched && seen.remaining
+    ? `<div class="episode__left">${formatTime(seen.remaining)} left</div>` : ''}
             </div>
             ${file ? `<button class="btn btn--ghost btn--icon" aria-label="Play">${playIcon()}</button>` : '<span class="badge">missing</span>'}
           </div>`;

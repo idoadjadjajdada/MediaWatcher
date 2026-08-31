@@ -278,3 +278,36 @@
   .continue--episode { width: 240px; }
   .continue--movie { width: 128px; }
 }
+
+/* ---- episode watch state ----
+   The still becomes a positioned wrapper so the progress bar and the watched
+   tick can sit on it without changing the grid the episode row already uses. */
+.episode__art { position: relative; width: 120px; flex: none; }
+.episode__art .episode__still { display: block; width: 100%; }
+
+.episode__bar {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: rgba(0, 0, 0, .55);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  overflow: hidden;
+}
+.episode__bar span { display: block; height: 100%; background: var(--fg); }
+
+.episode__seen {
+  position: absolute; top: 4px; right: 4px;
+  width: 18px; height: 18px; display: grid; place-items: center;
+  border-radius: 50%; background: var(--fg); color: #000;
+}
+.episode__seen svg { width: 12px; height: 12px; stroke-width: 3; }
+
+/* Watched episodes step back so the unwatched ones are what you scan for. */
+.episode.is-watched .episode__still { opacity: .45; }
+.episode.is-watched .episode__title,
+.episode.is-watched .episode__overview { opacity: .6; }
+.episode:hover .episode__still { opacity: 1; }
+
+.episode__left { font-size: 11px; color: var(--fg-2); margin-top: 3px; font-weight: 600; }
+
+@media (max-width: 767px) {
+  .episode__art { width: 88px; }
+}
