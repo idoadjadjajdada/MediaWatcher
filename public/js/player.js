@@ -14,8 +14,12 @@
  * reads from it, so neither mode needs special-casing anywhere else.
  */
 import * as api from './api.js';
-import { state, setState, locateFile, nextEpisode, previousEpisode } from './state.js';
+import {
+  state, setState, locateFile, nextEpisode, previousEpisode, episodeRows, seasonNumbers
+} from './state.js';
 import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episodeTag } from './views.js';
+import { clampPicture, pictureFilter, loadPicture, savePicture, PICTURE_MIN, PICTURE_MAX } from './picture.js';
+import { previewFraction, cardLeft, frameIndex } from './preview.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -183,6 +187,8 @@ async function openInner(filePath) {
     activeTrack: (Array.isArray(tracks) && tracks[0]) || null,
     speed: 1,
     audioOffset: (saved && Number(saved.audio_offset)) || 0,
+    // Global, not per-file: brightness tracks the room, not the master.
+    picture: loadPicture(),
     pendingSeek: null,
     seekTimer: null,
     wasPlayingBeforeSeek: null,
@@ -194,7 +200,15 @@ async function openInner(filePath) {
 
   setState({ player: { open: true, src: filePath, subs: ctx.tracks, resumeAt } });
 
+  ctx.video.style.filter = pictureFilter(ctx.picture);
+  ctx.epSeason = ctx.located?.type === 'episode' ? ctx.located.season : null;
+  ctx.thumbs = { interval: 0, total: 0, ready: false, wanted: -1, frames: new Map() };
+
   buildMenu();
+  buildEpisodes();
+
+  // Deliberately not awaited: opening the player must never wait on ffmpeg.
+  loadThumbMeta();
   attach();
   load(resumeAt, { autoplay: true });
 
@@ -208,9 +222,11 @@ export async function close({ save = true } = {}) {
   if (save) await persist(true);
 
   document.removeEventListener('keydown', onKeyDown);
+  if (ctx.outsideClick) document.removeEventListener('click', ctx.outsideClick, true);
   clearInterval(ctx.saveTimer);
   clearTimeout(ctx.idleTimer);
   clearTimeout(ctx.seekTimer);
+  clearTimeout(ctx.thumbRetry);
 
   // Dropping the src stops the server-side ffmpeg process straight away.
   ctx.video.removeAttribute('src');
@@ -321,7 +337,7 @@ function tick() {
   const seek = el('seek');
   const fraction = total > 0 ? Math.min(1, current / total) : 0;
   if (document.activeElement !== seek) seek.value = String(Math.round(fraction * 1000));
-  seek.style.setProperty('--fill', (fraction * 100).toFixed(2));
+  setFill(fraction * 100);
 
   const playBtn = el('play-btn');
   playBtn.innerHTML = ctx.video.paused ? playIcon() : pauseIcon();
@@ -329,6 +345,129 @@ function tick() {
 
   if (ctx.nextTarget && !shouldOfferNext(total, current)) withdrawNextOffer();
   maybeOfferNext(total, current);
+}
+
+/**
+ * Write the played-so-far percentage.
+ *
+ * It goes on the wrapper as well as the input because the landing band has to
+ * compare --fill against --preview, and CSS can only do that when both live on
+ * the same element. Both are bare numbers, consumed as calc(var(--x) * 1%).
+ */
+function setFill(percent) {
+  const value = percent.toFixed(2);
+  el('seek')?.style.setProperty('--fill', value);
+  el('scrub')?.style.setProperty('--fill', value);
+}
+
+/* --------------------------------------------------------------------------
+ * Seek preview
+ * ----------------------------------------------------------------------- */
+
+/** Show the ball, band and card at a fraction along the track. */
+function showPreview(fraction) {
+  const scrub = el('scrub');
+  const card = el('preview-card');
+  if (!scrub || !card) return;
+
+  const percent = fraction * 100;
+  scrub.style.setProperty('--preview', percent.toFixed(2));
+  // The band spans between the two points, so it needs to know which side of
+  // playback the cursor is on to pick its anchor edge.
+  scrub.classList.toggle('is-behind', percent < (Number(scrub.style.getPropertyValue('--fill')) || 0));
+  scrub.classList.add('is-previewing');
+
+  const total = duration();
+  el('preview-time').textContent = Number.isFinite(total) && total > 0
+    ? formatTime(fraction * total)
+    : '--:--';
+
+  const trackWidth = scrub.getBoundingClientRect().width;
+  const cardWidth = card.getBoundingClientRect().width;
+  card.style.left = `${cardLeft(fraction, trackWidth, cardWidth)}px`;
+
+  showPreviewFrame(fraction, total);
+}
+
+function hidePreview() {
+  el('scrub')?.classList.remove('is-previewing');
+}
+
+/**
+ * Put the frame for this position into the card.
+ *
+ * Loaded through an Image probe rather than assigned to background-image
+ * directly, so a frame that has not been generated yet leaves the box empty
+ * instead of flashing a broken image. `wanted` guards against a slow frame
+ * landing after the cursor has already moved somewhere else.
+ */
+function showPreviewFrame(fraction, total) {
+  const frame = el('preview-frame');
+  const thumbs = ctx?.thumbs;
+  if (!frame || !thumbs || !thumbs.interval) return;
+  if (!Number.isFinite(total) || total <= 0) return;
+
+  const index = Math.min(
+    frameIndex(fraction * total, thumbs.interval),
+    Math.max(0, thumbs.total - 1)
+  );
+  thumbs.wanted = index;
+
+  const known = thumbs.frames.get(index);
+  if (known === 'missing') { frame.style.backgroundImage = ''; return; }
+
+  const url = api.thumbUrl(ctx.filePath, index);
+  if (known === 'ok') { frame.style.backgroundImage = `url("${url}")`; return; }
+
+  const probe = new Image();
+  probe.onload = () => {
+    thumbs.frames.set(index, 'ok');
+    if (ctx?.thumbs === thumbs && thumbs.wanted === index) {
+      frame.style.backgroundImage = `url("${url}")`;
+    }
+  };
+  probe.onerror = () => {
+    // Remembered so a partially generated file does not re-request the same
+    // missing frame on every pixel of cursor movement.
+    thumbs.frames.set(index, 'missing');
+    if (ctx?.thumbs === thumbs && thumbs.wanted === index) frame.style.backgroundImage = '';
+  };
+  probe.src = url;
+}
+
+/**
+ * Thumbnail availability for the open file.
+ *
+ * Absent, still generating, or a missing individual frame all land on the same
+ * behaviour: the card shows its timestamp and no picture. Nothing here can fail
+ * in a way the user has to see.
+ */
+async function loadThumbMeta() {
+  if (!ctx) return;
+  const thumbs = ctx.thumbs;
+
+  try {
+    const response = await fetch(api.thumbMetaUrl(ctx.filePath));
+    if (!response.ok) return;
+    const meta = await response.json();
+    if (!ctx || ctx.thumbs !== thumbs) return;
+
+    thumbs.interval = meta.interval;
+    thumbs.total = meta.total;
+    thumbs.ready = meta.ready;
+
+    // Frames that were missing a moment ago may exist now; forget those misses
+    // but keep the hits, which cannot become wrong.
+    for (const [index, status] of thumbs.frames) {
+      if (status === 'missing') thumbs.frames.delete(index);
+    }
+
+    // A file opened for the first time reports ready:false while ffmpeg works.
+    // Ask once more so sitting still eventually gets frames.
+    if (!thumbs.ready) ctx.thumbRetry = setTimeout(loadThumbMeta, 20000);
+  } catch {
+    // No thumbnails this session. The timestamp still works.
+  }
 }
 
 function setVolumeUi() {
@@ -344,7 +483,11 @@ function markIdle() {
   clearTimeout(ctx.idleTimer);
   ctx.node.classList.remove('is-idle');
   ctx.idleTimer = setTimeout(() => {
-    if (ctx && !ctx.video.paused) ctx.node.classList.add('is-idle');
+    // A panel left open over a hidden control bar floats unanchored.
+    if (ctx && !ctx.video.paused) {
+      closePopovers();
+      ctx.node.classList.add('is-idle');
+    }
   }, IDLE_MS);
 }
 
@@ -352,35 +495,66 @@ function markIdle() {
  * Subtitles + settings menu
  * ----------------------------------------------------------------------- */
 
-function buildMenu() {
-  const speeds = [0.75, 1, 1.25, 1.5, 2];
-  el('menu-panel').innerHTML = `
-    <div class="player__menu-group">
-      <div class="player__menu-label">Subtitles</div>
-      <button class="player__menu-item${ctx.activeTrack ? '' : ' is-active'}" data-action="set-subtitle" data-track="off">Off</button>
-      ${ctx.tracks.map((track, index) => `
-        <button class="player__menu-item${ctx.activeTrack === track ? ' is-active' : ''}" data-action="set-subtitle" data-track="${index}">
-          ${esc(track.label || track.lang || 'Track')}${track.source === 'embedded' ? ' (embedded)' : ''}
-        </button>`).join('')}
-      ${ctx.tracks.length === 0 ? '<div class="player__menu-label">None found</div>' : ''}
+const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
+
+function buildSubsPopover() {
+  el('popover-subs').innerHTML = `
+    <div class="player__menu-label">Subtitles</div>
+    <button class="player__menu-item${ctx.activeTrack ? '' : ' is-active'}" data-action="set-subtitle" data-track="off">Off</button>
+    ${ctx.tracks.map((track, index) => `
+      <button class="player__menu-item${ctx.activeTrack === track ? ' is-active' : ''}" data-action="set-subtitle" data-track="${index}">
+        ${esc(track.label || track.lang || 'Track')}${track.source === 'embedded' ? ' (embedded)' : ''}
+      </button>`).join('')}
+    ${ctx.tracks.length === 0 ? '<div class="player__menu-label">None found</div>' : ''}`;
+}
+
+function buildSyncPopover() {
+  el('popover-sync').innerHTML = `
+    <div class="player__menu-label">Audio delay</div>
+    <div class="audiodelay__head">
+      <span class="audiodelay__value t-num">${ctx.audioOffset > 0 ? '+' : ''}${ctx.audioOffset.toFixed(2)}s</span>
+      <button class="audiodelay__reset" data-action="audio-reset">Reset</button>
     </div>
-    <div class="player__menu-group">
-      <div class="player__menu-label">Audio delay</div>
-      <div class="audiodelay__head">
-        <span class="audiodelay__value t-num">${ctx.audioOffset > 0 ? '+' : ''}${ctx.audioOffset.toFixed(2)}s</span>
-        <button class="audiodelay__reset" data-action="audio-reset">Reset</button>
-      </div>
-      <div class="audiodelay__hint">Positive delays the audio</div>
-      <div class="audiodelay__grid">
-        ${AUDIO_OFFSET_STEPS.map((step) => `
-          <button class="audiodelay__step" data-action="audio-nudge" data-delta="${step}">${step > 0 ? '+' : ''}${step}s</button>`).join('')}
-      </div>
-    </div>
-    <div class="player__menu-group">
-      <div class="player__menu-label">Playback speed</div>
-      ${speeds.map((speed) => `
-        <button class="player__menu-item${ctx.speed === speed ? ' is-active' : ''}" data-action="set-speed" data-speed="${speed}">${speed}×</button>`).join('')}
+    <div class="audiodelay__hint">Positive delays the audio</div>
+    <div class="audiodelay__grid">
+      ${AUDIO_OFFSET_STEPS.map((step) => `
+        <button class="audiodelay__step" data-action="audio-nudge" data-delta="${step}">${step > 0 ? '+' : ''}${step}s</button>`).join('')}
     </div>`;
+}
+
+function buildSpeedPopover() {
+  el('popover-speed').innerHTML = `
+    <div class="player__menu-label">Playback speed</div>
+    ${SPEEDS.map((speed) => `
+      <button class="player__menu-item${ctx.speed === speed ? ' is-active' : ''}" data-action="set-speed" data-speed="${speed}">${speed}&times;</button>`).join('')}`;
+  const rate = el('rate-btn');
+  if (rate) rate.innerHTML = `${ctx.speed}&times;`;
+}
+
+function buildPicturePopover() {
+  el('popover-picture').innerHTML = `
+    <div class="player__menu-label">Picture</div>
+    <div class="picture__row">
+      <span class="picture__name">Brightness</span>
+      <span class="picture__value t-num" id="brightness-value">${ctx.picture.brightness}%</span>
+    </div>
+    <input class="range range--picture" id="brightness" type="range"
+      min="${PICTURE_MIN}" max="${PICTURE_MAX}" value="${ctx.picture.brightness}" aria-label="Brightness">
+    <div class="picture__row">
+      <span class="picture__name">Contrast</span>
+      <span class="picture__value t-num" id="contrast-value">${ctx.picture.contrast}%</span>
+    </div>
+    <input class="range range--picture" id="contrast" type="range"
+      min="${PICTURE_MIN}" max="${PICTURE_MAX}" value="${ctx.picture.contrast}" aria-label="Contrast">
+    <button class="audiodelay__reset" data-action="picture-reset">Reset</button>`;
+}
+
+/** Rebuild every popover. Cheap, and keeps the four in step with ctx. */
+function buildMenu() {
+  buildSubsPopover();
+  buildSyncPopover();
+  buildSpeedPopover();
+  buildPicturePopover();
 }
 
 function applyTrack(track) {
@@ -454,8 +628,124 @@ export function setSpeed(speed) {
   buildMenu();
 }
 
-export function toggleMenu() {
-  el('player-menu')?.classList.toggle('is-open');
+/* --------------------------------------------------------------------------
+ * Episode sidebar
+ * ----------------------------------------------------------------------- */
+
+/** Only shows get a sidebar; a movie has nothing to list. */
+function hasEpisodes() {
+  return Boolean(ctx?.located && ctx.located.type === 'episode');
+}
+
+function buildEpisodes() {
+  const arrow = el('ep-arrow');
+  if (arrow) arrow.hidden = !hasEpisodes();
+  if (!hasEpisodes()) return;
+
+  const show = ctx.located.item;
+  const seasons = seasonNumbers(show);
+  const selected = ctx.epSeason ?? ctx.located.season;
+
+  el('ep-show').textContent = show.title || 'Episodes';
+
+  // Tabs render even for a one-season show, so the header does not change
+  // shape between shows.
+  el('ep-tabs').innerHTML = seasons.map((number) => `
+    <button class="player__ep-tab${number === selected ? ' is-active' : ''}"
+      data-action="select-season" data-season="${number}">S${number}</button>`).join('');
+
+  const rows = episodeRows(show, selected, ctx.located.season, ctx.located.episode.episode_number);
+  el('ep-list').innerHTML = rows.length === 0
+    ? '<div class="player__menu-label">No episodes in this season</div>'
+    : rows.map((row) => `
+      <button class="player__ep-row${row.current ? ' is-current' : ''}${row.playable ? '' : ' is-missing'}"
+        ${row.playable ? `data-action="play-episode" data-path="${esc(row.filePath)}"` : 'disabled'}>
+        <span class="player__ep-tag t-num">${esc(episodeTag(row.season, row.episode_number))}</span>
+        <span class="player__ep-name">${esc(row.title || 'Untitled')}</span>
+      </button>`).join('');
+}
+
+export function toggleEpisodes() {
+  const panel = el('ep-panel');
+  if (!panel || !hasEpisodes()) return;
+  closePopovers();
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  if (opening) {
+    ctx.epSeason = ctx.located.season;
+    buildEpisodes();
+    el('ep-list')?.querySelector('.is-current')?.scrollIntoView({ block: 'center' });
+  }
+}
+
+export function closeEpisodes() {
+  const panel = el('ep-panel');
+  if (panel) panel.hidden = true;
+}
+
+export function selectSeason(number) {
+  if (!ctx) return;
+  ctx.epSeason = Number(number);
+  buildEpisodes();
+}
+
+/* --------------------------------------------------------------------------
+ * Setting popovers
+ * ----------------------------------------------------------------------- */
+
+const POPOVERS = ['subs', 'sync', 'speed', 'picture'];
+
+/** Close every popover. Safe to call when none is open. */
+export function closePopovers() {
+  for (const name of POPOVERS) {
+    const panel = el(`popover-${name}`);
+    if (panel) panel.hidden = true;
+  }
+}
+
+/**
+ * Open one popover, closing the others.
+ *
+ * Exclusive by construction rather than by CSS: four panels open at once over
+ * a 1440px control bar would overlap each other, and only one can be the one
+ * you meant to open.
+ */
+export function togglePopover(name) {
+  const panel = el(`popover-${name}`);
+  if (!panel) return;
+  const wasOpen = !panel.hidden;
+  closePopovers();
+  panel.hidden = wasOpen;
+}
+
+/**
+ * Apply and store a picture setting. A repaint, not a stream restart.
+ *
+ * This deliberately does NOT rebuild the popover. Replacing the panel's
+ * innerHTML would destroy the very slider being dragged, and the drag would
+ * die after its first input event - the same failure that once killed typing
+ * in the search box. Only the readouts and the slider positions are touched.
+ */
+export function setPicture({ brightness, contrast }) {
+  if (!ctx) return;
+  ctx.picture = { brightness: clampPicture(brightness), contrast: clampPicture(contrast) };
+  ctx.video.style.filter = pictureFilter(ctx.picture);
+  savePicture(ctx.picture);
+
+  const label = (id, value) => {
+    const node = el(id);
+    if (node) node.textContent = `${value}%`;
+  };
+  label('brightness-value', ctx.picture.brightness);
+  label('contrast-value', ctx.picture.contrast);
+
+  // Keep the sliders in step when the change came from Reset rather than a drag.
+  for (const [id, value] of [['brightness', ctx.picture.brightness], ['contrast', ctx.picture.contrast]]) {
+    const input = el(id);
+    if (input && document.activeElement !== input && Number(input.value) !== value) {
+      input.value = String(value);
+    }
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -624,7 +914,7 @@ function attach() {
     const total = duration();
     if (!total) return;
     const fraction = Number(event.target.value) / 1000;
-    event.target.style.setProperty('--fill', (fraction * 100).toFixed(2));
+    setFill(fraction * 100);
     if (ctx.seekable) seekTo(fraction * total);
   });
   // In pipe mode, restarting ffmpeg on every drag frame would be brutal, so the
@@ -635,11 +925,48 @@ function attach() {
     seekTo((Number(event.target.value) / 1000) * total);
   });
 
+  const scrub = el('scrub');
+  scrub.addEventListener('pointermove', (event) => {
+    const rect = scrub.getBoundingClientRect();
+    showPreview(previewFraction(event.clientX - rect.left, rect.width));
+  });
+  scrub.addEventListener('pointerleave', hidePreview);
+  // Touch has no hover, so the preview follows the finger through a drag and
+  // clears when it lifts.
+  scrub.addEventListener('pointerup', hidePreview);
+  scrub.addEventListener('pointercancel', hidePreview);
+
   el('volume').addEventListener('input', (event) => {
     const value = Number(event.target.value) / 100;
     ctx.video.volume = value;
     ctx.video.muted = value === 0;
   });
+
+  // Bound on the panel, not the inputs: setPicture rebuilds the panel, which
+  // would replace listeners attached to the sliders themselves mid-drag.
+  el('popover-picture').addEventListener('input', (event) => {
+    const input = event.target;
+    if (input.id !== 'brightness' && input.id !== 'contrast') return;
+    setPicture({ ...ctx.picture, [input.id]: Number(input.value) });
+  });
+
+  /**
+   * Dismiss panels on an outside click.
+   *
+   * Registered in the CAPTURE phase, which is load-bearing. The app's delegated
+   * click handler runs on the bubble phase, and some of its actions - picking a
+   * season, for one - rebuild the panel's innerHTML. That detaches the very
+   * node that was clicked, so a bubble-phase `closest` call would walk an
+   * orphaned subtree, match nothing, conclude the click was outside, and close
+   * the panel the user just interacted with. Capturing runs this while the
+   * target is still in the tree.
+   */
+  ctx.outsideClick = (event) => {
+    if (!ctx) return;
+    if (!event.target.closest('.player__pop')) closePopovers();
+    if (!event.target.closest('.player__episodes, .player__eparrow')) closeEpisodes();
+  };
+  document.addEventListener('click', ctx.outsideClick, true);
 
   node.addEventListener('mousemove', markIdle);
   node.addEventListener('click', (event) => {
@@ -766,7 +1093,12 @@ function onKeyDown(event) {
     case 'n': case 'N':
       if (ctx.located?.type === 'episode') playNextImmediate(); break;
     case 'Escape':
-      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      // Peel one layer at a time: sidebar, then popovers, then fullscreen,
+      // then the player itself. Closing everything at once would make Escape
+      // unusable for dismissing a panel you opened by mistake.
+      if (!el('ep-panel')?.hidden) closeEpisodes();
+      else if (POPOVERS.some((name) => el(`popover-${name}`) && !el(`popover-${name}`).hidden)) closePopovers();
+      else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       else close({ save: true });
       break;
     default:
@@ -794,5 +1126,6 @@ function playNextImmediate() {
 
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
-  skip, setSubtitle, setSpeed, toggleMenu, playNext, cancelNext
+  skip, setSubtitle, setSpeed, togglePopover, closePopovers, setPicture,
+  playNext, cancelNext
 };

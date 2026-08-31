@@ -19,6 +19,7 @@ import torrentsRouter from './routes/torrents.js';
 import progressRouter from './routes/progress.js';
 import streamRouter from './routes/stream.js';
 import subsRouter from './routes/subs.js';
+import thumbsRouter from './routes/thumbs.js';
 import * as scanner from './services/scanner.js';
 import * as downloader from './services/downloader.js';
 import * as transcoder from './services/transcoder.js';
@@ -111,6 +112,7 @@ app.use('/api', torrentsRouter);          // /api/search + /api/torrents/*
 app.use('/api/progress', progressRouter);
 app.use('/api/stream', streamRouter);
 app.use('/api/subs', subsRouter);
+app.use('/api/thumbs', thumbsRouter);
 
 /* --------------------------------------------------------------------------
  * Fallbacks

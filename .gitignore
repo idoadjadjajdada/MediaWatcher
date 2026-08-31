@@ -10,6 +10,9 @@ node_modules/
 library/
 temp/
 
+# Generated seek-preview frames, keyed by file identity — always rebuildable
+cache/
+
 # SQLite database (and WAL sidecars)
 *.db
 *.db-wal
