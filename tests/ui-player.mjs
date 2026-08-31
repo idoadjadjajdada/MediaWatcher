@@ -249,8 +249,26 @@ if (!(await openFirst('episode'))) {
     Math.abs(p.ballCentre - (p.trackLeft + p.trackWidth * 0.75)) < 6, { ballCentre: p.ballCentre });
   check('the band renders ahead of playback', p.bandWidth > 0 && p.behind === false, p.bandWidth);
   check('the card has real size', p.cardWidth > 100, p.cardWidth);
+  // Thumbnails may still be generating, so assert the box holds its shape
+  // rather than asserting a picture is present.
   check('the frame box holds its size with or without a picture',
     p.frameW > 100 && p.frameH > 50, { w: p.frameW, h: p.frameH });
+
+  // Frames arrive asynchronously through an Image probe. Give a generated file
+  // a moment, then report whether one actually landed - without failing, since
+  // a cold library legitimately has none yet.
+  await page.waitForTimeout(1500);
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height / 2);
+  await page.waitForTimeout(900);
+  const painted = await page.$eval('#preview-frame',
+    (n) => getComputedStyle(n).backgroundImage);
+  const meta = await page.evaluate(async () => {
+    const player = await import('/js/player.js');
+    return player.thumbState ? player.thumbState() : null;
+  }).catch(() => null);
+  console.log(`  [info] frame painted: ${painted !== 'none'}${meta ? ` (${meta.count}/${meta.total} generated)` : ''}`);
+  check('a painted frame comes from the thumbs endpoint',
+    painted === 'none' || painted.includes('/api/thumbs'), painted.slice(0, 80));
 
   await page.mouse.move(box.x + box.width * 0.10, box.y + box.height / 2);
   await page.waitForTimeout(180);

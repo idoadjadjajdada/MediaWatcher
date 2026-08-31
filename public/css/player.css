@@ -175,8 +175,11 @@
    Four buttons, one panel each, exclusive. The panel is anchored to its own
    button rather than to the bar so it stays put when the bar reflows. */
 .player__pop { position: relative; display: flex; }
+/* z-index 10 clears the scrub layer. The seek input and its preview elements
+   sit at 2-4 inside the same stacking context, and an auto z-index panel loses
+   to every one of them - the seek bar painted straight through the panel. */
 .player__pop-panel {
-  position: absolute; bottom: calc(100% + var(--space-2)); right: 0;
+  position: absolute; bottom: calc(100% + var(--space-2)); right: 0; z-index: 10;
   min-width: 220px; max-height: 46vh; overflow-y: auto;
   padding: var(--space-3); border-radius: var(--radius);
   background: var(--surface); border: 1px solid var(--line);
@@ -198,6 +201,12 @@
 .picture__name { font-size: 12px; opacity: .72; }
 .picture__value { font-size: 12px; }
 .range--picture { width: 100%; margin-bottom: var(--space-2); }
+/* Standalone here rather than in a flex row, so it needs its own separation
+   and a border to read as a button at all. */
+#popover-picture .audiodelay__reset {
+  display: block; width: 100%; margin: var(--space-3) 0 0;
+  border: 1px solid var(--line); text-align: center;
+}
 
 /* ---- episode sidebar ----
    Rendered only for episodes. It sits above the video, so it swallows its own
@@ -279,13 +288,16 @@
 .player__scrub.is-previewing .player__ball,
 .player__scrub.is-previewing .player__card { opacity: 1; }
 
-/* The stretch between where playback is and where you would land. */
+/* The stretch between where playback is and where you would land.
+   z-index 3 puts it ABOVE the range input, which is the whole point: the input
+   paints the white played-so-far fill, so a band underneath it darkens nothing
+   at all - and the band's whole job is darkening the stretch you are skipping. */
 .player__band {
-  top: 50%; height: 5px; margin-top: -2.5px; z-index: 1;
+  top: 50%; height: 5px; margin-top: -2.5px; z-index: 3;
   left: calc(var(--fill, 0) * 1%);
   width: calc((var(--preview, 0) - var(--fill, 0)) * 1%);
   border-radius: 3px;
-  background: rgba(0, 0, 0, .58);
+  background: rgba(0, 0, 0, .55);
 }
 .player__scrub.is-behind .player__band {
   left: calc(var(--preview, 0) * 1%);
@@ -293,7 +305,7 @@
 }
 
 .player__ball {
-  top: 50%; z-index: 3;
+  top: 50%; z-index: 4;
   left: calc(var(--preview, 0) * 1%);
   width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
   border-radius: 50%;

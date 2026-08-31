@@ -19,7 +19,7 @@ import {
 } from './state.js';
 import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episodeTag } from './views.js';
 import { clampPicture, pictureFilter, loadPicture, savePicture, PICTURE_MIN, PICTURE_MAX } from './picture.js';
-import { previewFraction, cardLeft } from './preview.js';
+import { previewFraction, cardLeft, frameIndex } from './preview.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -202,9 +202,13 @@ async function openInner(filePath) {
 
   ctx.video.style.filter = pictureFilter(ctx.picture);
   ctx.epSeason = ctx.located?.type === 'episode' ? ctx.located.season : null;
+  ctx.thumbs = { interval: 0, total: 0, ready: false, wanted: -1, frames: new Map() };
 
   buildMenu();
   buildEpisodes();
+
+  // Deliberately not awaited: opening the player must never wait on ffmpeg.
+  loadThumbMeta();
   attach();
   load(resumeAt, { autoplay: true });
 
@@ -222,6 +226,7 @@ export async function close({ save = true } = {}) {
   clearInterval(ctx.saveTimer);
   clearTimeout(ctx.idleTimer);
   clearTimeout(ctx.seekTimer);
+  clearTimeout(ctx.thumbRetry);
 
   // Dropping the src stops the server-side ffmpeg process straight away.
   ctx.video.removeAttribute('src');
@@ -380,10 +385,89 @@ function showPreview(fraction) {
   const trackWidth = scrub.getBoundingClientRect().width;
   const cardWidth = card.getBoundingClientRect().width;
   card.style.left = `${cardLeft(fraction, trackWidth, cardWidth)}px`;
+
+  showPreviewFrame(fraction, total);
 }
 
 function hidePreview() {
   el('scrub')?.classList.remove('is-previewing');
+}
+
+/**
+ * Put the frame for this position into the card.
+ *
+ * Loaded through an Image probe rather than assigned to background-image
+ * directly, so a frame that has not been generated yet leaves the box empty
+ * instead of flashing a broken image. `wanted` guards against a slow frame
+ * landing after the cursor has already moved somewhere else.
+ */
+function showPreviewFrame(fraction, total) {
+  const frame = el('preview-frame');
+  const thumbs = ctx?.thumbs;
+  if (!frame || !thumbs || !thumbs.interval) return;
+  if (!Number.isFinite(total) || total <= 0) return;
+
+  const index = Math.min(
+    frameIndex(fraction * total, thumbs.interval),
+    Math.max(0, thumbs.total - 1)
+  );
+  thumbs.wanted = index;
+
+  const known = thumbs.frames.get(index);
+  if (known === 'missing') { frame.style.backgroundImage = ''; return; }
+
+  const url = api.thumbUrl(ctx.filePath, index);
+  if (known === 'ok') { frame.style.backgroundImage = `url("${url}")`; return; }
+
+  const probe = new Image();
+  probe.onload = () => {
+    thumbs.frames.set(index, 'ok');
+    if (ctx?.thumbs === thumbs && thumbs.wanted === index) {
+      frame.style.backgroundImage = `url("${url}")`;
+    }
+  };
+  probe.onerror = () => {
+    // Remembered so a partially generated file does not re-request the same
+    // missing frame on every pixel of cursor movement.
+    thumbs.frames.set(index, 'missing');
+    if (ctx?.thumbs === thumbs && thumbs.wanted === index) frame.style.backgroundImage = '';
+  };
+  probe.src = url;
+}
+
+/**
+ * Thumbnail availability for the open file.
+ *
+ * Absent, still generating, or a missing individual frame all land on the same
+ * behaviour: the card shows its timestamp and no picture. Nothing here can fail
+ * in a way the user has to see.
+ */
+async function loadThumbMeta() {
+  if (!ctx) return;
+  const thumbs = ctx.thumbs;
+
+  try {
+    const response = await fetch(api.thumbMetaUrl(ctx.filePath));
+    if (!response.ok) return;
+    const meta = await response.json();
+    if (!ctx || ctx.thumbs !== thumbs) return;
+
+    thumbs.interval = meta.interval;
+    thumbs.total = meta.total;
+    thumbs.ready = meta.ready;
+
+    // Frames that were missing a moment ago may exist now; forget those misses
+    // but keep the hits, which cannot become wrong.
+    for (const [index, status] of thumbs.frames) {
+      if (status === 'missing') thumbs.frames.delete(index);
+    }
+
+    // A file opened for the first time reports ready:false while ffmpeg works.
+    // Ask once more so sitting still eventually gets frames.
+    if (!thumbs.ready) ctx.thumbRetry = setTimeout(loadThumbMeta, 20000);
+  } catch {
+    // No thumbnails this session. The timestamp still works.
+  }
 }
 
 function setVolumeUi() {

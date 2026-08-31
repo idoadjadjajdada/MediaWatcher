@@ -131,11 +131,15 @@ export const subsUrl = (filePath, track) => {
 
 export const listSubtitles = (filePath) => get(`/api/subs?${q({ path: filePath, list: 1 })}`);
 
+export const thumbMetaUrl = (filePath) => `/api/thumbs/meta?${q({ path: filePath })}`;
+export const thumbUrl = (filePath, index) => `/api/thumbs?${q({ path: filePath, i: index })}`;
+
 export default {
   get, post, del, ApiError,
   health, getLibrary, rescan, refreshItem, getDiscover, getDiscoverDetail,
   searchTorrents, getSources, suggest,
   getJobs, startDownload, cancelJob,
   getContinueWatching, getProgressFor, saveProgress,
-  getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities
+  getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities,
+  thumbMetaUrl, thumbUrl
 };
