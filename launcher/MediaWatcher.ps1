@@ -289,6 +289,12 @@ function Start-ProgressFill {
     $target = $Track.ActualWidth * ($Percent / 100.0)
 
     $grow = New-Object System.Windows.Media.Animation.DoubleAnimation
+    # From is not optional here. A Border with no explicit width has Width =
+    # Double.NaN (Auto), and a To-only animation interpolates from the current
+    # value - NaN - which throws AnimationException on the render thread's
+    # animation tick. That is not catchable at the call site, so it took the
+    # whole launcher down, and the Closing handler took the server with it.
+    $grow.From = 0
     $grow.To = $target
     $grow.Duration = [TimeSpan]::FromMilliseconds(400)
     $grow.EasingFunction = $script:EaseOut
@@ -746,6 +752,24 @@ $window.Add_Loaded({
 })
 
 # Closing the window must never orphan the server.
+<#
+  A rendering fault must not cost you the server.
+
+  Animation exceptions surface on the render thread's tick, not at the call
+  site, so no try/catch around the code that started them can help. Left
+  unhandled they terminate the app - and the Closing handler below then stops
+  the server, so a cosmetic bug in a progress bar killed playback.
+
+  Marking them handled keeps the launcher alive and puts the fault in the log
+  where it can be seen and fixed.
+#>
+$window.Dispatcher.add_UnhandledException({
+  param($dispatcherSource, $dispatcherEvent)
+  $ex = $dispatcherEvent.Exception
+  Write-MwQueueNotice $script:OutputQueue ("UI error (recovered): " + $ex.GetType().Name + " - " + $ex.Message)
+  $dispatcherEvent.Handled = $true
+})
+
 $window.Add_Closing({
   $timer.Stop()
   foreach ($handle in $script:FixHandles) { Stop-MwHandle $handle }
