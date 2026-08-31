@@ -213,6 +213,13 @@ const config = {
   // Playback. ffmpeg is an external binary, not an npm dependency. It is only
   // used when the browser cannot decode a file as it sits on disk: compatible
   // files are still served as raw bytes with zero processing.
+  // Browser-native MP4s cached on disk. Playing from one is byte-range
+  // seekable, which is the only way to get instant seeking - an ffmpeg pipe
+  // has no byte offsets. Sources are never touched or replaced.
+  mp4Cache: {
+    enabled: str('MP4_CACHE_ENABLED', '1') !== '0'
+  },
+
   ffmpeg: {
     enabled: str('FFMPEG_ENABLED', '1') !== '0',
     ffmpegPath: str('FFMPEG_PATH', 'ffmpeg'),

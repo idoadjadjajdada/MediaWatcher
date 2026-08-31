@@ -210,12 +210,14 @@ async function openInner(filePath) {
   }
 
   // A tone-mapped file is a transcode, but saying so alone reads as an
-  // unexplained quality loss. Name the actual reason instead.
-  const modeLabel = info && info.mode !== 'direct'
-    ? (info.tonemapped
-      ? `HDR → SDR${info.tonemap_height ? ` · ${info.tonemap_height}p` : ''}`
-      : `${info.mode === 'remux' ? 'Remux' : info.mode === 'remux-audio' ? 'Audio remux' : 'Transcode'}${info.lossless ? ' · lossless' : ''}`)
-    : null;
+  // unexplained quality loss. Name the actual reason instead. A cached MP4 is
+  // the good case - native seeking, no ffmpeg - so it says so rather than
+  // borrowing the word "transcode" from the path it replaced.
+  const modeLabel = !info || info.mode === 'direct' ? null
+    : info.mode === 'cached-copy' ? 'Cached · lossless'
+    : info.mode === 'cached-h264' ? 'Cached · 1080p'
+    : info.tonemapped ? `HDR → SDR${info.tonemap_height ? ` · ${info.tonemap_height}p` : ''}`
+    : `${info.mode === 'remux' ? 'Remux' : info.mode === 'remux-audio' ? 'Audio remux' : 'Transcode'}${info.lossless ? ' · lossless' : ''}`;
 
   // The probe, progress and subtitle lookups are done; tear the old one down
   // now so the gap is a single synchronous swap rather than a network round

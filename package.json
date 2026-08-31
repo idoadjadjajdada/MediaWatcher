@@ -11,7 +11,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node tests/search-resolution.test.mjs && node tests/tmdb-suggest.test.mjs && node tests/discover.test.mjs && node tests/player-nextup.test.mjs && node tests/player-gestures.test.mjs && node tests/audio-offset.test.mjs && node tests/picture.test.mjs && node tests/episode-rows.test.mjs && node tests/seek-preview.test.mjs && node tests/thumbnails.test.mjs && node tests/tonemap.test.mjs && node tests/continue-watching.test.mjs",
+    "test": "node tests/search-resolution.test.mjs && node tests/tmdb-suggest.test.mjs && node tests/discover.test.mjs && node tests/player-nextup.test.mjs && node tests/player-gestures.test.mjs && node tests/audio-offset.test.mjs && node tests/picture.test.mjs && node tests/episode-rows.test.mjs && node tests/seek-preview.test.mjs && node tests/thumbnails.test.mjs && node tests/tonemap.test.mjs && node tests/continue-watching.test.mjs && node tests/mp4cache.test.mjs",
     "ui-check": "node tests/ui-check.mjs",
     "ui-player": "node tests/ui-player.mjs"
   },
