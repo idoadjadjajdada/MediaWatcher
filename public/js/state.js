@@ -154,6 +154,18 @@ export function seasonNumbers(show) {
 }
 
 /**
+ * Shrink a TMDB still to sidebar size.
+ *
+ * The scanner builds stills at backdrop size (w1280) because the detail modal
+ * wants them big. The sidebar shows them at about 92px, so serving w1280 there
+ * would pull several megabytes to draw a list of thumbnails.
+ */
+export function stillThumb(url) {
+  if (!url) return null;
+  return String(url).replace(/\/t\/p\/(w\d+|original)\//, '/t/p/w300/');
+}
+
+/**
  * One season's episodes, shaped for the sidebar.
  *
  * Episodes with no file are kept rather than filtered: a gap in the library
@@ -176,7 +188,9 @@ export function episodeRows(show, seasonNumber, currentSeason, currentEpisode) {
         title: episode.title || '',
         filePath: file ? file.file_path : null,
         playable: Boolean(file),
-        current: season.number === currentSeason && episode.episode_number === currentEpisode
+        current: season.number === currentSeason && episode.episode_number === currentEpisode,
+        still: stillThumb(episode.still),
+        overview: episode.overview || ''
       };
     });
 }

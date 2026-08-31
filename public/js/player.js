@@ -200,6 +200,12 @@ async function openInner(filePath) {
 
   setState({ player: { open: true, src: filePath, subs: ctx.tracks, resumeAt } });
 
+  // The player is position:fixed, so the page behind it keeps its full scroll
+  // height and the browser paints a scrollbar that moves nothing visible.
+  // Remember where the page was, because locking and unlocking loses it.
+  ctx.scrollY = window.scrollY;
+  document.documentElement.classList.add('is-player-open');
+
   ctx.video.style.filter = pictureFilter(ctx.picture);
   ctx.epSeason = ctx.located?.type === 'episode' ? ctx.located.season : null;
   ctx.thumbs = { interval: 0, total: 0, ready: false, wanted: -1, frames: new Map() };
@@ -234,6 +240,11 @@ export async function close({ save = true } = {}) {
 
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   root().innerHTML = '';
+
+  const restoreTo = ctx.scrollY || 0;
+  document.documentElement.classList.remove('is-player-open');
+  window.scrollTo(0, restoreTo);
+
   ctx = null;
 
   setState({ player: { open: false, src: '', subs: null, resumeAt: 0, audioOffset: 0 } });
@@ -642,6 +653,15 @@ function buildEpisodes() {
   if (arrow) arrow.hidden = !hasEpisodes();
   if (!hasEpisodes()) return;
 
+  // Stop the panel above the control bar so the settings buttons and
+  // fullscreen stay reachable while it is open. Measured rather than hardcoded
+  // so it keeps working if the bar's contents ever change height.
+  const controls = ctx.node.querySelector('.player__controls');
+  if (controls) {
+    const height = Math.round(controls.getBoundingClientRect().height);
+    if (height > 0) ctx.node.style.setProperty('--controls-h', `${height}px`);
+  }
+
   const show = ctx.located.item;
   const seasons = seasonNumbers(show);
   const selected = ctx.epSeason ?? ctx.located.season;
@@ -660,8 +680,16 @@ function buildEpisodes() {
     : rows.map((row) => `
       <button class="player__ep-row${row.current ? ' is-current' : ''}${row.playable ? '' : ' is-missing'}"
         ${row.playable ? `data-action="play-episode" data-path="${esc(row.filePath)}"` : 'disabled'}>
-        <span class="player__ep-tag t-num">${esc(episodeTag(row.season, row.episode_number))}</span>
-        <span class="player__ep-name">${esc(row.title || 'Untitled')}</span>
+        <span class="player__ep-still">
+          ${row.still ? `<img src="${esc(row.still)}" alt="" loading="lazy">` : ''}
+          <span class="player__ep-num t-num">${row.episode_number}</span>
+          ${row.current ? '<span class="player__ep-now"></span>' : ''}
+        </span>
+        <span class="player__ep-text">
+          <span class="player__ep-name">${esc(row.title || 'Untitled')}</span>
+          ${row.overview ? `<span class="player__ep-desc">${esc(row.overview)}</span>` : ''}
+          ${row.playable ? '' : '<span class="player__ep-desc">Not in your library</span>'}
+        </span>
       </button>`).join('');
 }
 
@@ -671,16 +699,20 @@ export function toggleEpisodes() {
   closePopovers();
   const opening = panel.hidden;
   panel.hidden = !opening;
+  ctx.node.classList.toggle('is-episodes-open', opening);
   if (opening) {
     ctx.epSeason = ctx.located.season;
     buildEpisodes();
     el('ep-list')?.querySelector('.is-current')?.scrollIntoView({ block: 'center' });
+    // With nine seasons the active tab is often off the end of the strip.
+    el('ep-tabs')?.querySelector('.is-active')?.scrollIntoView({ block: 'nearest', inline: 'center' });
   }
 }
 
 export function closeEpisodes() {
   const panel = el('ep-panel');
   if (panel) panel.hidden = true;
+  ctx?.node.classList.remove('is-episodes-open');
 }
 
 export function selectSeason(number) {
@@ -949,6 +981,22 @@ function attach() {
     if (input.id !== 'brightness' && input.id !== 'contrast') return;
     setPicture({ ...ctx.picture, [input.id]: Number(input.value) });
   });
+
+  /**
+   * Let a vertical wheel scroll the season strip sideways.
+   *
+   * The strip is a horizontal overflow container, but a mouse wheel only emits
+   * deltaY, so without this it looked scrollable and refused to move. deltaX is
+   * preferred when a trackpad supplies it.
+   */
+  el('ep-tabs').addEventListener('wheel', (event) => {
+    const strip = event.currentTarget;
+    if (strip.scrollWidth <= strip.clientWidth) return;
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    if (!delta) return;
+    event.preventDefault();
+    strip.scrollLeft += delta;
+  }, { passive: false });
 
   /**
    * Dismiss panels on an outside click.

@@ -3,7 +3,7 @@
  *
  * Run: node tests/episode-rows.test.mjs
  */
-import { episodeRows, seasonNumbers } from '../public/js/state.js';
+import { episodeRows, seasonNumbers, stillThumb } from '../public/js/state.js';
 
 let total = 0;
 let failures = 0;
@@ -17,7 +17,10 @@ const show = {
   title: 'Rick and Morty',
   seasons: [
     { number: 2, episodes: [
-      { episode_number: 2, title: 'Mortynight Run', files: [{ file_path: '/lib/s2e2.mkv' }] },
+      {
+        episode_number: 2, title: 'Mortynight Run', files: [{ file_path: '/lib/s2e2.mkv' }],
+        still: 'https://image.tmdb.org/t/p/w1280/abc.jpg', overview: 'Rick and Morty go to a place.'
+      },
       { episode_number: 1, title: 'A Rickle in Time', files: [{ file_path: '/lib/s2e1.mkv' }] },
       { episode_number: 3, title: 'Auto Erotic', files: [] }
     ] },
@@ -27,6 +30,20 @@ const show = {
     { number: 3, episodes: [] }
   ]
 };
+
+console.log('\nstillThumb');
+// The scanner builds stills at backdrop size (w1280). A sidebar row shows them
+// at ~92px, so serving w1280 would pull megabytes for a list of thumbnails.
+check('downsizes a w1280 still',
+  stillThumb('https://image.tmdb.org/t/p/w1280/abc.jpg') === 'https://image.tmdb.org/t/p/w300/abc.jpg');
+check('downsizes any numeric size',
+  stillThumb('https://image.tmdb.org/t/p/w780/abc.jpg') === 'https://image.tmdb.org/t/p/w300/abc.jpg');
+check('downsizes original',
+  stillThumb('https://image.tmdb.org/t/p/original/abc.jpg') === 'https://image.tmdb.org/t/p/w300/abc.jpg');
+check('leaves an unrecognised url alone',
+  stillThumb('https://example.com/pic.jpg') === 'https://example.com/pic.jpg');
+check('null gives null', stillThumb(null) === null);
+check('empty string gives null', stillThumb('') === null);
 
 console.log('\nseasonNumbers');
 check('sorts ascending', JSON.stringify(seasonNumbers(show)) === '[1,2,3]');
@@ -48,6 +65,12 @@ check('an episode with no file has a null path', s2[2].filePath === null);
 check('marks the current episode', s2[1].current === true);
 check('does not mark the others', s2[0].current === false && s2[2].current === false);
 
+check('carries a downsized still',
+  s2[1].still === 'https://image.tmdb.org/t/p/w300/abc.jpg');
+check('carries the overview', s2[1].overview === 'Rick and Morty go to a place.');
+check('a missing still is null', s2[0].still === null);
+check('a missing overview is an empty string', s2[0].overview === '');
+
 // The current episode is S02E02, so nothing in season 1 may be marked -
 // matching on episode number alone would light up S01E01 against S02E01.
 const s1 = episodeRows(show, 1, 2, 1);
@@ -62,7 +85,9 @@ check('every row carries the full shape', s2.every((row) =>
   typeof row.title === 'string' &&
   (row.filePath === null || typeof row.filePath === 'string') &&
   typeof row.playable === 'boolean' &&
-  typeof row.current === 'boolean'));
+  typeof row.current === 'boolean' &&
+  (row.still === null || typeof row.still === 'string') &&
+  typeof row.overview === 'string'));
 
 console.log('');
 if (failures === 0) {

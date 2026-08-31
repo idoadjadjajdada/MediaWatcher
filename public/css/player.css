@@ -1,6 +1,13 @@
 /* Player chrome. */
 
 .player { position: fixed; inset: 0; z-index: var(--z-player); background: #000; }
+
+/* The player is fixed, so the page behind it keeps its full scroll height and
+   the browser paints a scrollbar that moves nothing you can see. Locking both
+   elements is deliberate: whichever one is the scrolling box varies, and
+   locking only <body> leaves the bar on <html> in some layouts. */
+html.is-player-open,
+html.is-player-open body { overflow: hidden; }
 .player__video {
   width: 100%; height: 100%; object-fit: contain; background: #000;
   /* Stops the browser's own double-tap-to-zoom fighting the seek gesture. */
@@ -77,6 +84,11 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, .6);
   transform: scale(.72); transition: transform var(--state);
 }
+/* The scrub bar paints its own knob (.player__knob) above the landing band, so
+   the native thumb here would just be a second dot underneath it. Kept at full
+   size and merely invisible, because it is still the drag target. */
+.player__scrub .range::-webkit-slider-thumb { background: transparent; box-shadow: none; }
+.player__scrub .range::-moz-range-thumb { background: transparent; box-shadow: none; }
 .range:hover::-webkit-slider-thumb,
 .range:active::-webkit-slider-thumb,
 .range:focus-visible::-webkit-slider-thumb { transform: scale(1); }
@@ -215,9 +227,9 @@
   position: absolute; right: 0; top: 50%; transform: translateY(-50%);
   z-index: 3;
   display: grid; place-items: center;
-  width: 34px; height: 72px;
+  width: 30px; height: 76px;
   border: 1px solid var(--line); border-right: 0;
-  border-radius: var(--radius) 0 0 var(--radius);
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
   background: var(--surface); color: var(--fg-2);
   cursor: pointer;
   transition: opacity var(--state), background var(--state), color var(--state);
@@ -225,50 +237,112 @@
 .player__eparrow:hover { background: var(--surface-2); color: var(--fg); }
 .player__eparrow[hidden] { display: none; }
 .player.is-idle .player__eparrow { opacity: 0; pointer-events: none; }
+/* The panel is inset from the right edge, so an arrow pinned at right:0 leaves
+   a sliver poking out beside it. Nothing to point at while it is open anyway. */
+.player.is-episodes-open .player__eparrow { opacity: 0; pointer-events: none; }
 
+/* Inset from the edges so it reads as a floating panel and can round on all
+   four corners rather than only the two facing inward. */
 .player__episodes {
-  position: absolute; right: 0; top: 0; bottom: 0; z-index: 4;
-  width: min(360px, 86vw);
-  display: flex; flex-direction: column;
-  background: var(--surface); border-left: 1px solid var(--line);
+  position: absolute; z-index: 4;
+  top: var(--space-3); right: var(--space-3);
+  /* Clears the control bar, so the settings buttons and fullscreen stay
+     reachable with the panel open. player.js measures the bar and writes
+     --controls-h; the fallback is its height at the time of writing. */
+  bottom: calc(var(--controls-h, 143px) + var(--space-2));
+  width: min(380px, calc(100vw - var(--space-6)));
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
 }
 .player__episodes[hidden] { display: none; }
 
 .player__ep-head {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-3) var(--space-2);
 }
-.player__ep-title { font-weight: 600; }
+.player__ep-title {
+  font-weight: 700; font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.player__ep-head .player__btn { border-radius: var(--radius-pill); }
+
+/* Horizontal strip. A wheel handler in player.js maps deltaY onto scrollLeft,
+   because a mouse only emits deltaY and the strip would otherwise look
+   scrollable and refuse to move. */
 .player__ep-tabs {
-  display: flex; gap: var(--space-1); overflow-x: auto;
+  display: flex; gap: 6px; overflow-x: auto; flex: none;
   padding: 0 var(--space-3) var(--space-3);
-  scrollbar-width: none;
+  scrollbar-width: none; overscroll-behavior-x: contain;
 }
 .player__ep-tabs::-webkit-scrollbar { display: none; }
 .player__ep-tab {
-  flex: none; min-width: 44px; height: 44px;
-  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  flex: none; min-width: 46px; height: 32px; padding: 0 var(--space-3);
+  border: 1px solid var(--line); border-radius: var(--radius-pill);
   background: transparent; color: var(--fg-2);
   font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: background var(--state), color var(--state), border-color var(--state);
 }
 .player__ep-tab:hover { background: var(--surface-2); color: var(--fg); }
 .player__ep-tab.is-active { background: var(--fg); color: #000; border-color: var(--fg); }
 
-.player__ep-list { flex: 1; overflow-y: auto; padding: 0 var(--space-2) var(--space-3); }
+.player__ep-list {
+  flex: 1; overflow-y: auto; overscroll-behavior: contain;
+  padding: 0 var(--space-2) var(--space-2);
+  display: flex; flex-direction: column; gap: 2px;
+}
+
 .player__ep-row {
-  display: flex; align-items: center; gap: var(--space-2);
-  width: 100%; min-height: 44px; padding: var(--space-2);
-  border: 0; border-radius: var(--radius-sm);
+  display: flex; align-items: flex-start; gap: var(--space-3);
+  width: 100%; padding: var(--space-2);
+  border: 0; border-radius: var(--radius);
   background: transparent; color: var(--fg); text-align: left;
-  font-size: 12px; line-height: 1.3; cursor: pointer;
+  cursor: pointer; transition: background var(--state);
 }
 .player__ep-row:hover:not(:disabled) { background: var(--surface-2); }
-.player__ep-row.is-current { background: var(--fg); color: #000; font-weight: 700; }
-.player__ep-row.is-current .player__ep-tag { opacity: .78; }
-.player__ep-row.is-missing { opacity: .38; cursor: default; }
-.player__ep-tag { flex: none; opacity: .68; font-size: 12px; }
-.player__ep-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player__ep-row.is-current { background: var(--surface-2); }
+.player__ep-row.is-missing { cursor: default; }
+.player__ep-row.is-missing .player__ep-still,
+.player__ep-row.is-missing .player__ep-name { opacity: .42; }
+
+/* 16:9 still with the episode number sitting on it, so the number never costs
+   a column of its own in a 380px panel. */
+.player__ep-still {
+  position: relative; flex: none;
+  width: 104px; aspect-ratio: 16 / 9;
+  border-radius: var(--radius-sm); overflow: hidden;
+  background: var(--surface-2);
+}
+.player__ep-still img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.player__ep-num {
+  position: absolute; left: 4px; bottom: 3px;
+  padding: 1px 5px; border-radius: var(--radius-pill);
+  background: rgba(0, 0, 0, .72); color: #fff;
+  font-size: 10px; font-weight: 700; line-height: 1.5;
+}
+/* A dot rather than inverting the whole row: the row is already tinted, and
+   inverting it fought the still sitting inside it. */
+.player__ep-now {
+  position: absolute; right: 5px; top: 5px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--fg); box-shadow: 0 0 0 2px rgba(0, 0, 0, .55);
+}
+
+.player__ep-text {
+  min-width: 0; padding-top: 1px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.player__ep-name {
+  font-size: 12px; font-weight: 600; line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.player__ep-row.is-current .player__ep-name { font-weight: 700; }
+.player__ep-desc {
+  font-size: 11px; line-height: 1.4; color: var(--fg-3);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
 /* ---- seek preview ----
    A native range input cannot carry a second thumb, so the ball and band are a
@@ -304,23 +378,54 @@
   width: calc((var(--fill, 0) - var(--preview, 0)) * 1%);
 }
 
+/* Where playback actually is. Drawn here rather than left to the input's
+   native thumb, which paints at z-index 2 - underneath the landing band, so
+   the band swallowed its right half whenever you hovered ahead of it. */
+.player__knob {
+  position: absolute; pointer-events: none;
+  top: 50%; z-index: 5;
+  left: calc(var(--fill, 0) * 1%);
+  width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
+  border-radius: 50%;
+  background: var(--fg);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .6);
+  transform: scale(.72); transition: transform var(--state);
+}
+.player__scrub:hover .player__knob,
+.player__scrub:focus-within .player__knob { transform: scale(1); }
+
 .player__ball {
   top: 50%; z-index: 4;
   left: calc(var(--preview, 0) * 1%);
   width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, .45);
+  background: rgba(255, 255, 255, .5);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, .45);
 }
 
 .player__card {
-  bottom: calc(100% + 10px); left: 0; z-index: 4;
+  bottom: calc(100% + 10px); left: 0; z-index: 6;
   width: 168px; padding: 4px;
-  border-radius: var(--radius); background: var(--surface);
+  border-radius: var(--radius-lg); background: var(--surface);
   border: 1px solid var(--line); box-shadow: var(--shadow);
 }
 .player__card-frame {
-  width: 160px; height: 90px; border-radius: var(--radius-sm);
+  width: 160px; height: 90px; border-radius: var(--radius);
   background: var(--surface-2) center / cover no-repeat;
 }
 .player__card-time { text-align: center; padding: 4px 0 2px; font-size: 11px; color: var(--fg-2); }
+
+/* ---- rounding pass ----
+   Everything in the player chrome that could take a radius and did not. */
+.player__pop-panel { border-radius: var(--radius-lg); }
+.player__btn { border-radius: var(--radius-pill); }
+.player__menu-item { border-radius: var(--radius); }
+.audiodelay__step { border-radius: var(--radius); }
+.audiodelay__reset { border-radius: var(--radius-pill); }
+#popover-picture .audiodelay__reset { border-radius: var(--radius); }
+.next-up { border-radius: var(--radius-lg); }
+.player__ripple--l { border-radius: 0 var(--radius-lg) var(--radius-lg) 0; }
+.player__ripple--r { border-radius: var(--radius-lg) 0 0 var(--radius-lg); }
+.player__mode { border-radius: var(--radius-pill); }
+/* The volume slider reads as a pill at this height. */
+.range--vol::-webkit-slider-runnable-track { border-radius: var(--radius-pill); }

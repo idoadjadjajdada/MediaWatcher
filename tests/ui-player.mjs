@@ -150,6 +150,18 @@ if (!(await openFirst('episode'))) {
   await page.keyboard.press('Escape');
   await page.waitForTimeout(120);
 
+  console.log('\npage scroll');
+  // The player is fixed, so without a lock the page behind keeps its scroll
+  // height and paints a scrollbar that moves nothing you can see.
+  const scroll = await page.evaluate(() => ({
+    locked: document.documentElement.classList.contains('is-player-open'),
+    htmlOverflow: getComputedStyle(document.documentElement).overflow,
+    bodyOverflow: getComputedStyle(document.body).overflow
+  }));
+  check('the page is scroll-locked behind the player', scroll.locked === true);
+  check('no scrollbar can appear on either scrolling box',
+    scroll.htmlOverflow === 'hidden' && scroll.bodyOverflow === 'hidden', scroll);
+
   console.log('\nepisode sidebar');
   const arrow = await page.$eval('#ep-arrow', (el) => ({
     hidden: el.hidden, ...el.getBoundingClientRect().toJSON()
@@ -168,7 +180,11 @@ if (!(await openFirst('episode'))) {
   }));
   check('the sidebar opens', panel.hidden === false);
   check('the sidebar has real width', panel.width > 200, panel);
-  check('the sidebar is flush right', Math.abs(panel.right - 1440) < 2, { right: panel.right });
+  // Inset from the edge rather than flush, so it can round on all four corners.
+  check('the sidebar is inset from the right edge',
+    panel.right < 1440 && (1440 - panel.right) <= 24, { gap: 1440 - panel.right });
+  check('the sidebar is rounded',
+    (await page.$eval('#ep-panel', (el) => parseFloat(getComputedStyle(el).borderRadius))) >= 8);
 
   const rows = await page.$$eval('.player__ep-row', (nodes) => nodes.map((n) => ({
     current: n.classList.contains('is-current'),
@@ -181,12 +197,66 @@ if (!(await openFirst('episode'))) {
   check('no episode row collapses',
     rows.every((r) => r.w > 0 && r.h >= 44), rows.slice(0, 4));
 
+  const art = await page.evaluate(() => {
+    const imgs = [...document.querySelectorAll('.player__ep-still img')];
+    return {
+      rows: document.querySelectorAll('.player__ep-row').length,
+      images: imgs.length,
+      loaded: imgs.filter((i) => i.complete && i.naturalWidth > 0).length,
+      oversized: imgs.filter((i) => /\/t\/p\/(w[5-9]\d\d|w1\d\d\d|original)\//.test(i.src)).length,
+      descriptions: document.querySelectorAll('.player__ep-desc').length,
+      numbers: document.querySelectorAll('.player__ep-num').length
+    };
+  });
+  check('episode rows carry cover art', art.images > 0, art);
+  check('every still actually loads', art.images === art.loaded, art);
+  check('stills are requested at thumbnail size, not backdrop size',
+    art.oversized === 0, { oversized: art.oversized });
+  check('episode rows carry a description', art.descriptions > 0, art);
+  check('every row shows its episode number', art.numbers === art.rows, art);
+
+  // The panel is inset from the bottom so the control bar stays usable. If it
+  // covered the buttons, fullscreen and every setting would be unreachable
+  // while the sidebar is open.
+  const reachable = await page.evaluate(() => {
+    const hit = (selector) => {
+      const el = document.querySelector(selector);
+      const r = el.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return el.contains(top) || el === top;
+    };
+    return {
+      fullscreen: hit('[data-action="toggle-fullscreen"]'),
+      picture: hit('[data-popover="picture"]'),
+      play: hit('[data-action="toggle-play"]')
+    };
+  });
+  check('the control bar stays reachable with the sidebar open',
+    reachable.fullscreen && reachable.picture && reachable.play, reachable);
+
   const tabs = await page.$$eval('.player__ep-tab', (nodes) => nodes.map((n) => ({
     active: n.classList.contains('is-active'), w: n.getBoundingClientRect().width
   })));
   check('season tabs render', tabs.length > 0, { tabs: tabs.length });
   check('exactly one tab is active', tabs.filter((t) => t.active).length === 1);
   check('no tab collapses', tabs.every((t) => t.w >= 40), tabs.slice(0, 4));
+
+  // The strip overflows, and a mouse only emits deltaY - without the wheel
+  // handler it looks scrollable and refuses to move.
+  const strip = await page.evaluate(() => {
+    const t = document.getElementById('ep-tabs');
+    return { overflows: t.scrollWidth > t.clientWidth, before: t.scrollLeft };
+  });
+  if (strip.overflows) {
+    const tabsBox = await (await page.$('#ep-tabs')).boundingBox();
+    await page.mouse.move(tabsBox.x + tabsBox.width / 2, tabsBox.y + tabsBox.height / 2);
+    await page.mouse.wheel(0, 240);
+    await page.waitForTimeout(300);
+    const after = await page.evaluate(() => document.getElementById('ep-tabs').scrollLeft);
+    check('a wheel scrolls the season strip sideways', after > strip.before,
+      { before: strip.before, after });
+    await page.evaluate(() => { document.getElementById('ep-tabs').scrollLeft = 0; });
+  }
 
   if (tabs.length > 1) {
     // Picking a season rebuilds the tab strip, detaching the clicked button.
@@ -262,6 +332,18 @@ if (!(await openFirst('episode'))) {
   check('--preview follows the cursor',
     Math.abs(p.preview - aheadAt * 100) < 2, { preview: p.preview, expected: aheadAt * 100 });
   check('the ball is visible', p.ballOpacity > 0.5, p.ballOpacity);
+
+  // The band paints above the range input, so the input's native thumb ends up
+  // underneath it and gets its right half swallowed. The scrub bar draws its
+  // own knob above the band instead.
+  const knob = await page.evaluate(() => {
+    const z = (id) => Number(getComputedStyle(document.getElementById(id)).zIndex);
+    const k = document.getElementById('seek-knob').getBoundingClientRect();
+    return { knobZ: z('seek-knob'), bandZ: z('preview-band'), w: k.width, h: k.height };
+  });
+  check('the position knob paints above the landing band',
+    knob.knobZ > knob.bandZ, knob);
+  check('the knob has real size', knob.w > 0 && knob.h > 0, knob);
   check('the ball sits under the cursor',
     Math.abs(p.ballCentre - (p.trackLeft + p.trackWidth * aheadAt)) < 6, { ballCentre: p.ballCentre });
   check('the band renders ahead of playback',
