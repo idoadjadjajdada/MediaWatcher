@@ -286,20 +286,32 @@ if (!(await openFirst('episode'))) {
   console.log('\nseek preview');
   const box = await (await page.$('#scrub')).boundingBox();
 
-  await page.evaluate(() => document.getElementById('player-video').pause());
-  await page.waitForTimeout(400);
-
   /**
-   * Where playback currently is, as a percentage.
+   * Pin playback position deterministically.
    *
-   * Read live rather than pinned. tick() rewrites --fill from the real
-   * position, so any value this test forces can be overwritten a frame later -
-   * which is exactly what made the band-direction check flaky. Deriving the
-   * hover targets from the live value instead means the assertion holds
-   * wherever playback happens to be.
+   * The band's direction depends on where --fill is, and two earlier attempts
+   * at this were flaky for opposite reasons: pinning a value while the video
+   * still played let tick() overwrite it, and reading the live value meant the
+   * test depended on how far a 4K stream happened to have buffered (it can sit
+   * at 0 for seven seconds, which makes "hover behind playback" impossible).
+   *
+   * Pausing first stops tick() firing at all - it runs on timeupdate, and the
+   * pause event fires it one last time - so a value written after the settle
+   * stays put.
    */
-  const liveFill = () => page.evaluate(
-    () => Number(document.getElementById('scrub').style.getPropertyValue('--fill')) || 0);
+  await page.evaluate(() => document.getElementById('player-video').pause());
+  await page.waitForTimeout(500);
+  const PINNED_FILL = 40;
+  const pinFill = async () => {
+    await page.evaluate((value) => {
+      document.getElementById('scrub').style.setProperty('--fill', value.toFixed(2));
+      document.getElementById('seek').style.setProperty('--fill', value.toFixed(2));
+    }, PINNED_FILL);
+    return page.evaluate(
+      () => Number(document.getElementById('scrub').style.getPropertyValue('--fill')) || 0);
+  };
+  check('playback position can be pinned for the band checks',
+    (await pinFill()) === PINNED_FILL);
 
   const readPreview = () => page.evaluate(() => {
     const node = document.getElementById('scrub');
@@ -322,7 +334,7 @@ if (!(await openFirst('episode'))) {
   });
 
   // Halfway between playback and the right-hand end: always ahead of --fill.
-  const fillAhead = await liveFill();
+  const fillAhead = await pinFill();
   const aheadAt = (fillAhead + (100 - fillAhead) / 2) / 100;
   await page.mouse.move(box.x + box.width * aheadAt, box.y + box.height / 2);
   await page.waitForTimeout(180);
@@ -372,7 +384,7 @@ if (!(await openFirst('episode'))) {
     painted === 'none' || painted.includes('/api/thumbs'), painted.slice(0, 80));
 
   // Halfway between the left-hand end and playback: always behind --fill.
-  const fillBehind = await liveFill();
+  const fillBehind = await pinFill();
   const behindAt = (fillBehind / 2) / 100;
   await page.mouse.move(box.x + box.width * behindAt, box.y + box.height / 2);
   await page.waitForTimeout(180);

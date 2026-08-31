@@ -150,6 +150,16 @@ function currentHashPage() {
 }
 
 function onHashChange() {
+  const raw = window.location.hash.replace(/^#/, '').trim();
+
+  // The player is its own screen and owns the hash while it is up. Leaving
+  // that hash by any route - Back, a typed URL, a nav click - closes it rather
+  // than swapping the page out from underneath it.
+  if (raw === player.PLAYER_HASH) return;
+  // Not awaited: the page behind should update immediately, and the only thing
+  // close() still has to do is save progress.
+  if (player.isOpen()) player.close({ save: true });
+
   const page = currentHashPage();
   if (page !== state.currentPage) setState({ currentPage: page });
 }
@@ -585,6 +595,13 @@ async function boot() {
   document.addEventListener('input', onClick);
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('error', onResourceError, true);
+
+  // A reload while the player was up leaves #player in the address bar with no
+  // player behind it. Nothing can restore one - the file is not in the hash -
+  // so drop back to a real page rather than showing Home under a stale route.
+  if (window.location.hash.replace(/^#/, '').trim() === player.PLAYER_HASH) {
+    window.location.replace(`${window.location.pathname}${window.location.search}#home`);
+  }
 
   state.currentPage = currentHashPage();
   previousPage = state.currentPage;

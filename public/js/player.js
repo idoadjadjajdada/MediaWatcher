@@ -49,7 +49,14 @@ const SKIP_SECONDS = 10;
 export const DOUBLE_TAP_MS = 300;
 
 /** Nudge sizes for the audio delay control. Cumulative, not absolute. */
-export const AUDIO_OFFSET_STEPS = [-5, -1, -0.5, -0.1, -0.05, 0.05, 0.1, 0.5, 1, 5];
+/**
+ * Nudge sizes for the audio delay control.
+ *
+ * No +/-5s any more: nothing in the library is out by that much, and the coarse
+ * steps crowded out the fine ones you actually converge with. 0.01s is the
+ * finest the offset can express - applyAudioOffset rounds to two decimals.
+ */
+export const AUDIO_OFFSET_STEPS = [-1, -0.5, -0.1, -0.05, -0.01, 0.01, 0.05, 0.1, 0.5, 1];
 const MAX_AUDIO_OFFSET = 30;
 
 /**
@@ -103,6 +110,35 @@ export function secondsRemaining(total, current) {
 }
 
 const root = () => document.getElementById('player-root');
+
+/* --------------------------------------------------------------------------
+ * Route
+ *
+ * The player is its own screen rather than an overlay sitting on whatever page
+ * you launched it from. It takes the #player hash while it is up and puts the
+ * old one back on the way out, so browser Back leaves the player instead of
+ * navigating the page underneath it.
+ * ----------------------------------------------------------------------- */
+
+export const PLAYER_HASH = 'player';
+
+let previousHash = '';
+/** Carried across an episode swap, where close() cannot restore it itself. */
+let pendingScrollY = null;
+
+function enterPlayerRoute() {
+  if (window.location.hash.replace(/^#/, '') === PLAYER_HASH) return;
+  previousHash = window.location.hash;
+  window.location.hash = PLAYER_HASH;
+}
+
+function exitPlayerRoute() {
+  if (window.location.hash.replace(/^#/, '') !== PLAYER_HASH) return;
+  // Assigning rather than going back: the player may have been opened from a
+  // deep link, in which case there is no history entry to return to.
+  window.location.hash = previousHash.replace(/^#/, '') || 'home';
+  previousHash = '';
+}
 const el = (id) => document.getElementById(id);
 
 /* --------------------------------------------------------------------------
@@ -141,7 +177,13 @@ export async function open(filePath) {
 }
 
 async function openInner(filePath) {
-  if (ctx) await close({ save: true });
+  // Everything slow happens BEFORE the old player is torn down.
+  //
+  // Closing first blanked the player and revealed whatever page was behind it,
+  // then sat there for the length of a probe, a progress lookup and a subtitle
+  // listing - a few hundred milliseconds of Home flashing up between episodes.
+  // Gathering first turns the swap into one synchronous innerHTML assignment.
+  const wasOpen = Boolean(ctx);
 
   const located = locateFile(filePath);
   const title = located
@@ -175,6 +217,11 @@ async function openInner(filePath) {
       : `${info.mode === 'remux' ? 'Remux' : info.mode === 'remux-audio' ? 'Audio remux' : 'Transcode'}${info.lossless ? ' · lossless' : ''}`)
     : null;
 
+  // The probe, progress and subtitle lookups are done; tear the old one down
+  // now so the gap is a single synchronous swap rather than a network round
+  // trip with the page behind showing through.
+  if (wasOpen) await close({ save: true, keepPage: true });
+
   root().innerHTML = renderPlayer({ title, subtitle, modeLabel, lossless: info?.lossless !== false });
 
   ctx = {
@@ -207,8 +254,12 @@ async function openInner(filePath) {
   // The player is position:fixed, so the page behind it keeps its full scroll
   // height and the browser paints a scrollbar that moves nothing visible.
   // Remember where the page was, because locking and unlocking loses it.
-  ctx.scrollY = window.scrollY;
+  // On an episode swap the lock never lifted, so window.scrollY is meaningless
+  // and the value handed over by the outgoing player is the real one.
+  ctx.scrollY = pendingScrollY ?? window.scrollY;
+  pendingScrollY = null;
   document.documentElement.classList.add('is-player-open');
+  enterPlayerRoute();
 
   ctx.video.style.filter = pictureFilter(ctx.picture);
   ctx.epSeason = ctx.located?.type === 'episode' ? ctx.located.season : null;
@@ -226,7 +277,14 @@ async function openInner(filePath) {
   document.addEventListener('keydown', onKeyDown);
 }
 
-export async function close({ save = true } = {}) {
+/**
+ * Tear the player down.
+ *
+ * `keepPage` is set when one episode is replacing another: the scroll lock and
+ * the route belong to "a player is on screen", which is still true across a
+ * swap. Releasing and reacquiring them mid-swap makes the page jump.
+ */
+export async function close({ save = true, keepPage = false } = {}) {
   if (!ctx) return;
 
   if (save) await persist(true);
@@ -242,14 +300,24 @@ export async function close({ save = true } = {}) {
   ctx.video.removeAttribute('src');
   ctx.video.load();
 
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  // Leaving fullscreen on an episode swap would drop you back to a window
+  // mid-binge. Only a real exit gives it up.
+  if (!keepPage && document.fullscreenElement) document.exitFullscreen().catch(() => {});
   root().innerHTML = '';
 
   const restoreTo = ctx.scrollY || 0;
+  ctx = null;
+
+  if (keepPage) {
+    // Hand the scroll position to the incoming player so it still restores
+    // correctly when that one is finally closed for real.
+    pendingScrollY = restoreTo;
+    return;
+  }
+
   document.documentElement.classList.remove('is-player-open');
   window.scrollTo(0, restoreTo);
-
-  ctx = null;
+  exitPlayerRoute();
 
   setState({ player: { open: false, src: '', subs: null, resumeAt: 0, audioOffset: 0 } });
 }

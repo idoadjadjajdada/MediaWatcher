@@ -192,12 +192,16 @@ html.is-player-open body { overflow: hidden; }
    to every one of them - the seek bar painted straight through the panel. */
 .player__pop-panel {
   position: absolute; bottom: calc(100% + var(--space-2)); right: 0; z-index: 10;
-  min-width: 220px; max-height: 46vh; overflow-y: auto;
+  min-width: 220px;
   padding: var(--space-3); border-radius: var(--radius);
   background: var(--surface); border: 1px solid var(--line);
   box-shadow: var(--shadow);
 }
 .player__pop-panel[hidden] { display: none; }
+/* Only the track list can be long enough to need scrolling. Picture, speed and
+   audio delay are fixed-size - capping them just put a scrollbar on a panel
+   that measured 175px against a 331px cap and never overflowed. */
+#popover-subs { max-height: 46vh; overflow-y: auto; }
 
 /* The rate button shows its value instead of an icon, so a stray 1.5x is
    visible without opening anything. */

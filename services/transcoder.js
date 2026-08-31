@@ -431,6 +431,15 @@ export function buildArgs(filePath, {
   // tried and A/B measured: none improved it and frag_duration made it worse
   // (751ms vs 633ms median). The lever is client-side, not here - see the seek
   // coalescing in player.js.
+  // Deliberately plain, and delay_moov is deliberately NOT here.
+  //
+  // It looked like a free win: it removes a stray 83ms edit offset on the video
+  // track and measured faster to first bytes (169ms vs 188ms). But it withholds
+  // the moov init segment until the first fragment, and a browser cannot start
+  // decoding without it - readyState stayed at HAVE_NOTHING indefinitely with
+  // no error raised. The byte-throughput benchmark could not see that, because
+  // the bytes did arrive; they were just unusable. The 83ms it would have fixed
+  // shifts audio and video equally, so lip sync is unaffected either way.
   args.push('-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', 'pipe:1');
   return args;
 }
