@@ -6,7 +6,7 @@
  * delegation on [data-action] — CSP forbids inline handlers, and delegation
  * means a re-render never leaves dead listeners behind.
  */
-import { state, recentlyAdded, activeJobCount, locateFile } from './state.js';
+import { state, activeJobCount, locateFile, continueEntry, watchState } from './state.js';
 
 /* --------------------------------------------------------------------------
  * Primitives
@@ -30,6 +30,7 @@ const ICONS = {
   download: '<path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
   refresh: '<path d="M20 11A8 8 0 1 0 12 20"/><path d="M20 5v6h-6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  check: '<path d="m4.5 12.5 5 5 10-11"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
   chevron: '<path d="m9 6 6 6-6 6"/>',
   back: '<path d="m15 18-6-6 6-6"/>',
@@ -38,8 +39,15 @@ const ICONS = {
   mute: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/>',
   fullscreen: '<path d="M3 9V5a2 2 0 0 1 2-2h4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M21 15v4a2 2 0 0 1-2 2h-4"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
-  back10: '<path d="M11 5 4 12l7 7"/><path d="M20 5v14"/>',
-  fwd10: '<path d="m13 5 7 7-7 7"/><path d="M4 5v14"/>',
+  cc: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9.5 10.5a2 2 0 1 0 0 3M15.5 10.5a2 2 0 1 0 0 3"/>',
+  sync: '<path d="M4 8h12l-3-3M20 16H8l3 3"/><path d="M4 8v2M20 16v-2"/>',
+  brightness: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.5 1.5M17.6 17.6l1.5 1.5M19.1 4.9l-1.5 1.5M6.4 17.6l-1.5 1.5"/>',
+  // Circular arrow with a 10 in it — a real "jump back ten seconds", not the
+  // skip-to-previous-track glyph these used to be.
+  back10: '<path d="M11.5 4.5 7 8l4.5 3.5"/><path d="M7.2 8H14a6 6 0 1 1-6 6" stroke-linejoin="round"/><text x="12" y="17.5" font-size="7.5" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle">10</text>',
+  fwd10: '<path d="M12.5 4.5 17 8l-4.5 3.5"/><path d="M16.8 8H10a6 6 0 1 0 6 6" stroke-linejoin="round"/><text x="12" y="17.5" font-size="7.5" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle">10</text>',
+  prevEp: '<path d="M17 5 9 12l8 7"/><path d="M6 5v14"/>',
+  nextEp: '<path d="m7 5 8 7-8 7"/><path d="M18 5v14"/>',
   warning: '<path d="M12 4 2 20h20z"/><path d="M12 10v4M12 17h.01"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   trash: '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/>',
@@ -49,7 +57,10 @@ const ICONS = {
 export function icon(name, className = '') {
   const body = ICONS[name] || '';
   const fill = name === 'play' ? 'currentColor' : 'none';
-  return `<svg class="${className}" viewBox="0 0 24 24" fill="${fill}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+  // Default to a sized class. Called bare, this produced <svg class=""> which
+  // laid out at 0x0 and made the mobile menu button invisible.
+  const cls = className || 'icon';
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="${fill}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 }
 
 export function playIcon(className = '') {
@@ -144,78 +155,89 @@ export function loadingState(label = 'Loading…') {
   return `<div class="loading-state"><div class="spinner spinner--lg"></div><span>${esc(label)}</span></div>`;
 }
 
-function posterCard(item, type) {
-  const poster = item.poster
-    ? `<img class="card__poster" loading="lazy" alt="${esc(item.title)}" src="${esc(item.poster)}">`
-    : `<div class="card__placeholder">${esc(item.title)}</div>`;
-
-  return `
-    <article class="card" data-action="open-detail" data-type="${type}" data-id="${item.tmdb_id}" tabindex="0">
-      ${poster}
-      <div class="card__play"><div class="card__play-button">${playIcon()}</div></div>
-      <div class="card__overlay">
-        <div class="card__title">${esc(item.title)}</div>
-        <div class="card__meta">${item.year || '—'}${item.rating ? ` · ★ ${item.rating}` : ''}</div>
-      </div>
-    </article>`;
-}
-
 /**
- * A discovery card. Owned titles route to the normal library modal so they
- * behave exactly like a card on the Movies or Shows page.
+ * One poster card, used for library and discovery alike.
+ * The underline is the only thing distinguishing them: full bar = owned,
+ * partial = watch progress, absent = discoverable.
  */
-function discoverCard(item) {
+export function posterCard(item, type, { owned = false, progress = null } = {}) {
   const poster = item.poster
     ? `<img class="card__poster" loading="lazy" alt="${esc(item.title)}" src="${esc(item.poster)}">`
     : `<div class="card__placeholder">${esc(item.title)}</div>`;
 
-  const action = item.owned
-    ? `data-action="open-detail" data-type="${esc(item.type)}" data-id="${item.tmdb_id}"`
-    : `data-action="open-discover" data-type="${esc(item.type)}" data-id="${item.tmdb_id}"`;
+  const action = owned
+    ? `data-action="open-detail" data-type="${esc(type)}" data-id="${item.tmdb_id}"`
+    : `data-action="open-discover" data-type="${esc(type)}" data-id="${item.tmdb_id}"`;
+
+  const width = progress === null ? 100 : Math.max(2, Math.min(100, progress * 100));
+  const bar = owned
+    ? `<div class="card__owned"><span style="width:${width.toFixed(1)}%"></span></div>`
+    : '';
 
   return `
-    <article class="card" ${action} tabindex="0">
-      ${poster}
-      ${item.owned ? '<span class="card__owned">In library</span>' : ''}
-      <div class="card__play"><div class="card__play-button">${playIcon()}</div></div>
-      <div class="card__overlay">
-        <div class="card__title">${esc(item.title)}</div>
-        <div class="card__meta">${item.year || '—'}${item.rating ? ` · ★ ${item.rating}` : ''}</div>
+    <article class="card" ${action} tabindex="0" aria-label="${esc(item.title)}">
+      <div class="card__art">
+        ${poster}
+        ${bar}
+      </div>
+      <div class="card__title t-card">${esc(item.title)}</div>
+      <div class="card__meta">${item.year || ''}</div>
+    </article>`;
+}
+
+/** A horizontal row. One component for every row in the app. */
+/**
+ * A Continue Watching card.
+ *
+ * Episodes get their own still, label, description and air year, because the
+ * show's poster and first-aired year tell you nothing about where you are.
+ * Movies keep their poster - that is how a film is recognised - and reveal a
+ * frame from where you stopped on hover, loaded lazily by app.js.
+ */
+export function continueCard(entry) {
+  const isEpisode = entry.type === 'episode';
+  const art = entry.art
+    ? `<img class="continue__img" loading="lazy" alt="" src="${esc(entry.art)}">`
+    : `<div class="card__placeholder">${esc(entry.title)}</div>`;
+
+  const width = Math.max(2, Math.min(100, entry.progress * 100));
+
+  return `
+    <article class="continue ${isEpisode ? 'continue--episode' : 'continue--movie'}"
+      data-action="resume" data-path="${esc(entry.filePath)}"
+      data-position="${entry.position}" tabindex="0"
+      aria-label="Resume ${esc(entry.title)}${entry.subtitle ? `, ${esc(entry.subtitle)}` : ''}">
+      <div class="continue__art">
+        ${art}
+        ${isEpisode ? '' : '<div class="continue__frame" aria-hidden="true"></div>'}
+        <div class="continue__play">${playIcon('icon-lg')}</div>
+        <div class="card__owned"><span style="width:${width.toFixed(1)}%"></span></div>
+      </div>
+      <div class="continue__body">
+        <div class="continue__title t-card">${esc(entry.title)}</div>
+        ${entry.subtitle ? `<div class="continue__sub">${esc(entry.subtitle)}</div>` : ''}
+        <div class="continue__meta">${entry.year || ''}</div>
+        ${entry.description ? `<div class="continue__desc">${esc(entry.description)}</div>` : ''}
       </div>
     </article>`;
 }
 
-/** The discovery section, or nothing at all when no rail loaded. */
-function discoverRails() {
-  const { rails } = state.discover;
-  if (!rails.length) return '';
-
-  return rails.map((rail) => `
-    <section class="section">
-      <div class="section__header">
-        <h2 class="section__title">${esc(rail.title)}</h2>
-      </div>
-      <div class="rail">${rail.items.map(discoverCard).join('')}</div>
-    </section>`).join('');
-}
-
-function continueCard(entry) {
-  const { row, item, label, backdrop } = entry;
-  const percent = row.duration > 0 ? Math.min(100, (row.position / row.duration) * 100) : 0;
-  const remaining = row.duration > 0 ? formatTime(row.duration - row.position) : '';
-
+export function rail(title, cardsHtml, { count = null } = {}) {
   return `
-    <article class="card card--backdrop" data-action="play" data-path="${esc(row.file_path)}" tabindex="0">
-      ${backdrop
-    ? `<img class="card__image" loading="lazy" alt="" src="${esc(backdrop)}">`
-    : '<div class="card__image"></div>'}
-      <div class="card__body">
-        <div class="card__title">${esc(item ? item.title : row.title || 'Unknown')}</div>
-        <div class="card__meta">${esc(label)}${remaining ? ` · ${remaining} left` : ''}</div>
+    <section class="row">
+      <div class="row__head">
+        <h2 class="t-section">${esc(title)}</h2>
+        ${count !== null ? `<span class="t-meta">${esc(count)}</span>` : ''}
       </div>
-      <div class="card__progress"><div class="progress"><div class="progress__fill" style="width:${percent.toFixed(1)}%"></div></div></div>
-    </article>`;
+      <div class="row__wrap">
+        <button class="row__arrow row__arrow--prev" data-action="rail-scroll" data-dir="-1" aria-label="Scroll left">${icon('back', 'icon')}</button>
+        <div class="rail">${cardsHtml}</div>
+        <button class="row__arrow row__arrow--next" data-action="rail-scroll" data-dir="1" aria-label="Scroll right">${icon('chevron', 'icon')}</button>
+      </div>
+    </section>`;
 }
+
+
 
 /* --------------------------------------------------------------------------
  * Shell
@@ -234,73 +256,63 @@ export function renderShell() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="app-shell">
-      <aside class="sidebar" id="sidebar">
-        <div class="brand">
-          <div class="brand__mark">${playIcon()}</div>
-          <span class="brand__name">MediaWatcher</span>
-        </div>
-        <nav class="nav" id="nav">
+      <aside class="navrail" id="navrail">
+        <div class="navrail__mark">${playIcon()}</div>
+        <nav class="navrail__nav">
           ${NAV.map((entry) => `
-            <button class="nav__item" data-action="navigate" data-page="${entry.page}">
-              ${icon(entry.iconName, 'nav__icon')}
-              <span class="nav__label">${entry.label}</span>
-              ${entry.page === 'downloads' ? '<span class="nav__badge" id="jobs-badge" hidden>0</span>' : ''}
+            <button class="navrail__item" data-action="navigate" data-page="${entry.page}" aria-label="${entry.label}" title="${entry.label}">
+              ${icon(entry.iconName, 'icon')}
+              ${entry.page === 'downloads' ? '<span class="navrail__badge" id="jobs-badge" hidden>0</span>' : ''}
             </button>`).join('')}
         </nav>
-        <div class="sidebar__separator"></div>
-        <div class="sidebar__footer">
-          <button class="btn btn--secondary" style="width:100%" data-action="rescan" id="rescan-btn">
-            ${icon('refresh', 'btn__icon')}<span class="btn__label">Rescan</span>
-          </button>
-        </div>
+        <button class="navrail__item navrail__item--foot" data-action="rescan" id="rescan-btn" aria-label="Rescan" title="Rescan library">
+          ${icon('refresh', 'icon')}
+        </button>
       </aside>
 
       <header class="topbar">
-        <button class="btn btn--ghost btn--icon topbar__menu" data-action="toggle-drawer" aria-label="Menu">${icon('menu')}</button>
         <div class="topbar__search">
-          ${icon('search', 'topbar__search-icon')}
-          <input class="input" id="global-search" type="search" placeholder="Search your library or find something new…" autocomplete="off">
+          ${icon('search', 'icon-sm')}
+          <input class="input topbar__input" id="global-search" type="search" placeholder="Search" autocomplete="off">
         </div>
-        <div class="topbar__actions">
-          <button class="btn btn--secondary" data-action="add-torrent">${icon('plus', 'btn__icon')}<span class="btn__label">Add Torrent</span></button>
-        </div>
+        <button class="btn btn--secondary topbar__add" data-action="add-torrent" aria-label="Add torrent">
+          ${icon('plus', 'icon-sm')}<span class="btn__label">Add</span>
+        </button>
       </header>
 
       <main class="main" id="main"></main>
+
+      <nav class="tabbar" id="tabbar">
+        ${NAV.map((entry) => `
+          <button class="tabbar__item" data-action="navigate" data-page="${entry.page}">
+            ${icon(entry.iconName, 'icon')}
+            <span class="tabbar__label">${entry.label}</span>
+            ${entry.page === 'downloads' ? '<span class="tabbar__badge" id="jobs-badge-m" hidden>0</span>' : ''}
+          </button>`).join('')}
+      </nav>
     </div>`;
 }
 
 /** Cheap per-render updates that don't need the shell rebuilt. */
 export function updateShell() {
-  document.querySelectorAll('.nav__item').forEach((node) => {
+  // Both nav surfaces exist in the DOM at all times; CSS decides which is shown.
+  document.querySelectorAll('.navrail__item, .tabbar__item').forEach((node) => {
+    if (!node.dataset.page) return;
     node.classList.toggle('is-active', node.dataset.page === state.currentPage);
   });
 
-  const badge = document.getElementById('jobs-badge');
-  if (badge) {
-    const count = activeJobCount();
+  const count = activeJobCount();
+  for (const id of ['jobs-badge', 'jobs-badge-m']) {
+    const badge = document.getElementById(id);
+    if (!badge) continue;
     badge.hidden = count === 0;
     badge.textContent = String(count);
-  }
-
-  const sidebar = document.getElementById('sidebar');
-  if (sidebar) sidebar.classList.toggle('is-open', state.drawerOpen);
-
-  const scrim = document.querySelector('.drawer-scrim');
-  if (state.drawerOpen && !scrim) {
-    const node = document.createElement('div');
-    node.className = 'drawer-scrim';
-    node.dataset.action = 'toggle-drawer';
-    document.body.appendChild(node);
-  } else if (!state.drawerOpen && scrim) {
-    scrim.remove();
   }
 
   const rescan = document.getElementById('rescan-btn');
   if (rescan) {
     rescan.disabled = state.scanning;
-    const label = rescan.querySelector('.btn__label');
-    if (label) label.textContent = state.scanning ? 'Scanning…' : 'Rescan';
+    rescan.classList.toggle('is-busy', state.scanning);
   }
 }
 
@@ -318,66 +330,129 @@ export function renderHome() {
     return emptyState({
       iconName: 'inbox',
       title: 'Your library is empty',
-      text: 'Drop video files into library/movies or library/shows and hit Rescan, or search for something to download.',
+      text: 'Drop video files into library/movies or library/shows, or search for something to download.',
       action: { label: 'Search for something', action: 'navigate', page: 'search' }
     });
   }
 
-  // Hero: a random item, but only one with artwork to show.
-  const withArt = all.filter((entry) => entry.backdrop);
-  const hero = (withArt.length > 0 ? withArt : all)[Math.floor(Math.random() * (withArt.length || all.length))];
-  const heroIsShow = Boolean(hero.seasons);
-  const heroFile = heroIsShow ? firstEpisodeFile(hero) : (hero.files || [])[0];
+  const hero = pickHero(state.library, state.progress);
+  const ownedIds = new Set(all.map((entry) => entry.tmdb_id));
 
-  const continueEntries = state.progress
-    .map((row) => {
-      const located = locateFile(row.file_path);
-      const item = located ? located.item : null;
-      const label = located && located.type === 'episode'
-        ? episodeTag(located.season, located.episode.episode_number)
-        : 'Movie';
-      return { row, item, label, backdrop: item ? item.backdrop : null };
-    })
-    .filter((entry) => entry.item || entry.row.title);
+  const continueCards = state.progress
+    .map((row) => continueEntry(row, state.library))
+    .filter(Boolean)
+    .map(continueCard)
+    .join('');
 
-  const recent = recentlyAdded(16);
+  /* Library rails, collapsed by size. With a handful of titles, "Recently
+     added" and "Your library" are the same posters twice, directly under
+     Continue watching showing them a third time. */
+  const byNewest = all.slice().sort((a, b) => newestAddedAt(b) - newestAddedAt(a));
+  const cardFor = (entry) =>
+    posterCard(entry, Array.isArray(entry.seasons) ? 'show' : 'movie', { owned: true });
+
+  const libraryRails = byNewest.length > 8
+    ? rail('Recently added', byNewest.slice(0, 20).map(cardFor).join(''))
+      + rail('Your library', byNewest.map(cardFor).join(''), { count: `${byNewest.length} titles` })
+    : rail('Your library', byNewest.map(cardFor).join(''), { count: `${byNewest.length} titles` });
+
+  const discoverRails = (state.discover.rails || []).map((entry) => rail(
+    entry.title,
+    (entry.items || []).map((title) => posterCard(
+      title,
+      title.type === 'show' ? 'show' : 'movie',
+      { owned: ownedIds.has(title.tmdb_id) }
+    )).join('')
+  )).join('');
+
+  return `
+    ${hero ? renderHero(hero) : ''}
+    <div class="page">
+      ${continueCards ? rail('Continue watching', continueCards) : ''}
+      ${libraryRails}
+      ${discoverRails}
+    </div>`;
+}
+
+function renderHero(hero) {
+  const { item, type, file, located } = hero;
+  const isShow = type === 'show';
+
+  let line;
+  if (located && located.type === 'episode') {
+    const title = located.episode.title ? ` · ${located.episode.title}` : '';
+    line = `${episodeTag(located.season, located.episode.episode_number)}${title}`;
+  } else {
+    line = [item.year, formatRuntime(item.runtime), (item.genres || [])[0]]
+      .filter(Boolean).join(' · ');
+  }
+
+  const remaining = hero.resumeRow && hero.resumeRow.duration > 0
+    ? ` · ${formatTime(hero.resumeRow.duration - hero.resumeRow.position)} left`
+    : '';
 
   return `
     <section class="hero">
-      ${hero.backdrop ? `<img class="hero__backdrop" alt="" src="${esc(hero.backdrop)}">` : ''}
-      <div class="hero__content">
-        <h1 class="hero__title">${esc(hero.title)}</h1>
-        <div class="hero__meta">
-          ${hero.rating ? `<span class="badge badge--rating">★ ${hero.rating}</span>` : ''}
-          ${hero.year ? `<span>${hero.year}</span>` : ''}
-          ${formatRuntime(hero.runtime) ? `<span>·</span><span>${formatRuntime(hero.runtime)}</span>` : ''}
-          ${(hero.genres || []).length ? `<span>·</span><span>${esc(hero.genres.slice(0, 2).join(', '))}</span>` : ''}
-        </div>
-        ${hero.overview ? `<p class="hero__overview">${esc(hero.overview)}</p>` : ''}
+      ${item.backdrop ? `<img class="hero__art" alt="" src="${esc(item.backdrop)}">` : ''}
+      <div class="hero__scrim"></div>
+      <div class="hero__body">
+        <h1 class="hero__title t-hero">${esc(item.title)}</h1>
+        <div class="hero__meta t-meta">${esc(line)}${esc(remaining)}</div>
+        ${item.overview ? `<p class="hero__overview">${esc(item.overview)}</p>` : ''}
         <div class="hero__actions">
-          ${heroFile
-    ? `<button class="btn btn--primary btn--lg" data-action="play" data-path="${esc(heroFile.file_path)}">${playIcon('btn__icon')}Play</button>`
-    : ''}
-          <button class="btn btn--secondary btn--lg" data-action="open-detail" data-type="${heroIsShow ? 'show' : 'movie'}" data-id="${hero.tmdb_id}">More Info</button>
+          ${file ? `<button class="btn btn--primary" data-action="play" data-path="${esc(file.file_path)}">
+            ${playIcon('icon-sm')}${hero.resumeRow ? 'Resume' : 'Play'}</button>` : ''}
+          <button class="btn btn--secondary" data-action="open-detail" data-type="${isShow ? 'show' : 'movie'}" data-id="${item.tmdb_id}">More info</button>
         </div>
       </div>
-    </section>
+    </section>`;
+}
 
-    ${continueEntries.length > 0 ? `
-      <section class="section">
-        <div class="section__header"><h2 class="section__title">Continue Watching</h2></div>
-        <div class="rail">${continueEntries.map(continueCard).join('')}</div>
-      </section>` : ''}
+/**
+ * Which title leads the page.
+ *
+ * The old rule picked at random on every render, so the hero changed identity
+ * whenever state updated. Prefer the thing you were last watching, so Resume
+ * actually means something.
+ */
+export function pickHero(library, progress) {
+  const all = [...library.movies, ...library.shows];
+  if (all.length === 0) return null;
 
-    <section class="section">
-      <div class="section__header">
-        <h2 class="section__title">Recently Added</h2>
-        <span class="page__count">${recent.length} item${recent.length === 1 ? '' : 's'}</span>
-      </div>
-      <div class="grid">${recent.map((entry) => posterCard(entry.item, entry.type)).join('')}</div>
-    </section>
+  for (const row of progress) {
+    const located = locateFile(row.file_path);
+    if (!located) continue;
+    return {
+      item: located.item,
+      type: located.type === 'episode' ? 'show' : 'movie',
+      file: { file_path: row.file_path },
+      resumeRow: row,
+      located
+    };
+  }
 
-    ${discoverRails()}`;
+  const withArt = all.filter((entry) => entry.backdrop);
+  const pool = withArt.length > 0 ? withArt : all;
+  const item = pool.slice().sort((a, b) => newestAddedAt(b) - newestAddedAt(a))[0];
+  const isShow = Array.isArray(item.seasons);
+  return {
+    item,
+    type: isShow ? 'show' : 'movie',
+    file: isShow ? firstEpisodeFile(item) : (item.files || [])[0],
+    resumeRow: null,
+    located: null
+  };
+}
+
+function newestAddedAt(item) {
+  let newest = 0;
+  for (const file of item.files || []) newest = Math.max(newest, file.added_at || 0);
+  for (const season of item.seasons || []) {
+    for (const episode of season.episodes) {
+      for (const file of episode.files || []) newest = Math.max(newest, file.added_at || 0);
+    }
+  }
+  return newest;
 }
 
 function firstEpisodeFile(show) {
@@ -394,22 +469,24 @@ export function renderMovies() {
   const { movies } = state.library;
 
   if (movies.length === 0) {
-    return `
-      <div class="page__header"><h1 class="page__title">Movies</h1></div>
+    return `<div class="page">
+      <div class="page__head"><h1 class="t-hero">Movies</h1></div>
       ${emptyState({
     iconName: 'film',
     title: 'No movies yet',
     text: 'Add files under library/movies and press Rescan, or find something to download.',
     action: { label: 'Search for a movie', action: 'navigate', page: 'search' }
-  })}`;
+  })}</div>`;
   }
 
   return `
-    <div class="page__header">
-      <h1 class="page__title">Movies</h1>
-      <span class="page__count">${movies.length} title${movies.length === 1 ? '' : 's'}</span>
-    </div>
-    <div class="grid">${movies.map((movie) => posterCard(movie, 'movie')).join('')}</div>`;
+    <div class="page">
+      <div class="page__head">
+        <h1 class="t-hero">Movies</h1>
+        <span class="t-meta">${movies.length} title${movies.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="grid">${movies.map((movie) => posterCard(movie, 'movie', { owned: true })).join('')}</div>
+    </div>`;
 }
 
 export function renderShows() {
@@ -417,43 +494,45 @@ export function renderShows() {
   const { shows } = state.library;
 
   if (shows.length === 0) {
-    return `
-      <div class="page__header"><h1 class="page__title">Shows</h1></div>
+    return `<div class="page">
+      <div class="page__head"><h1 class="t-hero">Shows</h1></div>
       ${emptyState({
     iconName: 'tv',
     title: 'No shows yet',
     text: 'Add files under library/shows/<Show Name>/Season 01 and press Rescan.',
     action: { label: 'Search for a show', action: 'navigate', page: 'search' }
-  })}`;
+  })}</div>`;
   }
 
   return `
-    <div class="page__header">
-      <h1 class="page__title">Shows</h1>
-      <span class="page__count">${shows.length} title${shows.length === 1 ? '' : 's'}</span>
-    </div>
-    <div class="grid">${shows.map((show) => posterCard(show, 'show')).join('')}</div>`;
+    <div class="page">
+      <div class="page__head">
+        <h1 class="t-hero">Shows</h1>
+        <span class="t-meta">${shows.length} title${shows.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="grid">${shows.map((show) => posterCard(show, 'show', { owned: true })).join('')}</div>
+    </div>`;
 }
 
 export function renderDownloads() {
   const { jobs } = state;
 
   const header = `
-    <div class="page__header">
-      <h1 class="page__title">Downloads</h1>
-      ${jobs.length ? `<span class="page__count">${jobs.length} job${jobs.length === 1 ? '' : 's'}</span>` : ''}
+    <div class="page__head">
+      <h1 class="t-hero">Downloads</h1>
+      ${jobs.length ? `<span class="t-meta">${jobs.length} job${jobs.length === 1 ? '' : 's'}</span>` : ''}
     </div>`;
 
   if (jobs.length === 0) {
-    return header + emptyState({
+    return `<div class="page">${header}${emptyState({
       iconName: 'download',
       title: 'Nothing downloading',
       text: 'Downloads you start from Search show up here with live progress.',
       action: { label: 'Find something', action: 'navigate', page: 'search' }
-    });
+    })}</div>`;
   }
 
-  return header + `<div class="job-list">${jobs.map(jobRow).join('')}</div>`;
+  return `<div class="page">${header}<div class="job-list">${jobs.map(jobRow).join('')}</div></div>`;
 }
 
 function jobRow(job) {
@@ -464,7 +543,7 @@ function jobRow(job) {
     ? `<button class="btn btn--secondary" data-action="retry-job" data-id="${esc(job.id)}">Retry</button>
        <button class="btn btn--danger" data-action="cancel-job" data-id="${esc(job.id)}">Remove</button>`
     : job.status === 'complete'
-      ? `<button class="btn btn--secondary" data-action="open-folder" data-path="${esc(job.file_path || '')}">${icon('folder', 'btn__icon')}<span class="btn__label">Open Folder</span></button>
+      ? `<button class="btn btn--secondary" data-action="open-folder" data-path="${esc(job.file_path || '')}">${icon('folder', 'icon-sm')}<span class="btn__label">Open Folder</span></button>
          <button class="btn btn--ghost btn--icon" data-action="cancel-job" data-id="${esc(job.id)}" aria-label="Remove">${icon('trash')}</button>`
       : `<button class="btn btn--danger" data-action="cancel-job" data-id="${esc(job.id)}">Cancel</button>`;
 
@@ -515,7 +594,7 @@ export function renderDetailModal(item) {
         <div class="modal__body">
           <h2 class="modal__title">${esc(item.title)}</h2>
           <div class="modal__chips">
-            ${item.rating ? `<span class="badge badge--rating">★ ${item.rating}</span>` : ''}
+            ${item.rating ? `<span class="badge">★ ${item.rating}</span>` : ''}
             ${item.year ? `<span class="badge">${item.year}</span>` : ''}
             ${formatRuntime(item.runtime) ? `<span class="badge">${formatRuntime(item.runtime)}</span>` : ''}
             ${(item.genres || []).map((genre) => `<span class="badge">${esc(genre)}</span>`).join('')}
@@ -524,9 +603,9 @@ export function renderDetailModal(item) {
             <button class="modal__more" data-action="expand-overview">Show more</button>` : ''}
           <div class="modal__actions">
             ${firstFile
-    ? `<button class="btn btn--primary btn--lg" data-action="play" data-path="${esc(firstFile.file_path)}">${playIcon('btn__icon')}Play</button>`
+    ? `<button class="btn btn--primary" data-action="play" data-path="${esc(firstFile.file_path)}">${playIcon('icon-sm')}Play</button>`
     : ''}
-            <button class="btn ${unowned ? 'btn--primary' : 'btn--secondary'} btn--lg"
+            <button class="btn ${unowned ? 'btn--primary' : 'btn--secondary'}"
                     data-action="find-torrents"
                     data-type="${isShow ? 'show' : 'movie'}"
                     data-id="${item.tmdb_id}"
@@ -571,17 +650,28 @@ function renderSeason(show, season, open) {
       <div class="season__episodes">
         ${season.episodes.map((episode) => {
     const file = (episode.files || [])[0];
+    // Watch state comes from every progress row, not the Continue Watching
+    // subset, so an episode you finished still reads as watched here.
+    const seen = watchState(file ? state.watched[file.file_path] : null);
+
     return `
-          <div class="episode"${file ? ` data-action="play" data-path="${esc(file.file_path)}"` : ''}>
-            ${episode.still
+          <div class="episode${seen.watched ? ' is-watched' : ''}${seen.started && !seen.watched ? ' is-started' : ''}"
+            ${file ? ` data-action="play" data-path="${esc(file.file_path)}"` : ''}>
+            <div class="episode__art">
+              ${episode.still
     ? `<img class="episode__still" loading="lazy" alt="" src="${esc(episode.still)}">`
     : '<div class="episode__still"></div>'}
+              ${seen.started ? `<div class="episode__bar"><span style="width:${seen.percent.toFixed(1)}%"></span></div>` : ''}
+              ${seen.watched ? `<div class="episode__seen" title="Watched">${icon('check')}</div>` : ''}
+            </div>
             <div>
               <div class="episode__title">
                 <span class="episode__number">${episode.episode_number ?? '–'}.</span>
                 ${esc(episode.title || 'Untitled episode')}
               </div>
               ${episode.overview ? `<div class="episode__overview">${esc(episode.overview)}</div>` : ''}
+              ${seen.started && !seen.watched && seen.remaining
+    ? `<div class="episode__left">${formatTime(seen.remaining)} left</div>` : ''}
             </div>
             ${file ? `<button class="btn btn--ghost btn--icon" aria-label="Play">${playIcon()}</button>` : '<span class="badge">missing</span>'}
           </div>`;
@@ -599,21 +689,24 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
     <div class="player" id="player" tabindex="-1">
       <video class="player__video" id="player-video" playsinline></video>
 
+      <div class="player__touch" id="player-touch" aria-hidden="true">
+        <div class="player__ripple player__ripple--l" id="ripple-l"><span>-10s</span></div>
+        <div class="player__ripple player__ripple--r" id="ripple-r"><span>+10s</span></div>
+      </div>
+
       <div class="player__spinner"><div class="spinner spinner--lg"></div></div>
 
       <div class="player__top">
-        <button class="player__btn" data-action="close-player" aria-label="Back">${icon('back')}</button>
+        <button class="player__btn" data-action="close-player" aria-label="Back">${icon('back', 'icon-lg')}</button>
         <div class="player__heading">
           <div class="player__title">${esc(title)}</div>
           ${subtitle ? `<div class="player__subtitle">${esc(subtitle)}</div>` : ''}
         </div>
-        ${modeLabel ? `<span class="badge ${lossless ? 'badge--source' : 'badge--warning'} player__mode">${esc(modeLabel)}</span>` : ''}
+        ${modeLabel ? `<span class="badge${lossless ? '' : ' badge--warn'} player__mode">${esc(modeLabel)}</span>` : ''}
       </div>
 
       <div class="next-up" id="next-up" hidden>
-        <!-- The count is filled from real remaining playback the moment the
-             card is shown, so it has no meaningful initial value. -->
-        <div class="next-up__label">Up next in <span class="next-up__count" id="next-up-count">—</span>s</div>
+        <div class="next-up__label">Up next</div>
         <div class="next-up__title" id="next-up-title"></div>
         <div class="next-up__actions">
           <button class="btn btn--primary" data-action="play-next">Play now</button>
@@ -621,26 +714,72 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
         </div>
       </div>
 
+      <button class="player__eparrow" id="ep-arrow" data-action="toggle-episodes"
+        aria-label="Episodes" title="Episodes" hidden>${icon('back', 'icon-lg')}</button>
+
+      <aside class="player__episodes" id="ep-panel" hidden>
+        <div class="player__ep-head">
+          <div class="player__ep-title" id="ep-show"></div>
+          <button class="player__btn" data-action="close-episodes" aria-label="Close">${icon('close', 'icon')}</button>
+        </div>
+        <div class="player__ep-tabs" id="ep-tabs"></div>
+        <div class="player__ep-list" id="ep-list"></div>
+      </aside>
+
       <div class="player__controls">
-        <div class="player__scrub">
-          <span class="player__time" id="time-current">0:00</span>
+        <div class="player__scrub" id="scrub">
           <input class="range" id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
-          <span class="player__time" id="time-total">0:00</span>
+          <div class="player__band" id="preview-band" aria-hidden="true"></div>
+          <div class="player__knob" id="seek-knob" aria-hidden="true"></div>
+          <div class="player__ball" id="preview-ball" aria-hidden="true"></div>
+          <div class="player__card" id="preview-card" aria-hidden="true">
+            <div class="player__card-frame" id="preview-frame"></div>
+            <div class="player__card-time t-num" id="preview-time">0:00</div>
+          </div>
+        </div>
+        <div class="player__times t-num">
+          <span id="time-current">0:00</span>
+          <span id="time-total">0:00</span>
         </div>
         <div class="player__buttons">
-          <button class="player__btn player__btn--play" data-action="toggle-play" id="play-btn" aria-label="Play">${playIcon()}</button>
-          <button class="player__btn" data-action="seek-back" aria-label="Back 10 seconds">${icon('back10')}</button>
-          <button class="player__btn" data-action="seek-forward" aria-label="Forward 10 seconds">${icon('fwd10')}</button>
-          <div class="player__volume">
-            <button class="player__btn" data-action="toggle-mute" id="mute-btn" aria-label="Mute">${icon('volume')}</button>
-            <input class="range" id="volume" type="range" min="0" max="100" value="100" aria-label="Volume">
+          <div class="player__buttons-left">
+            <div class="player__volume">
+              <button class="player__btn" data-action="toggle-mute" id="mute-btn" aria-label="Mute">${icon('volume', 'icon')}</button>
+              <input class="range range--vol" id="volume" type="range" min="0" max="100" value="100" aria-label="Volume">
+            </div>
           </div>
-          <div class="player__spacer"></div>
-          <div class="player__menu" id="player-menu">
-            <button class="player__btn" data-action="toggle-menu" aria-label="Settings">${icon('settings')}</button>
-            <div class="player__menu-panel" id="menu-panel"></div>
+
+          <div class="player__transport">
+            <button class="player__btn player__btn--ep" data-action="prev-episode" aria-label="Previous episode" title="Previous episode">${icon('prevEp', 'icon')}</button>
+            <button class="player__btn" data-action="seek-back" aria-label="Back 10 seconds" title="Back 10s">${icon('back10', 'icon-lg')}</button>
+            <button class="player__btn player__btn--play" data-action="toggle-play" id="play-btn" aria-label="Play">${playIcon('icon-lg')}</button>
+            <button class="player__btn" data-action="seek-forward" aria-label="Forward 10 seconds" title="Forward 10s">${icon('fwd10', 'icon-lg')}</button>
+            <button class="player__btn player__btn--ep" data-action="next-episode" aria-label="Next episode" title="Next episode">${icon('nextEp', 'icon')}</button>
           </div>
-          <button class="player__btn" data-action="toggle-fullscreen" aria-label="Fullscreen">${icon('fullscreen')}</button>
+
+          <div class="player__buttons-right" id="player-settings">
+            <div class="player__pop">
+              <button class="player__btn" data-action="toggle-popover" data-popover="subs"
+                aria-label="Subtitles" title="Subtitles">${icon('cc', 'icon')}</button>
+              <div class="player__pop-panel" id="popover-subs" hidden></div>
+            </div>
+            <div class="player__pop">
+              <button class="player__btn" data-action="toggle-popover" data-popover="sync"
+                aria-label="Audio delay" title="Audio delay">${icon('sync', 'icon')}</button>
+              <div class="player__pop-panel" id="popover-sync" hidden></div>
+            </div>
+            <div class="player__pop">
+              <button class="player__btn player__btn--rate" data-action="toggle-popover" data-popover="speed"
+                aria-label="Playback speed" title="Playback speed" id="rate-btn">1&times;</button>
+              <div class="player__pop-panel" id="popover-speed" hidden></div>
+            </div>
+            <div class="player__pop">
+              <button class="player__btn" data-action="toggle-popover" data-popover="picture"
+                aria-label="Picture" title="Brightness and contrast">${icon('brightness', 'icon')}</button>
+              <div class="player__pop-panel" id="popover-picture" hidden></div>
+            </div>
+            <button class="player__btn" data-action="toggle-fullscreen" aria-label="Fullscreen">${icon('fullscreen', 'icon')}</button>
+          </div>
         </div>
       </div>
     </div>`;

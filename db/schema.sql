@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS progress (
   position REAL NOT NULL DEFAULT 0,
   duration REAL NOT NULL DEFAULT 0,
   completed INTEGER DEFAULT 0,  -- 0 or 1
+  audio_offset REAL NOT NULL DEFAULT 0,  -- seconds; + delays audio, - advances it
   updated_at INTEGER NOT NULL
 );
 

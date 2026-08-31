@@ -29,6 +29,19 @@ const OPTIONAL_AUDIO = new Set(['ac3', 'eac3']);
 // ffprobe reports mkv and webm under one format name, so the extension decides.
 const BROWSER_CONTAINERS = new Set(['.mp4', '.m4v', '.mov', '.webm']);
 
+export const MAX_AUDIO_OFFSET = 30;
+
+/**
+ * Seconds to shift audio by. Positive delays it, negative advances it.
+ * Anything unparseable is no offset at all rather than an error - this comes
+ * straight off a query string.
+ */
+export function clampAudioOffset(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return 0;
+  return Math.max(-MAX_AUDIO_OFFSET, Math.min(MAX_AUDIO_OFFSET, seconds));
+}
+
 /* --------------------------------------------------------------------------
  * Availability
  * ----------------------------------------------------------------------- */
@@ -135,7 +148,12 @@ export async function probe(filePath) {
       profile: video.profile || null,
       width: video.width || null,
       height: video.height || null,
-      fps: video.r_frame_rate || null
+      fps: video.r_frame_rate || null,
+      // Needed to spot HDR. Bit depth alone does not identify it - most of a
+      // 4K library is 10-bit SDR - so the transfer curve is what matters.
+      transfer: video.color_transfer || null,
+      primaries: video.color_primaries || null,
+      pixelFormat: video.pix_fmt || null
     },
     audio: audioStreams.map((stream, index) => ({
       index,
@@ -161,6 +179,100 @@ export async function probe(filePath) {
 }
 
 /* --------------------------------------------------------------------------
+ * Hardware encoding
+ * ----------------------------------------------------------------------- */
+
+let hwEncoder;
+
+/**
+ * An H.264 encoder that runs on the GPU, or null for libx264.
+ *
+ * Only worth the lookup for tone mapping, where the CPU is already busy doing
+ * the colour conversion. Measured over 20s of 4K HDR on this machine: libx264
+ * at 1080p runs 1.18x realtime, NVENC 1.56x, and NVENC with CUDA decode 1.70x.
+ * Probed once and cached, like isAvailable().
+ */
+export function hardwareEncoder() {
+  if (hwEncoder !== undefined) return hwEncoder;
+  if (!config.ffmpeg.hardwareEncode) {
+    hwEncoder = Promise.resolve(null);
+    return hwEncoder;
+  }
+
+  hwEncoder = new Promise((resolve) => {
+    const child = spawn(config.ffmpeg.ffmpegPath, ['-hide_banner', '-encoders'], { windowsHide: true });
+    let out = '';
+    child.stdout?.on('data', (chunk) => { out += chunk; });
+    child.stderr?.resume();
+    child.on('error', () => resolve(null));
+    child.on('close', () => {
+      // Ordered by how well each handles a realtime pipe on typical hardware.
+      const found = ['h264_nvenc', 'h264_qsv', 'h264_amf'].find((name) => out.includes(name));
+      if (found) log.info(`hardware H.264 encoder available: ${found}`);
+      resolve(found || null);
+    });
+  });
+
+  return hwEncoder;
+}
+
+/* --------------------------------------------------------------------------
+ * HDR tone mapping
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Height above which a tone-mapped stream is downscaled.
+ *
+ * Purely a throughput limit, not a quality preference. Measured on this machine
+ * over 20s of 4K HDR: tone mapping at native 2160p runs at 0.60x realtime even
+ * with CUDA decode and NVENC, so playback stalls. At 1080p the same chain runs
+ * at 1.70x. Sources already at or below this keep every pixel they came with.
+ */
+export const TONEMAP_MAX_HEIGHT = 1080;
+
+/** Transfer curves that mean HDR. Everything else is treated as SDR. */
+const HDR_TRANSFERS = new Set(['smpte2084', 'smpte-st-2084', 'arib-std-b67', 'smpte428']);
+
+/**
+ * Is this video HDR?
+ *
+ * Keyed on the transfer curve alone. Bit depth is not a signal - most of a 4K
+ * library is 10-bit SDR - and neither is BT.2020 primaries on their own.
+ */
+export function isHdr(video) {
+  const transfer = video?.transfer;
+  return Boolean(transfer) && HDR_TRANSFERS.has(String(transfer).toLowerCase());
+}
+
+/**
+ * ffmpeg filter chain converting HDR to SDR.
+ *
+ * Without this, PQ code values reach the browser and get read as ordinary
+ * gamma. Mid-tones sit far higher in PQ than in gamma 2.2, so the picture comes
+ * out washed out and much too bright - the symptom that prompted this.
+ *
+ * The scale runs BEFORE the tone map, which is the whole reason this is fast
+ * enough to watch: tone mapping is per-pixel, so doing it after a 4K->1080p
+ * downscale costs a quarter as much. Measured at 2.7x faster that way round.
+ * Scaling in PQ space rather than linear light is very slightly less correct,
+ * and invisible next to being unwatchable.
+ */
+export function tonemapChain(height, maxHeight = TONEMAP_MAX_HEIGHT) {
+  const steps = [];
+  if (Number.isFinite(height) && height > maxHeight) steps.push(`scale=-2:${maxHeight}`);
+
+  steps.push(
+    'zscale=t=linear:npl=100',
+    'format=gbrpf32le',
+    'zscale=p=bt709',
+    'tonemap=tonemap=hable:desat=0',
+    'zscale=t=bt709:m=bt709:r=tv',
+    'format=yuv420p'
+  );
+  return steps.join(',');
+}
+
+/* --------------------------------------------------------------------------
  * Decision
  * ----------------------------------------------------------------------- */
 
@@ -170,7 +282,8 @@ export async function probe(filePath) {
  * @param {object|null} info  probe() result
  * @param {object} caps       client capabilities, e.g. { hevc: true, ac3: true }
  */
-export function decide(info, caps = {}) {
+export function decide(info, caps = {}, options = {}) {
+  const audioOffset = clampAudioOffset(options.audioOffset);
   if (!info) {
     return { mode: 'direct', reasons: ['no probe data — serving raw bytes'], seekable: true };
   }
@@ -198,6 +311,23 @@ export function decide(info, caps = {}) {
   else if (videoOk) mode = 'remux-audio';
   else mode = 'transcode';
 
+  // HDR has to be tone mapped, and tone mapping means touching every pixel, so
+  // no path that copies the video stream can carry it. Browsers accept the PQ
+  // stream happily and then render it as if it were ordinary gamma, which comes
+  // out washed out and far too bright.
+  const hdr = isHdr(info.video);
+  if (hdr && mode !== 'transcode') {
+    mode = 'transcode';
+    reasons.push('HDR video is tone mapped to SDR for the browser');
+  }
+
+  // direct streams raw bytes with no ffmpeg in the path, so it cannot carry an
+  // audio offset. Promote to remux: still a stream copy, still lossless.
+  if (audioOffset !== 0 && mode === 'direct') {
+    mode = 'remux';
+    reasons.push(`audio offset ${audioOffset}s requires ffmpeg — remuxing instead of direct`);
+  }
+
   if (mode === 'direct') reasons.push('plays natively — streaming untouched bytes');
 
   return {
@@ -210,7 +340,14 @@ export function decide(info, caps = {}) {
     audio,
     audioTracks: info.audio,
     duration: info.duration,
-    lossless: mode !== 'transcode'
+    lossless: mode !== 'transcode',
+    hdr,
+    // Told to the client so the badge can say "HDR → SDR" rather than the bare
+    // "Transcode", which would look like an unexplained quality loss.
+    tonemapped: hdr,
+    tonemapHeight: hdr && Number.isFinite(info.video?.height) && info.video.height > TONEMAP_MAX_HEIGHT
+      ? TONEMAP_MAX_HEIGHT
+      : (info.video?.height ?? null)
   };
 }
 
@@ -218,24 +355,63 @@ export function decide(info, caps = {}) {
  * Streaming
  * ----------------------------------------------------------------------- */
 
-function buildArgs(filePath, { mode, startSeconds = 0, audioIndex = 0 }) {
+export function buildArgs(filePath, {
+  mode, startSeconds = 0, audioIndex = 0, audioOffset = 0,
+  tonemap = false, height = null, encoder = null
+}) {
   const args = ['-hide_banner', '-loglevel', 'error'];
+  const offset = clampAudioOffset(audioOffset);
+
+  // GPU decode feeds the tone map without a round trip through the CPU decoder.
+  // Only for NVENC: the qsv and amf paths need their own filter plumbing, and
+  // falling back to a plain CPU decode there is correct, just slower.
+  if (tonemap && encoder === 'h264_nvenc') args.push('-hwaccel', 'cuda');
 
   // Seeking before -i is the fast path: ffmpeg jumps rather than decoding to
   // the timestamp. With -c copy it lands on the nearest keyframe.
-  if (startSeconds > 0) args.push('-ss', String(startSeconds));
+  const seek = () => { if (startSeconds > 0) args.push('-ss', String(startSeconds)); };
 
-  args.push('-i', filePath, '-map', '0:v:0', '-map', `0:a:${audioIndex}?`, '-sn', '-dn');
+  seek();
+  args.push('-i', filePath);
+
+  if (offset !== 0) {
+    // A second, time-shifted view of the same file. Audio can still be copied
+    // this way; an adelay/atrim filter would force a re-encode and cost the
+    // losslessness that makes remux worth having.
+    // -itsoffset must precede the -i it applies to.
+    args.push('-itsoffset', String(offset));
+    seek();
+    args.push('-i', filePath);
+    args.push('-map', '0:v:0', '-map', `1:a:${audioIndex}?`);
+  } else {
+    args.push('-map', '0:v:0', '-map', `0:a:${audioIndex}?`);
+  }
+
+  args.push('-sn', '-dn');
 
   if (mode === 'transcode') {
-    args.push(
-      '-c:v', 'libx264',
-      '-preset', config.ffmpeg.videoPreset,
-      '-crf', String(config.ffmpeg.videoCrf),
-      '-maxrate', config.ffmpeg.videoMaxrate,
-      '-bufsize', '24M',
-      '-pix_fmt', 'yuv420p'
-    );
+    if (tonemap) args.push('-vf', tonemapChain(height));
+
+    if (encoder) {
+      // Hardware encoders take a quality target rather than a CRF, and p4 is
+      // NVENC's balanced preset - fast enough for a live pipe without the
+      // blockiness of p1.
+      args.push('-c:v', encoder);
+      if (encoder === 'h264_nvenc') args.push('-preset', 'p4', '-cq', String(config.ffmpeg.videoCrf));
+      else args.push('-global_quality', String(config.ffmpeg.videoCrf));
+      args.push('-maxrate', config.ffmpeg.videoMaxrate, '-bufsize', '24M');
+    } else {
+      args.push(
+        '-c:v', 'libx264',
+        '-preset', config.ffmpeg.videoPreset,
+        '-crf', String(config.ffmpeg.videoCrf),
+        '-maxrate', config.ffmpeg.videoMaxrate,
+        '-bufsize', '24M'
+      );
+    }
+    // The tone map chain already ends in yuv420p; setting it twice is harmless
+    // but stating it here keeps the non-tonemapped path explicit.
+    if (!tonemap) args.push('-pix_fmt', 'yuv420p');
   } else {
     args.push('-c:v', 'copy');
   }
@@ -247,6 +423,23 @@ function buildArgs(filePath, { mode, startSeconds = 0, audioIndex = 0 }) {
   }
 
   // Fragmented MP4 so playback can start before the file is finished.
+  //
+  // Deliberately plain. Seek latency was measured at ~630ms median from click
+  // to loadeddata, of which ffmpeg accounts for ~180ms to first bytes; the rest
+  // is the browser tearing down and reopening the stream. -probesize,
+  // -analyzeduration, -avoid_negative_ts, -muxdelay and -frag_duration were all
+  // tried and A/B measured: none improved it and frag_duration made it worse
+  // (751ms vs 633ms median). The lever is client-side, not here - see the seek
+  // coalescing in player.js.
+  // Deliberately plain, and delay_moov is deliberately NOT here.
+  //
+  // It looked like a free win: it removes a stray 83ms edit offset on the video
+  // track and measured faster to first bytes (169ms vs 188ms). But it withholds
+  // the moov init segment until the first fragment, and a browser cannot start
+  // decoding without it - readyState stayed at HAVE_NOTHING indefinitely with
+  // no error raised. The byte-throughput benchmark could not see that, because
+  // the bytes did arrive; they were just unusable. The 83ms it would have fixed
+  // shifts audio and video equally, so lip sync is unaffected either way.
   args.push('-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', 'pipe:1');
   return args;
 }

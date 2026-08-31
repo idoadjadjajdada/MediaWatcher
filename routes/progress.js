@@ -5,7 +5,9 @@
  * player, this route and anything added later cannot disagree about it.
  */
 import express from 'express';
-import { upsertProgress, getProgress, listContinueWatching, deleteProgress } from '../db/index.js';
+import {
+  upsertProgress, getProgress, listContinueWatching, listAllProgress, deleteProgress
+} from '../db/index.js';
 
 const router = express.Router();
 const wrap = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
@@ -36,7 +38,8 @@ router.post('/', wrap(async (req, res) => {
     season_number: body.season_number,
     episode_number: body.episode_number,
     title: body.title,
-    completed: body.completed
+    completed: body.completed,
+    audio_offset: body.audio_offset
   });
 
   res.json(row);
@@ -52,6 +55,13 @@ router.post('/', wrap(async (req, res) => {
 router.get('/', wrap(async (req, res) => {
   if (req.query.file_path) {
     return res.json(getProgress(String(req.query.file_path)) || null);
+  }
+
+  // ?all=1 returns every row, completed ones included. Continue Watching wants
+  // one unfinished entry per show; the show detail page wants the opposite -
+  // every episode, so it can mark which ones you have already seen.
+  if (req.query.all === '1' || req.query.all === 'true') {
+    return res.json(listAllProgress());
   }
 
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));

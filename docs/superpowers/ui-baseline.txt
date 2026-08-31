@@ -1,0 +1,31 @@
+
+> mediawatcher@1.0.0 ui-check
+> node tests/ui-check.mjs
+
+
+desktop (1440x900)
+  [pass] desktop - no horizontal overflow
+  [pass] desktop - nothing renders at zero size
+  [pass] desktop - navigation is reachable
+  [FAIL] desktop - no rail shows a scrollbar track
+
+tablet (768x1024)
+  [pass] tablet - no horizontal overflow
+  [pass] tablet - nothing renders at zero size
+  [pass] tablet - navigation is reachable
+  [FAIL] tablet - touch targets are at least 44px
+         [{"tag":"button","action":"navigate","cls":"nav__item is-active","w":40,"h":40},{"tag":"button","action":"navigate","cls":"nav__item","w":40,"h":40},{"tag":"button","action":"navigate","cls":"nav__item","w":40,"h":40},{"tag":"button","action":"navigate","cls":"nav__item","w":40,"h":40},{"tag":"button","action":"navigate","cls":"nav__item","w":40,"h":40},{"tag":"button","action":"rescan","cls":"btn btn--secondary","w":20,"h":36},{"tag":"button","action":"toggle-drawer","cls":"btn btn--ghost btn--icon topbar__menu","w":36,"h":36},{"tag":"input","action":"","cls":"input","w":536,"h":36}]
+  [FAIL] tablet - no rail shows a scrollbar track
+
+mobile (375x812)
+  [pass] mobile - no horizontal overflow
+  [FAIL] mobile - nothing renders at zero size
+         [{"tag":"svg","cls":"","w":0,"h":0}]
+  [pass] mobile - navigation is reachable
+  [FAIL] mobile - touch targets are at least 44px
+         [{"tag":"button","action":"navigate","cls":"nav__item is-active","w":235,"h":41},{"tag":"button","action":"navigate","cls":"nav__item","w":235,"h":41},{"tag":"button","action":"navigate","cls":"nav__item","w":235,"h":41},{"tag":"button","action":"navigate","cls":"nav__item","w":235,"h":41},{"tag":"button","action":"navigate","cls":"nav__item","w":235,"h":41},{"tag":"button","action":"rescan","cls":"btn btn--secondary","w":235,"h":36},{"tag":"button","action":"toggle-drawer","cls":"btn btn--ghost btn--icon topbar__menu","w":36,"h":36},{"tag":"input","action":"","cls":"input","w":153,"h":36}]
+  [FAIL] mobile - no rail shows a scrollbar track
+  [pass] console - no errors during load
+
+15 checks, 6 FAILED
+

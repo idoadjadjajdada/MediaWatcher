@@ -289,6 +289,12 @@ function Start-ProgressFill {
     $target = $Track.ActualWidth * ($Percent / 100.0)
 
     $grow = New-Object System.Windows.Media.Animation.DoubleAnimation
+    # From is not optional here. A Border with no explicit width has Width =
+    # Double.NaN (Auto), and a To-only animation interpolates from the current
+    # value - NaN - which throws AnimationException on the render thread's
+    # animation tick. That is not catchable at the call site, so it took the
+    # whole launcher down, and the Closing handler took the server with it.
+    $grow.From = 0
     $grow.To = $target
     $grow.Duration = [TimeSpan]::FromMilliseconds(400)
     $grow.EasingFunction = $script:EaseOut
@@ -442,12 +448,39 @@ function Receive-ApiResult {
 function Start-Server {
   if ($null -ne $script:ServerHandle) { return }
   $level = [string]$CmbLogLevel.SelectedItem.Content
+
+  # Clear the port before binding it. A server spawned by a previous launcher
+  # outlives the window that started it, so the usual failure is "already in
+  # use" against an orphan of our own making rather than a real conflict.
+  Clear-Port | Out-Null
+
   Set-ServerStatus 'starting'
   $script:ServerHandle = Start-MwServer -Config $script:Config -LogLevel $level -Queue $script:OutputQueue
   if ($null -eq $script:PollerHandle) {
     $script:PollerHandle = Start-ApiPoller -Config $script:Config -ResultQueue $script:ResultQueue
   }
   Update-ButtonStates | Out-Null
+}
+
+<#
+  Terminate anything of ours squatting the configured port.
+
+  Our own running child is excluded, so this can never shoot the server the
+  launcher is currently managing.
+#>
+function Clear-Port {
+  $ownPid = 0
+  if ($null -ne $script:ServerHandle -and $null -ne $script:ServerHandle.Process) {
+    try { $ownPid = $script:ServerHandle.Process.Id } catch { $ownPid = 0 }
+  }
+
+  $result = Stop-MwPortOwner -Port $script:Config.Port -ExcludePid $ownPid `
+    -Queue $script:OutputQueue
+
+  if ($result.Killed.Count -eq 0 -and $result.Foreign.Count -eq 0) {
+    Write-MwQueueNotice $script:OutputQueue "port $($script:Config.Port) is free"
+  }
+  return $result
 }
 
 function Stop-Server {
@@ -479,6 +512,13 @@ $BtnLibrary.Add_Click({
     Write-MwQueueNotice $script:OutputQueue "library folder does not exist: $($script:Config.LibraryPath)"
   }
 })
+$BtnFreePort.Add_Click({
+  $result = Clear-Port
+  if ($result.Killed.Count -gt 0) {
+    Write-MwQueueNotice $script:OutputQueue "freed port $($script:Config.Port) - stopped $($result.Killed.Count) process(es)"
+  }
+})
+
 $BtnClearLog.Add_Click({ $LogItems.Items.Clear() })
 $BtnRescan.Add_Click({
   if ($null -eq $script:PollerHandle) {
@@ -712,6 +752,24 @@ $window.Add_Loaded({
 })
 
 # Closing the window must never orphan the server.
+<#
+  A rendering fault must not cost you the server.
+
+  Animation exceptions surface on the render thread's tick, not at the call
+  site, so no try/catch around the code that started them can help. Left
+  unhandled they terminate the app - and the Closing handler below then stops
+  the server, so a cosmetic bug in a progress bar killed playback.
+
+  Marking them handled keeps the launcher alive and puts the fault in the log
+  where it can be seen and fixed.
+#>
+$window.Dispatcher.add_UnhandledException({
+  param($dispatcherSource, $dispatcherEvent)
+  $ex = $dispatcherEvent.Exception
+  Write-MwQueueNotice $script:OutputQueue ("UI error (recovered): " + $ex.GetType().Name + " - " + $ex.Message)
+  $dispatcherEvent.Handled = $true
+})
+
 $window.Add_Closing({
   $timer.Stop()
   foreach ($handle in $script:FixHandles) { Stop-MwHandle $handle }

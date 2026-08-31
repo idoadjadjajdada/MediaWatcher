@@ -17,7 +17,8 @@ globalThis.document = {
   removeEventListener: () => {}
 };
 
-const { shouldOfferNext, secondsRemaining, NEXT_UP_LEAD_SECONDS } =
+const { shouldOfferNext, secondsRemaining, shouldCountDown,
+        NEXT_UP_LEAD_SECONDS, COUNTDOWN_WINDOW_SECONDS } =
   await import('../public/js/player.js');
 
 let total = 0;
@@ -70,6 +71,18 @@ check('counts down in whole seconds', secondsRemaining(EPISODE, EPISODE - 30) ==
 check('rounds a partial second up', secondsRemaining(EPISODE, EPISODE - 29.2) === 30);
 check('floors at zero past the end', secondsRemaining(EPISODE, EPISODE + 10) === 0);
 check('zero for an unknown duration', secondsRemaining(0, 5) === 0);
+
+console.log('\nshouldCountDown');
+check('no number a minute out', shouldCountDown(EPISODE, EPISODE - 60) === false);
+check('no number at 11 seconds', shouldCountDown(EPISODE, EPISODE - 11) === false);
+check('number at exactly 10 seconds', shouldCountDown(EPISODE, EPISODE - 10) === true);
+check('number at 3 seconds', shouldCountDown(EPISODE, EPISODE - 3) === true);
+check('number past the end', shouldCountDown(EPISODE, EPISODE + 5) === true);
+check('no number for an unknown duration', shouldCountDown(0, 10) === false);
+check('window is 10 seconds', COUNTDOWN_WINDOW_SECONDS === 10);
+check('lead is a full minute', NEXT_UP_LEAD_SECONDS === 60);
+check('the card is up well before the number starts',
+  shouldOfferNext(EPISODE, EPISODE - 30) === true && shouldCountDown(EPISODE, EPISODE - 30) === false);
 
 console.log('');
 if (failures === 0) {

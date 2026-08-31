@@ -366,6 +366,8 @@
         <Button x:Name="BtnOpenApp" Style="{StaticResource SecondaryButton}" Content="Open MediaWatcher" Margin="0,8,0,0"/>
         <Button x:Name="BtnRescan" Style="{StaticResource SecondaryButton}" Content="Rescan library" Margin="0,8,0,0"/>
         <Button x:Name="BtnLibrary" Style="{StaticResource SecondaryButton}" Content="Library folder" Margin="0,8,0,0"/>
+        <Button x:Name="BtnFreePort" Style="{StaticResource SecondaryButton}" Content="Free the port" Margin="0,8,0,0"
+                ToolTip="Stop any MediaWatcher server left running on this port by a previous launcher"/>
 
         <TextBlock Text="LOG LEVEL" Style="{StaticResource SectionLabel}" Margin="2,18,0,6"/>
         <ComboBox x:Name="CmbLogLevel" Style="{StaticResource DarkCombo}" Height="30">

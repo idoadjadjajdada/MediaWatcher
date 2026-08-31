@@ -1,0 +1,129 @@
+/* Desktop icon rail, mobile tab bar, top bar, toasts. */
+
+.app-shell {
+  display: grid;
+  min-height: 100vh;
+  grid-template-columns: var(--rail-w) 1fr;
+  grid-template-rows: var(--topbar-h) 1fr;
+  grid-template-areas:
+    "navrail topbar"
+    "navrail main";
+}
+
+/* ---- desktop rail ---- */
+.navrail {
+  grid-area: navrail;
+  display: flex; flex-direction: column; align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+  border-right: 1px solid var(--line);
+  position: sticky; top: 0; height: 100vh;
+}
+.navrail__mark {
+  width: 28px; height: 28px; border-radius: var(--radius-sm);
+  background: var(--fg); color: #000;
+  display: grid; place-items: center; margin-bottom: var(--space-3);
+}
+.navrail__mark svg { width: 14px; height: 14px; }
+.navrail__nav { display: flex; flex-direction: column; gap: var(--space-2); }
+.navrail__item {
+  position: relative;
+  width: 44px; height: 44px; border-radius: var(--radius);
+  display: grid; place-items: center;
+  color: var(--fg-3);
+  transition: color var(--state), background var(--state);
+}
+.navrail__item:hover { color: var(--fg); background: var(--surface-2); }
+.navrail__item.is-active { color: var(--fg); background: rgba(255, 255, 255, .14); }
+.navrail__item--foot { margin-top: auto; }
+.navrail__item.is-busy svg { animation: spin 1s linear infinite; }
+
+.navrail__badge, .tabbar__badge {
+  position: absolute; top: 5px; right: 5px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: var(--radius-pill);
+  background: var(--fg); color: #000;
+  font-size: 9px; font-weight: 700;
+  display: grid; place-items: center;
+}
+/* An explicit display beats the hidden attribute, so the badge sat there
+   reading "0" with nothing downloading. */
+.navrail__badge[hidden], .tabbar__badge[hidden] { display: none; }
+
+/* ---- top bar ---- */
+.topbar {
+  grid-area: topbar;
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: 0 var(--space-5);
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: var(--z-sticky);
+  background: rgba(0, 0, 0, .82);
+}
+.topbar__search { position: relative; flex: 1; max-width: 420px; display: flex; align-items: center; }
+.topbar__search svg { position: absolute; left: var(--space-3); color: var(--fg-3); pointer-events: none; }
+.topbar__input { padding-left: 38px; }
+.topbar__add { flex: none; }
+
+/* ---- main ---- */
+.main { grid-area: main; min-width: 0; }
+
+/* ---- mobile tab bar (hidden until mobile) ---- */
+.tabbar { display: none; }
+
+/* ---- toasts ---- */
+.toast-stack {
+  position: fixed; right: var(--space-5); bottom: var(--space-5);
+  z-index: var(--z-toast); display: flex; flex-direction: column; gap: var(--space-2);
+}
+.toast {
+  min-width: 260px; padding: var(--space-3) var(--space-4);
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  animation: rise-in var(--enter) both;
+}
+.toast.is-leaving { animation: fade-in var(--state) reverse both; }
+.toast__title { font-weight: 700; font-size: 12px; }
+.toast__text { color: var(--fg-2); font-size: 11px; margin-top: 2px; }
+.toast--error .toast__title { color: var(--danger); }
+.toast--warn .toast__title { color: var(--warn); }
+
+.boot { display: grid; place-items: center; gap: var(--space-4); min-height: 100vh; }
+.boot__label { color: var(--fg-3); }
+.noscript { padding: var(--space-5); color: var(--fg); }
+
+/* ---- mobile ---- */
+@media (max-width: 767px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: var(--topbar-h) 1fr auto;
+    grid-template-areas: "topbar" "main" "tabbar";
+  }
+  .navrail { display: none; }
+
+  .topbar { padding: 0 var(--space-4); }
+  .topbar__search { max-width: none; }
+  .topbar__add .btn__label { display: none; }
+  .topbar__add { width: 44px; padding: 0; }
+
+  .tabbar {
+    grid-area: tabbar;
+    display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+    position: sticky; bottom: 0; z-index: var(--z-tabbar);
+    border-top: 1px solid var(--line);
+    background: rgba(0, 0, 0, .92);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .tabbar__item {
+    position: relative;
+    min-height: var(--tabbar-h);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    color: var(--fg-3);
+    transition: color var(--state);
+  }
+  .tabbar__item.is-active { color: var(--fg); }
+  .tabbar__label { font-size: 10px; font-weight: 600; }
+  .tabbar__badge { top: 6px; right: 50%; margin-right: -22px; }
+
+  .toast-stack { left: var(--space-3); right: var(--space-3); bottom: calc(var(--tabbar-h) + var(--space-3)); }
+  .toast { min-width: 0; }
+}

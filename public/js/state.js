@@ -8,6 +8,10 @@
 export const state = {
   library: { movies: [], shows: [], unknown: [] },
   progress: [],
+  // Every progress row, keyed by file path. The show detail page marks each
+  // episode watched or part-watched from this; `progress` above is only the
+  // Continue Watching subset and deliberately holds one row per show.
+  watched: {},
   jobs: [],
   currentPage: 'home',
   currentItem: null,          // item behind the detail modal
@@ -31,14 +35,13 @@ export const state = {
   // Browsable titles that are not in the library. Loaded once after the
   // library so Home never blocks on TMDB.
   discover: { rails: [], status: 'idle', error: null },
-  player: { open: false, src: '', subs: null, resumeAt: 0 },
+  player: { open: false, src: '', subs: null, resumeAt: 0, audioOffset: 0 },
 
   // UI bookkeeping
   loading: true,
   error: null,
   lastScanAt: null,
-  scanning: false,
-  drawerOpen: false
+  scanning: false
 };
 
 const subscribers = new Set();
@@ -117,20 +120,204 @@ export function locateFile(filePath) {
 }
 
 /** The episode after this one, crossing into the next season if needed. */
-export function nextEpisode(show, seasonNumber, episodeNumber) {
+/** Every playable episode of a show, in order, flattened across seasons. */
+function playableEpisodes(show) {
   const flat = [];
-  for (const season of show.seasons) {
+  for (const season of show.seasons || []) {
     for (const episode of season.episodes) {
       if (episode.files && episode.files.length > 0) {
         flat.push({ season: season.number, episode });
       }
     }
   }
+  return flat;
+}
+
+export function nextEpisode(show, seasonNumber, episodeNumber) {
+  const flat = playableEpisodes(show);
   const index = flat.findIndex(
     (entry) => entry.season === seasonNumber && entry.episode.episode_number === episodeNumber
   );
   if (index === -1 || index === flat.length - 1) return null;
   return flat[index + 1];
+}
+
+/** The episode before this one, crossing back into the previous season. */
+export function previousEpisode(show, seasonNumber, episodeNumber) {
+  const flat = playableEpisodes(show);
+  const index = flat.findIndex(
+    (entry) => entry.season === seasonNumber && entry.episode.episode_number === episodeNumber
+  );
+  if (index <= 0) return null;
+  return flat[index - 1];
+}
+
+/** Every season number a show has, ascending. */
+export function seasonNumbers(show) {
+  return (show?.seasons || []).map((season) => season.number).sort((a, b) => a - b);
+}
+
+/**
+ * Shrink a TMDB still to sidebar size.
+ *
+ * The scanner builds stills at backdrop size (w1280) because the detail modal
+ * wants them big. The sidebar shows them at about 92px, so serving w1280 there
+ * would pull several megabytes to draw a list of thumbnails.
+ */
+export function stillThumb(url) {
+  if (!url) return null;
+  return String(url).replace(/\/t\/p\/(w\d+|original)\//, '/t/p/w300/');
+}
+
+/**
+ * One season's episodes, shaped for the sidebar.
+ *
+ * Episodes with no file are kept rather than filtered: a gap in the library
+ * should read as a gap, not silently renumber the list. The caller dims them.
+ *
+ * `current` matches on season AND episode number - matching on episode number
+ * alone would mark S01E01 while S02E01 is playing.
+ */
+export function episodeRows(show, seasonNumber, currentSeason, currentEpisode) {
+  const season = (show?.seasons || []).find((entry) => entry.number === seasonNumber);
+  if (!season) return [];
+
+  return [...(season.episodes || [])]
+    .sort((a, b) => a.episode_number - b.episode_number)
+    .map((episode) => {
+      const file = (episode.files || [])[0] || null;
+      return {
+        season: season.number,
+        episode_number: episode.episode_number,
+        title: episode.title || '',
+        filePath: file ? file.file_path : null,
+        playable: Boolean(file),
+        current: season.number === currentSeason && episode.episode_number === currentEpisode,
+        still: stillThumb(episode.still),
+        overview: episode.overview || ''
+      };
+    });
+}
+
+/**
+ * Shape one Continue Watching row into everything its card needs.
+ *
+ * An episode shows its own still, its own description and its own air year -
+ * the show's poster and first-aired year say nothing about where you actually
+ * are. A movie keeps its poster, because that is how you recognise a film.
+ *
+ * Returns null when the path is no longer in the library, which happens after
+ * a file is moved or deleted between the progress row being written and Home
+ * being rendered.
+ */
+export function continueEntry(row, library) {
+  if (!row?.file_path || !library) return null;
+
+  // Against the library passed in rather than module state, so this is
+  // testable without standing up the whole app.
+  const located = locateIn(library, row.file_path);
+  if (!located) return null;
+
+  const duration = Number(row.duration) || 0;
+  const position = Number(row.position) || 0;
+  const progress = duration > 0 ? position / duration : 0;
+
+  if (located.type === 'episode') {
+    const { item: show, season, episode } = located;
+    const year = episode.air_date
+      ? (Number(String(episode.air_date).slice(0, 4)) || null)
+      : (show.year ?? null);
+
+    return {
+      type: 'episode',
+      tmdb_id: show.tmdb_id,
+      filePath: row.file_path,
+      art: stillThumb(episode.still) || show.poster || null,
+      title: show.title,
+      subtitle: `${episodeTagOf(season, episode.episode_number)}${episode.title ? ` · ${episode.title}` : ''}`,
+      description: episode.overview || '',
+      year,
+      progress,
+      position
+    };
+  }
+
+  const movie = located.item;
+  return {
+    type: 'movie',
+    tmdb_id: movie.tmdb_id,
+    filePath: row.file_path,
+    art: movie.poster || null,
+    title: movie.title,
+    subtitle: '',
+    description: movie.overview || '',
+    year: movie.year ?? null,
+    progress,
+    position
+  };
+}
+
+/** SxxExx, kept here so state.js does not have to import from views.js. */
+function episodeTagOf(season, episode) {
+  const pad = (n) => String(n ?? 0).padStart(2, '0');
+  return `S${pad(season)}E${pad(episode)}`;
+}
+
+/** locateFile against an explicit library rather than the module's state. */
+function locateIn(library, filePath) {
+  for (const movie of library.movies || []) {
+    if ((movie.files || []).some((file) => file.file_path === filePath)) {
+      return { type: 'movie', item: movie, file: movie.files.find((f) => f.file_path === filePath) };
+    }
+  }
+  for (const show of library.shows || []) {
+    for (const season of show.seasons || []) {
+      for (const episode of season.episodes || []) {
+        if ((episode.files || []).some((file) => file.file_path === filePath)) {
+          return { type: 'episode', item: show, season: season.number, episode };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Progress rows keyed by file path, for O(1) lookup while rendering. */
+export function progressByPath(rows) {
+  const index = {};
+  for (const row of rows || []) {
+    if (row?.file_path) index[row.file_path] = row;
+  }
+  return index;
+}
+
+/**
+ * Watch progress under one episode: how far in, and whether it counts as seen.
+ *
+ * Ignores the first few seconds so merely opening an episode does not leave a
+ * sliver of progress on it, and treats the last 5% as watched whether or not
+ * the completed flag has been written yet - the flag is set by the player on
+ * save, so it lags a viewer who closes the tab on the credits.
+ */
+export const WATCH_STARTED_SECONDS = 5;
+export const WATCH_COMPLETE_RATIO = 0.95;
+
+export function watchState(row) {
+  const position = Number(row?.position) || 0;
+  const duration = Number(row?.duration) || 0;
+  const started = position > WATCH_STARTED_SECONDS;
+
+  if (!started) return { started: false, watched: false, percent: 0, remaining: 0 };
+
+  const ratio = duration > 0 ? position / duration : 0;
+  const watched = Boolean(row?.completed) || (duration > 0 && ratio >= WATCH_COMPLETE_RATIO);
+
+  return {
+    started: true,
+    watched,
+    percent: watched ? 100 : Math.max(0, Math.min(100, ratio * 100)),
+    remaining: duration > 0 ? Math.max(0, Math.round(duration - position)) : 0
+  };
 }
 
 export function activeJobCount() {

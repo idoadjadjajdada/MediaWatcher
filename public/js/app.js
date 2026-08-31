@@ -6,10 +6,13 @@
  * CSP, which forbids inline handlers.
  */
 import * as api from './api.js';
-import { state, setState, subscribe, patchSlice, findMovie, findShow } from './state.js';
+import {
+  state, setState, subscribe, patchSlice, findMovie, findShow, progressByPath
+} from './state.js';
 import * as views from './views.js';
 import * as search from './search.js';
 import * as player from './player.js';
+import * as preview from './preview.js';
 
 const PAGES = ['home', 'movies', 'shows', 'search', 'downloads'];
 const JOB_POLL_MS = 3000;
@@ -78,14 +81,18 @@ function renderInner(main) {
 
 async function loadLibrary() {
   try {
-    const [library, progress] = await Promise.all([
+    const [library, progress, allProgress] = await Promise.all([
       api.getLibrary(),
-      api.getContinueWatching().catch(() => [])
+      api.getContinueWatching().catch(() => []),
+      // Every row rather than the Continue Watching subset: the detail page
+      // needs completed episodes too, to mark them as seen.
+      api.getAllProgress().catch(() => [])
     ]);
 
     setState({
       library: { movies: library.movies, shows: library.shows, unknown: library.unknown },
       progress,
+      watched: progressByPath(allProgress),
       lastScanAt: library.last_scan_at,
       scanning: Boolean(library.scanning),
       loading: false,
@@ -150,15 +157,25 @@ function currentHashPage() {
 }
 
 function onHashChange() {
+  const raw = window.location.hash.replace(/^#/, '').trim();
+
+  // The player is its own screen and owns the hash while it is up. Leaving
+  // that hash by any route - Back, a typed URL, a nav click - closes it rather
+  // than swapping the page out from underneath it.
+  if (raw === player.PLAYER_HASH) return;
+  // Not awaited: the page behind should update immediately, and the only thing
+  // close() still has to do is save progress.
+  if (player.isOpen()) player.close({ save: true });
+
   const page = currentHashPage();
-  if (page !== state.currentPage) setState({ currentPage: page, drawerOpen: false });
+  if (page !== state.currentPage) setState({ currentPage: page });
 }
 
 function navigate(page) {
   if (!PAGES.includes(page)) return;
   window.location.hash = page;
   // hashchange does not fire when the hash is already correct.
-  if (currentHashPage() === state.currentPage) setState({ drawerOpen: false });
+  if (currentHashPage() === state.currentPage) setState({});
 }
 
 /* --------------------------------------------------------------------------
@@ -168,7 +185,6 @@ function navigate(page) {
 const ACTIONS = {
   navigate: (el) => navigate(el.dataset.page),
 
-  'toggle-drawer': () => setState({ drawerOpen: !state.drawerOpen }),
 
   rescan: async () => {
     setState({ scanning: true });
@@ -184,6 +200,14 @@ const ACTIONS = {
     } finally {
       setState({ scanning: false });
     }
+  },
+
+  'rail-scroll': (el) => {
+    const wrap = el.closest('.row__wrap');
+    const track = wrap ? wrap.querySelector('.rail') : null;
+    if (!track) return;
+    const dir = Number(el.dataset.dir) || 1;
+    track.scrollBy({ left: dir * Math.round(track.clientWidth * 0.8), behavior: 'smooth' });
   },
 
   'open-detail': (el) => {
@@ -381,18 +405,78 @@ const ACTIONS = {
   },
 
   // --- player ---
+  'resume': (el) => player.open(el.dataset.path),
   'close-player': () => player.close(),
   'toggle-play': () => player.togglePlay(),
   'seek-back': () => player.skip(-10),
   'seek-forward': () => player.skip(10),
   'toggle-mute': () => player.toggleMute(),
   'toggle-fullscreen': () => player.toggleFullscreen(),
-  'toggle-menu': () => player.toggleMenu(),
+  'toggle-popover': (el) => player.togglePopover(el.dataset.popover),
+  'toggle-episodes': () => player.toggleEpisodes(),
+  'close-episodes': () => player.closeEpisodes(),
+  'select-season': (el) => player.selectSeason(el.dataset.season),
+  'play-episode': (el) => { player.closeEpisodes(); player.open(el.dataset.path); },
+  'picture-reset': () => player.setPicture({ brightness: 100, contrast: 100 }),
   'set-subtitle': (el) => player.setSubtitle(el.dataset.track),
   'set-speed': (el) => player.setSpeed(el.dataset.speed),
+  'prev-episode': () => player.playPrevious(),
+  'next-episode': () => player.playNextEpisode(),
+  'audio-nudge': (el) => player.nudgeAudioOffset(Number(el.dataset.delta)),
+  'audio-reset': () => player.resetAudioOffset(),
   'play-next': () => player.playNext(),
   'cancel-next': () => player.cancelNext()
 };
+
+/* --------------------------------------------------------------------------
+ * Continue Watching hover frame
+ *
+ * A movie card shows its poster, so nothing on it says where you stopped.
+ * Hovering fetches the generated frame nearest that position from the same
+ * thumbnail service the seek bar uses, and fades it over the poster.
+ *
+ * Loaded on hover rather than up front: these are full-size requests, and most
+ * cards are never hovered. Failure is silent - the poster simply stays.
+ * ----------------------------------------------------------------------- */
+
+const hoverFrames = new Map();
+
+async function loadHoverFrame(card) {
+  const filePath = card.dataset.path;
+  const position = Number(card.dataset.position) || 0;
+  const target = card.querySelector('.continue__frame');
+  if (!filePath || !target || card.dataset.frameState) return;
+
+  card.dataset.frameState = 'loading';
+  try {
+    // Not memoised while still generating: asking again is what nudges the
+    // server to keep going, and the answer changes as frames land.
+    let meta = hoverFrames.get(filePath);
+    if (!meta) {
+      const response = await fetch(api.thumbMetaUrl(filePath));
+      if (!response.ok) throw new Error(String(response.status));
+      meta = await response.json();
+      if (meta.ready) hoverFrames.set(filePath, meta);
+    }
+    if (!meta.interval || !meta.total) throw new Error('no frames yet');
+
+    const index = Math.min(preview.frameIndex(position, meta.interval), meta.total - 1);
+    const url = api.thumbUrl(filePath, index);
+    await new Promise((resolve, reject) => {
+      const probe = new Image();
+      probe.onload = resolve;
+      probe.onerror = reject;
+      probe.src = url;
+    });
+    target.style.backgroundImage = `url("${url}")`;
+    card.dataset.frameState = 'ready';
+  } catch {
+    // Frames are generated on demand, so "not there yet" is the normal first
+    // answer. Clearing the flag lets the next hover try again rather than
+    // marking the card as permanently posterless.
+    delete card.dataset.frameState;
+  }
+}
 
 const SUGGEST_DEBOUNCE_MS = 250;
 let suggestTimer = null;
@@ -558,6 +642,25 @@ function onStateChange() {
     previousPage = state.currentPage;
     syncJobPolling();
   }
+
+  // Progress only loaded at boot, so Continue Watching and the watched marks
+  // on a show page stayed at whatever they were when the tab opened. Closing
+  // the player is the moment they are certain to be wrong.
+  if (previousPlayerOpen && !state.player.open) refreshProgress();
+  previousPlayerOpen = state.player.open;
+}
+
+let previousPlayerOpen = false;
+
+async function refreshProgress() {
+  const [progress, allProgress] = await Promise.all([
+    api.getContinueWatching().catch(() => null),
+    api.getAllProgress().catch(() => null)
+  ]);
+  const patch = {};
+  if (progress) patch.progress = progress;
+  if (allProgress) patch.watched = progressByPath(allProgress);
+  if (Object.keys(patch).length) setState(patch);
 }
 
 async function boot() {
@@ -567,8 +670,22 @@ async function boot() {
   document.addEventListener('click', onClick);
   document.addEventListener('change', onClick);
   document.addEventListener('input', onClick);
+  // Delegated so it survives re-renders, and capture-phase because pointerover
+  // does not bubble from every nested element consistently across browsers.
+  document.addEventListener('pointerover', (event) => {
+    const card = event.target.closest?.('.continue--movie');
+    if (card) loadHoverFrame(card);
+  });
+
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('error', onResourceError, true);
+
+  // A reload while the player was up leaves #player in the address bar with no
+  // player behind it. Nothing can restore one - the file is not in the hash -
+  // so drop back to a real page rather than showing Home under a stale route.
+  if (window.location.hash.replace(/^#/, '').trim() === player.PLAYER_HASH) {
+    window.location.replace(`${window.location.pathname}${window.location.search}#home`);
+  }
 
   state.currentPage = currentHashPage();
   previousPage = state.currentPage;

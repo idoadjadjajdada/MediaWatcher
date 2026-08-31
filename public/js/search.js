@@ -141,7 +141,7 @@ export function renderSearch() {
             <input class="input input--num" id="search-episode" type="number" min="0" max="999"
                    value="${wholeOr(episode, 1)}" aria-label="Episode" autocomplete="off">
           </label>` : ''}
-        <button class="btn btn--primary" data-action="run-search">${icon('search', 'btn__icon')}<span class="btn__label">Search</span></button>
+        <button class="btn btn--primary" data-action="run-search">${icon('search', 'icon-sm')}<span class="btn__label">Search</span></button>
       </div>
       ${suggestions.length ? `
         <div class="suggestions" id="suggestions" role="listbox">
@@ -207,10 +207,10 @@ export function renderSearch() {
   }
 
   return `
-    <div class="page__header">
-      <h1 class="page__title">Search</h1>
+    <div class="page__head">
+      <h1 class="t-hero">Search</h1>
       ${status === 'done' && results.length
-    ? `<span class="page__count">${visible.length} of ${results.length} shown</span>`
+    ? `<span class="t-meta">${visible.length} of ${results.length} shown</span>`
     : ''}
     </div>
     ${toolbar}

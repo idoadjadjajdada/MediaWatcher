@@ -78,6 +78,8 @@ export const startDownload = (payload) => post('/api/torrents/download', payload
 export const cancelJob = (id) => del(`/api/torrents/jobs/${encodeURIComponent(id)}`);
 
 export const getContinueWatching = () => get('/api/progress');
+/** Every row, completed included — the detail page marks watched episodes. */
+export const getAllProgress = () => get('/api/progress?all=1');
 export const getProgressFor = (filePath) => get(`/api/progress?${q({ file_path: filePath })}`);
 export const saveProgress = (payload) => post('/api/progress', payload);
 
@@ -110,12 +112,13 @@ export const getStreamInfo = (filePath) => {
   return get(`/api/stream/info?${q({ path: filePath, hevc: caps.hevc ? 1 : '', ac3: caps.ac3 ? 1 : '' })}`);
 };
 
-export function streamUrl(filePath, { start = 0, audio } = {}) {
+export function streamUrl(filePath, { start = 0, audio, audioOffset = 0 } = {}) {
   const caps = decoderCapabilities();
   return `/api/stream?${q({
     path: filePath,
     t: start > 0 ? Math.floor(start) : '',
     audio,
+    audioOffset: audioOffset || '',
     hevc: caps.hevc ? 1 : '',
     ac3: caps.ac3 ? 1 : ''
   })}`;
@@ -130,11 +133,15 @@ export const subsUrl = (filePath, track) => {
 
 export const listSubtitles = (filePath) => get(`/api/subs?${q({ path: filePath, list: 1 })}`);
 
+export const thumbMetaUrl = (filePath) => `/api/thumbs/meta?${q({ path: filePath })}`;
+export const thumbUrl = (filePath, index) => `/api/thumbs?${q({ path: filePath, i: index })}`;
+
 export default {
   get, post, del, ApiError,
   health, getLibrary, rescan, refreshItem, getDiscover, getDiscoverDetail,
   searchTorrents, getSources, suggest,
   getJobs, startDownload, cancelJob,
-  getContinueWatching, getProgressFor, saveProgress,
-  getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities
+  getContinueWatching, getAllProgress, getProgressFor, saveProgress,
+  getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities,
+  thumbMetaUrl, thumbUrl
 };

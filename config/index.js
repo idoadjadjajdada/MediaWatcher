@@ -213,6 +213,13 @@ const config = {
   // Playback. ffmpeg is an external binary, not an npm dependency. It is only
   // used when the browser cannot decode a file as it sits on disk: compatible
   // files are still served as raw bytes with zero processing.
+  // Browser-native MP4s cached on disk. Playing from one is byte-range
+  // seekable, which is the only way to get instant seeking - an ffmpeg pipe
+  // has no byte offsets. Sources are never touched or replaced.
+  mp4Cache: {
+    enabled: str('MP4_CACHE_ENABLED', '1') !== '0'
+  },
+
   ffmpeg: {
     enabled: str('FFMPEG_ENABLED', '1') !== '0',
     ffmpegPath: str('FFMPEG_PATH', 'ffmpeg'),
@@ -221,6 +228,9 @@ const config = {
     // Audio re-encode settings (used when the source is DTS/TrueHD/etc).
     audioBitrate: str('TRANSCODE_AUDIO_BITRATE', '192k'),
     audioChannels: int('TRANSCODE_AUDIO_CHANNELS', 2),
+    // Use a GPU encoder when one is available. Only consulted for HDR tone
+    // mapping, where the CPU is already busy with the colour conversion.
+    hardwareEncode: str('FFMPEG_HARDWARE_ENCODE', '1') !== '0',
     // Video re-encode settings (last resort — only when the codec is undecodable).
     videoPreset: str('TRANSCODE_VIDEO_PRESET', 'veryfast'),
     videoCrf: int('TRANSCODE_VIDEO_CRF', 20),

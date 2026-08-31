@@ -24,6 +24,16 @@ db.pragma('foreign_keys = ON');
 db.pragma('busy_timeout = 5000');
 
 db.exec(fs.readFileSync(path.join(HERE, 'schema.sql'), 'utf8'));
+// CREATE TABLE IF NOT EXISTS cannot add a column to a table that already
+// exists, and SQLite has no IF NOT EXISTS for columns - a duplicate is the
+// expected no-op on every boot after the first.
+try {
+  db.exec('ALTER TABLE progress ADD COLUMN audio_offset REAL NOT NULL DEFAULT 0');
+  log.info('migrated: progress.audio_offset added');
+} catch (error) {
+  if (!/duplicate column name/i.test(error.message)) throw error;
+}
+
 log.info(`database ready at ${config.dbPath}`);
 
 const now = () => Date.now();
@@ -57,10 +67,10 @@ const stmt = {
   progressUpsert: db.prepare(`
     INSERT INTO progress (
       file_path, tmdb_id, type, parent_tmdb_id, season_number, episode_number,
-      title, position, duration, completed, updated_at
+      title, position, duration, completed, audio_offset, updated_at
     ) VALUES (
       @file_path, @tmdb_id, @type, @parent_tmdb_id, @season_number, @episode_number,
-      @title, @position, @duration, @completed, @updated_at
+      @title, @position, @duration, @completed, @audio_offset, @updated_at
     )
     ON CONFLICT(file_path) DO UPDATE SET
       tmdb_id = COALESCE(excluded.tmdb_id, progress.tmdb_id),
@@ -72,11 +82,34 @@ const stmt = {
       position = excluded.position,
       duration = CASE WHEN excluded.duration > 0 THEN excluded.duration ELSE progress.duration END,
       completed = excluded.completed,
+      -- Only overwrite when the caller actually sent one. COALESCE cannot
+      -- express this: the column is NOT NULL, so "not supplied" cannot be
+      -- bound as NULL, and 0 is a legitimate value we must not confuse with it.
+      audio_offset = CASE WHEN @audio_offset_set = 1
+        THEN excluded.audio_offset ELSE progress.audio_offset END,
       updated_at = excluded.updated_at
   `),
+  /**
+   * One row per title, not per file.
+   *
+   * A part-watched show used to contribute an entry for every episode you had
+   * ever left unfinished, so Continue Watching filled up with the same series
+   * several times over. Partitioning on the show id (falling back to the movie
+   * id, then the path for anything unmatched) keeps only the most recent.
+   */
   progressContinue: db.prepare(`
-    SELECT * FROM progress
-    WHERE completed = 0 AND position > 5
+    SELECT * FROM (
+      SELECT *, ROW_NUMBER() OVER (
+        PARTITION BY COALESCE(parent_tmdb_id, tmdb_id, file_path)
+        -- updated_at has millisecond resolution, so two rows written in the
+        -- same tick would otherwise pick a winner arbitrarily. Highest episode
+        -- wins the tie, which is the one you most plausibly reached.
+        ORDER BY updated_at DESC, season_number DESC, episode_number DESC
+      ) AS rn
+      FROM progress
+      WHERE completed = 0 AND position > 5
+    )
+    WHERE rn = 1
     ORDER BY updated_at DESC
     LIMIT ?
   `),
@@ -205,6 +238,8 @@ export function upsertProgress(input) {
     position,
     duration,
     completed,
+    audio_offset: Number(input.audio_offset) || 0,
+    audio_offset_set: input.audio_offset === undefined || input.audio_offset === null ? 0 : 1,
     updated_at: now()
   };
 

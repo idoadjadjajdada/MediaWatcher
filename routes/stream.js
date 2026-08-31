@@ -20,6 +20,7 @@ import express from 'express';
 import { createLogger } from '../config/index.js';
 import { isInsideLibrary } from '../services/organizer.js';
 import * as transcoder from '../services/transcoder.js';
+import * as mp4cache from '../services/mp4cache.js';
 
 const log = createLogger('api:stream');
 const router = express.Router();
@@ -109,8 +110,29 @@ router.get('/info', async (req, res, next) => {
     const resolved = resolveRequestPath(req, res);
     if (!resolved) return;
 
+    const audioOffset = transcoder.clampAudioOffset(req.query.audioOffset);
+    const caps = capsFrom(req);
     const info = await transcoder.probe(resolved.filePath);
-    const decision = transcoder.decide(info, capsFrom(req));
+    const decision = transcoder.decide(info, caps, { audioOffset });
+
+    // A cached MP4 overrides the decision entirely: it is a real file on disk,
+    // so it seeks natively and needs no ffmpeg. An audio offset still has to go
+    // through the pipe, because the offset lives in the ffmpeg command.
+    const variant = mp4cache.pickVariant(info?.video, caps);
+    const cached = audioOffset === 0 ? mp4cache.readyVariant(resolved.filePath, variant) : null;
+    if (cached) {
+      decision.mode = `cached-${variant}`;
+      decision.seekable = true;
+      decision.lossless = variant === mp4cache.VARIANT_COPY;
+      decision.tonemapped = false;
+      decision.reasons = [
+        variant === mp4cache.VARIANT_COPY
+          ? 'playing a cached MP4 — lossless picture, native seeking'
+          : 'playing a cached H.264 MP4 — plays anywhere, native seeking'
+      ];
+    } else if (audioOffset === 0) {
+      mp4cache.ensureVariant(resolved.filePath, variant).catch(() => {});
+    }
 
     res.json({
       path: resolved.filePath,
@@ -119,6 +141,8 @@ router.get('/info', async (req, res, next) => {
       mode: decision.mode,
       lossless: decision.lossless,
       seekable: decision.seekable,
+      tonemapped: Boolean(decision.tonemapped),
+      tonemap_height: decision.tonemapHeight ?? null,
       reasons: decision.reasons,
       duration: decision.duration,
       video: decision.video || null,
@@ -134,13 +158,15 @@ router.get('/info', async (req, res, next) => {
  * Direct byte streaming (with ranges)
  * ----------------------------------------------------------------------- */
 
-function streamBytes(req, res, filePath, size) {
+function streamBytes(req, res, filePath, size, mode = 'direct') {
   const contentType = MIME_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
 
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Content-Type', contentType);
   res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('X-Playback-Mode', 'direct');
+  // Named by the caller, so a cached MP4 does not report itself as a raw source
+  // file. Both are byte-range serves; only one of them is the original.
+  res.setHeader('X-Playback-Mode', mode);
 
   if (!req.headers.range) {
     res.setHeader('Content-Length', size);
@@ -182,9 +208,14 @@ function streamBytes(req, res, filePath, size) {
  * ffmpeg streaming
  * ----------------------------------------------------------------------- */
 
-function streamViaFfmpeg(req, res, filePath, decision) {
+async function streamViaFfmpeg(req, res, filePath, decision) {
   const startSeconds = Math.max(0, Number(req.query.t) || 0);
   const audioIndex = Math.max(0, Number(req.query.audio) || 0);
+  const audioOffset = transcoder.clampAudioOffset(req.query.audioOffset);
+
+  // Only asked for when tone mapping, where the CPU is already saturated doing
+  // the colour conversion. A plain transcode is fine on libx264.
+  const encoder = decision.tonemapped ? await transcoder.hardwareEncoder() : null;
 
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Cache-Control', 'no-cache');
@@ -199,7 +230,11 @@ function streamViaFfmpeg(req, res, filePath, decision) {
   const { stream, kill } = transcoder.openStream(filePath, {
     mode: decision.mode,
     startSeconds,
-    audioIndex
+    audioIndex,
+    audioOffset,
+    tonemap: Boolean(decision.tonemapped),
+    height: decision.video?.height ?? null,
+    encoder
   });
 
   let finished = false;
@@ -233,20 +268,39 @@ router.get('/', async (req, res, next) => {
 
     const { filePath, stats } = resolved;
 
-    // Escape hatch: ?mode=direct always serves raw bytes.
-    if (req.query.mode === 'direct') {
+    const audioOffset = transcoder.clampAudioOffset(req.query.audioOffset);
+
+    // Escape hatch: ?mode=direct serves raw bytes - but an offset needs ffmpeg,
+    // so it cannot be honoured alongside one.
+    if (req.query.mode === 'direct' && audioOffset === 0) {
       return streamBytes(req, res, filePath, stats.size);
     }
 
     const info = await transcoder.probe(filePath);
-    const decision = transcoder.decide(info, capsFrom(req));
+    const caps = capsFrom(req);
+    const decision = transcoder.decide(info, caps, { audioOffset });
 
     if (decision.mode === 'direct') {
       return streamBytes(req, res, filePath, stats.size);
     }
 
+    // A cached MP4 turns this into a plain byte-range serve: native seeking,
+    // no ffmpeg in the path. An audio offset has to keep going through ffmpeg,
+    // because the offset lives in the command rather than in the file.
+    if (audioOffset === 0) {
+      const variant = mp4cache.pickVariant(info?.video, caps);
+      const cached = mp4cache.readyVariant(filePath, variant);
+      if (cached) {
+        const cachedStats = fs.statSync(cached);
+        return streamBytes(req, res, cached, cachedStats.size, `cached-${variant}`);
+      }
+      // Not ready. Start it, keep serving from the pipe, and the next play of
+      // this file gets the fast path.
+      mp4cache.ensureVariant(filePath, variant).catch(() => {});
+    }
+
     log.info(`${decision.mode}: ${path.basename(filePath)} — ${decision.reasons.join('; ')}`);
-    return streamViaFfmpeg(req, res, filePath, decision);
+    return await streamViaFfmpeg(req, res, filePath, decision);
   } catch (error) {
     next(error);
   }
