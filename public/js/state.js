@@ -148,6 +148,39 @@ export function previousEpisode(show, seasonNumber, episodeNumber) {
   return flat[index - 1];
 }
 
+/** Every season number a show has, ascending. */
+export function seasonNumbers(show) {
+  return (show?.seasons || []).map((season) => season.number).sort((a, b) => a - b);
+}
+
+/**
+ * One season's episodes, shaped for the sidebar.
+ *
+ * Episodes with no file are kept rather than filtered: a gap in the library
+ * should read as a gap, not silently renumber the list. The caller dims them.
+ *
+ * `current` matches on season AND episode number - matching on episode number
+ * alone would mark S01E01 while S02E01 is playing.
+ */
+export function episodeRows(show, seasonNumber, currentSeason, currentEpisode) {
+  const season = (show?.seasons || []).find((entry) => entry.number === seasonNumber);
+  if (!season) return [];
+
+  return [...(season.episodes || [])]
+    .sort((a, b) => a.episode_number - b.episode_number)
+    .map((episode) => {
+      const file = (episode.files || [])[0] || null;
+      return {
+        season: season.number,
+        episode_number: episode.episode_number,
+        title: episode.title || '',
+        filePath: file ? file.file_path : null,
+        playable: Boolean(file),
+        current: season.number === currentSeason && episode.episode_number === currentEpisode
+      };
+    });
+}
+
 export function activeJobCount() {
   return state.jobs.filter((job) => job.status === 'downloading' || job.status === 'queued').length;
 }
