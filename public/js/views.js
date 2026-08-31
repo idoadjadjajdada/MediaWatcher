@@ -668,6 +668,18 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
         </div>
       </div>
 
+      <button class="player__eparrow" id="ep-arrow" data-action="toggle-episodes"
+        aria-label="Episodes" title="Episodes" hidden>${icon('back', 'icon-lg')}</button>
+
+      <aside class="player__episodes" id="ep-panel" hidden>
+        <div class="player__ep-head">
+          <div class="player__ep-title" id="ep-show"></div>
+          <button class="player__btn" data-action="close-episodes" aria-label="Close">${icon('close', 'icon')}</button>
+        </div>
+        <div class="player__ep-tabs" id="ep-tabs"></div>
+        <div class="player__ep-list" id="ep-list"></div>
+      </aside>
+
       <div class="player__controls">
         <input class="range" id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
         <div class="player__times t-num">

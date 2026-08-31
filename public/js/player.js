@@ -14,7 +14,9 @@
  * reads from it, so neither mode needs special-casing anywhere else.
  */
 import * as api from './api.js';
-import { state, setState, locateFile, nextEpisode, previousEpisode } from './state.js';
+import {
+  state, setState, locateFile, nextEpisode, previousEpisode, episodeRows, seasonNumbers
+} from './state.js';
 import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episodeTag } from './views.js';
 import { clampPicture, pictureFilter, loadPicture, savePicture, PICTURE_MIN, PICTURE_MAX } from './picture.js';
 
@@ -198,8 +200,10 @@ async function openInner(filePath) {
   setState({ player: { open: true, src: filePath, subs: ctx.tracks, resumeAt } });
 
   ctx.video.style.filter = pictureFilter(ctx.picture);
+  ctx.epSeason = ctx.located?.type === 'episode' ? ctx.located.season : null;
 
   buildMenu();
+  buildEpisodes();
   attach();
   load(resumeAt, { autoplay: true });
 
@@ -213,6 +217,7 @@ export async function close({ save = true } = {}) {
   if (save) await persist(true);
 
   document.removeEventListener('keydown', onKeyDown);
+  if (ctx.outsideClick) document.removeEventListener('click', ctx.outsideClick, true);
   clearInterval(ctx.saveTimer);
   clearTimeout(ctx.idleTimer);
   clearTimeout(ctx.seekTimer);
@@ -494,6 +499,71 @@ export function setSpeed(speed) {
   buildMenu();
 }
 
+/* --------------------------------------------------------------------------
+ * Episode sidebar
+ * ----------------------------------------------------------------------- */
+
+/** Only shows get a sidebar; a movie has nothing to list. */
+function hasEpisodes() {
+  return Boolean(ctx?.located && ctx.located.type === 'episode');
+}
+
+function buildEpisodes() {
+  const arrow = el('ep-arrow');
+  if (arrow) arrow.hidden = !hasEpisodes();
+  if (!hasEpisodes()) return;
+
+  const show = ctx.located.item;
+  const seasons = seasonNumbers(show);
+  const selected = ctx.epSeason ?? ctx.located.season;
+
+  el('ep-show').textContent = show.title || 'Episodes';
+
+  // Tabs render even for a one-season show, so the header does not change
+  // shape between shows.
+  el('ep-tabs').innerHTML = seasons.map((number) => `
+    <button class="player__ep-tab${number === selected ? ' is-active' : ''}"
+      data-action="select-season" data-season="${number}">S${number}</button>`).join('');
+
+  const rows = episodeRows(show, selected, ctx.located.season, ctx.located.episode.episode_number);
+  el('ep-list').innerHTML = rows.length === 0
+    ? '<div class="player__menu-label">No episodes in this season</div>'
+    : rows.map((row) => `
+      <button class="player__ep-row${row.current ? ' is-current' : ''}${row.playable ? '' : ' is-missing'}"
+        ${row.playable ? `data-action="play-episode" data-path="${esc(row.filePath)}"` : 'disabled'}>
+        <span class="player__ep-tag t-num">${esc(episodeTag(row.season, row.episode_number))}</span>
+        <span class="player__ep-name">${esc(row.title || 'Untitled')}</span>
+      </button>`).join('');
+}
+
+export function toggleEpisodes() {
+  const panel = el('ep-panel');
+  if (!panel || !hasEpisodes()) return;
+  closePopovers();
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  if (opening) {
+    ctx.epSeason = ctx.located.season;
+    buildEpisodes();
+    el('ep-list')?.querySelector('.is-current')?.scrollIntoView({ block: 'center' });
+  }
+}
+
+export function closeEpisodes() {
+  const panel = el('ep-panel');
+  if (panel) panel.hidden = true;
+}
+
+export function selectSeason(number) {
+  if (!ctx) return;
+  ctx.epSeason = Number(number);
+  buildEpisodes();
+}
+
+/* --------------------------------------------------------------------------
+ * Setting popovers
+ * ----------------------------------------------------------------------- */
+
 const POPOVERS = ['subs', 'sync', 'speed', 'picture'];
 
 /** Close every popover. Safe to call when none is open. */
@@ -740,6 +810,24 @@ function attach() {
     setPicture({ ...ctx.picture, [input.id]: Number(input.value) });
   });
 
+  /**
+   * Dismiss panels on an outside click.
+   *
+   * Registered in the CAPTURE phase, which is load-bearing. The app's delegated
+   * click handler runs on the bubble phase, and some of its actions - picking a
+   * season, for one - rebuild the panel's innerHTML. That detaches the very
+   * node that was clicked, so a bubble-phase `closest` call would walk an
+   * orphaned subtree, match nothing, conclude the click was outside, and close
+   * the panel the user just interacted with. Capturing runs this while the
+   * target is still in the tree.
+   */
+  ctx.outsideClick = (event) => {
+    if (!ctx) return;
+    if (!event.target.closest('.player__pop')) closePopovers();
+    if (!event.target.closest('.player__episodes, .player__eparrow')) closeEpisodes();
+  };
+  document.addEventListener('click', ctx.outsideClick, true);
+
   node.addEventListener('mousemove', markIdle);
   node.addEventListener('click', (event) => {
     // Clicking the video itself toggles playback; controls handle their own
@@ -865,7 +953,12 @@ function onKeyDown(event) {
     case 'n': case 'N':
       if (ctx.located?.type === 'episode') playNextImmediate(); break;
     case 'Escape':
-      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      // Peel one layer at a time: sidebar, then popovers, then fullscreen,
+      // then the player itself. Closing everything at once would make Escape
+      // unusable for dismissing a panel you opened by mistake.
+      if (!el('ep-panel')?.hidden) closeEpisodes();
+      else if (POPOVERS.some((name) => el(`popover-${name}`) && !el(`popover-${name}`).hidden)) closePopovers();
+      else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       else close({ save: true });
       break;
     default:
