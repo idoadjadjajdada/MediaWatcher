@@ -268,6 +268,23 @@ to remake.
 Safari and iOS play HLS natively. Everything else uses `hls.js`, served from
 `public/js/vendor/` and loaded only when a stream actually needs it.
 
+A session belongs to one viewer, not just to one file: two devices playing the
+same episode at the same quality get their own encoder, because a seek by
+either restarts the encoder and discards the segments the other is playing.
+
+One encoder run produces `HLS_ENCODE_AHEAD_SECONDS` of video (five minutes by
+default) and then stops; the next run starts wherever the viewer has actually
+reached. Without that bound ffmpeg encodes to the end of the file whether or not
+anyone watches that far.
+
+Closing the player ends its session immediately. While it is open the player
+sends a keepalive, so a long pause is not reaped out from under it.
+
+**Seeking transcoded content costs an encode.** Every seek restarts ffmpeg at
+that point, so the first segment after a jump takes a few seconds — and on 4K
+HDR, where the seek also pays for a tone map, measurably longer. Files that play
+`direct` or from the MP4 cache seek instantly, because those are real files.
+
 ### Remote quality
 
 Playback over the tunnel is capped, because the constraint is the *client's*
@@ -450,6 +467,9 @@ Everything lives in `.env`. Only the first three are required.
 | `FFMPEG_PATH` / `FFPROBE_PATH` | `ffmpeg` / `ffprobe` | Override if not on `PATH` |
 | `FFMPEG_ENABLED` | `1` | Set `0` to force raw byte streaming only |
 | `TRANSCODE_*` | see `.env.example` | Re-encode quality settings |
+| `HLS_ENCODE_AHEAD_SECONDS` | `300` | Video one encoder run produces before stopping |
+| `HLS_KEEP_BEHIND` | `100` | Segments kept behind the play position |
+| `HLS_IDLE_TIMEOUT_MS` | `60000` | Idle time before a session is reaped |
 | `TAILNET_HOST` | empty | Tailnet hostname, so CORS accepts that origin |
 | `REMOTE_DEFAULT_QUALITY` | `high` | What `Auto` means over the tunnel |
 | `QUALITY_*_HEIGHT` / `QUALITY_*_MAXRATE` | see `.env.example` | The remote quality ladder |
