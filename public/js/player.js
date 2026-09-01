@@ -20,11 +20,7 @@ import {
 import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episodeTag } from './views.js';
 import { clampPicture, pictureFilter, loadPicture, savePicture, PICTURE_MIN, PICTURE_MAX } from './picture.js';
 import { previewFraction, cardLeft, frameIndex } from './preview.js';
-import {
-  chapterIndexAt, nextChapterStart, previousChapterStart, chapterLabel
-} from './chapters.js';
 import { attachHls } from './hls-player.js';
-import { SLEEP_OPTIONS, shouldSleep, createTimer, timerLabel } from './sleep.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -157,13 +153,6 @@ const root = () => document.getElementById('player-root');
 
 export const PLAYER_HASH = 'player';
 
-/**
- * The sleep timer lives outside ctx so it survives an episode swap. Setting
- * "stop in 30 minutes" and then letting the next episode start must not quietly
- * cancel it - that is exactly when it matters.
- */
-let pendingSleep = null;
-
 let previousHash = '';
 /** Carried across an episode swap, where close() cannot restore it itself. */
 let pendingScrollY = null;
@@ -280,12 +269,6 @@ async function openInner(filePath) {
     // Which audio stream of the file to decode. The server re-encodes the
     // chosen one, so changing it means a new stream, exactly like the delay.
     audioIndex: 0,
-    // Boundaries only: almost every file here has chapters and almost none
-    // have titles worth reading, so these are for seeing and jumping.
-    chapters: info?.chapters || [],
-    // Survives an episode swap: "stop after this episode" would be useless if
-    // starting the next one silently cleared it.
-    sleep: pendingSleep,
     // Global, not per-file: brightness tracks the room, not the master.
     picture: loadPicture(),
     // Set by the touch handlers; read by markIdle to choose its timing and by
@@ -351,7 +334,7 @@ export async function close({ save = true, keepPage = false } = {}) {
   if (ctx.outsideClick) document.removeEventListener('click', ctx.outsideClick, true);
   clearInterval(ctx.saveTimer);
   clearInterval(ctx.hlsTimer);
-  clearInterval(ctx.sleepTimer);
+  clearInterval(ctx.statsTimer);
   clearTimeout(ctx.idleTimer);
   clearTimeout(ctx.thumbRetry);
 
@@ -765,49 +748,6 @@ const QUALITY_LABELS = [
 ];
 
 /**
- * Stop playing after a while, or at the end of this episode.
- *
- * Pauses rather than closing the player: waking up to a paused frame tells you
- * where you were, and the position is saved either way.
- */
-export function setSleepTimer(optionId) {
-  if (!ctx) return;
-  pendingSleep = createTimer(optionId, Date.now());
-  ctx.sleep = pendingSleep;
-  buildMenu();
-  toast('info', 'Sleep timer', pendingSleep
-    ? `Playback will stop: ${timerLabel(pendingSleep, Date.now()).toLowerCase()}`
-    : 'Sleep timer cancelled');
-}
-
-/**
- * Stops playback once the timer says so, then clears itself.
- *
- * Driven by its own interval rather than by timeupdate: timeupdate stops the
- * moment a video ends, which is exactly when an end-of-episode timer needs to
- * act, and it stops while buffering, which is when a duration timer would be
- * left hanging.
- */
-function checkSleepTimer() {
-  if (!ctx?.sleep) return;
-  if (!shouldSleep(ctx.sleep, {
-    now: Date.now(),
-    position: position(),
-    duration: duration()
-  })) return;
-
-  pendingSleep = null;
-  ctx.sleep = null;
-  // Cancel any pending auto-advance, or the next episode would start straight
-  // after the timer stopped this one.
-  ctx.nextTarget = null;
-  ctx.video.pause();
-  markIdle();
-  buildMenu();
-  toast('info', 'Sleep timer', 'Playback stopped. Sleep well.');
-}
-
-/**
  * What is actually happening to this stream.
  *
  * Written because a whole session was spent guessing at exactly these numbers:
@@ -847,7 +787,6 @@ function renderStats() {
 
   if (q) rows.push(['frames', `${q.droppedVideoFrames} dropped of ${q.totalVideoFrames}`]);
   if (info.hls_session) rows.push(['session', info.hls_session.slice(0, 12)]);
-  if (ctx.sleep) rows.push(['sleep', timerLabel(ctx.sleep, Date.now())]);
 
   panel.innerHTML = rows
     .map(([label, value]) => `<div><b>${label}</b>${esc(String(value))}</div>`)
@@ -872,16 +811,6 @@ function buildStatsSection() {
     </button>`;
 }
 
-function buildSleepSection() {
-  const active = ctx.sleep?.optionId || 'off';
-  return `
-    <div class="player__menu-label">Sleep timer</div>
-    ${SLEEP_OPTIONS.map((option) => `
-      <button class="player__menu-item${option.id === active ? ' is-active' : ''}" data-action="set-sleep" data-sleep="${option.id}">
-        ${esc(option.label)}
-      </button>`).join('')}`;
-}
-
 function buildSpeedPopover() {
   const quality = api.getQuality();
 
@@ -892,7 +821,6 @@ function buildSpeedPopover() {
     <div class="player__menu-label">Quality</div>
     ${QUALITY_LABELS.map(([value, label]) => `
       <button class="player__menu-item${quality === value ? ' is-active' : ''}" data-action="set-quality" data-quality="${value}">${label}</button>`).join('')}
-    ${buildSleepSection()}
     ${buildStatsSection()}`;
   const rate = el('rate-btn');
   if (rate) rate.innerHTML = `${ctx.speed}&times;`;
@@ -916,79 +844,12 @@ function buildPicturePopover() {
     <button class="audiodelay__reset" data-action="picture-reset">Reset</button>`;
 }
 
-/**
- * The chapter list, and the ticks that mark the same boundaries on the bar.
- *
- * The whole control hides when a file has none, rather than offering an empty
- * menu — a handful of files in the library have no chapters at all.
- */
-function buildChaptersPopover() {
-  const control = el('chapters-control');
-  const panel = el('popover-chapters');
-  const ticks = el('chapter-ticks');
-  if (!control || !panel || !ticks) return;
-
-  const chapters = ctx.chapters || [];
-  control.hidden = chapters.length === 0;
-  if (chapters.length === 0) {
-    panel.innerHTML = '';
-    ticks.innerHTML = '';
-    return;
-  }
-
-  const total = duration();
-  const here = chapterIndexAt(chapters, position());
-
-  panel.innerHTML = `
-    <div class="player__menu-label">Chapters</div>
-    ${chapters.map((chapter, index) => `
-      <button class="player__menu-item player__menu-item--chapter${index === here ? ' is-active' : ''}"
-        data-action="seek-chapter" data-start="${chapter.start}">
-        <span>${esc(chapterLabel(chapter))}</span>
-        <span class="player__chapter-time t-num">${formatTime(chapter.start)}</span>
-      </button>`).join('')}`;
-
-  // A tick at zero would sit under the knob at the start and read as an
-  // artefact, so the first boundary is skipped.
-  ticks.innerHTML = total > 0
-    ? chapters
-      .filter((chapter) => chapter.start > 0 && chapter.start < total)
-      .map((chapter) => `<i class="player__tick" style="left:${((chapter.start / total) * 100).toFixed(3)}%"></i>`)
-      .join('')
-    : '';
-}
-
-/** Jump a whole chapter. Direction is 1 for forward, -1 for back. */
-export function jumpChapter(direction) {
-  if (!ctx || !ctx.chapters?.length) return;
-
-  const at = position();
-  const target = direction > 0
-    ? nextChapterStart(ctx.chapters, at)
-    : previousChapterStart(ctx.chapters, at);
-
-  if (target === null) return;
-  seekTo(target);
-  markIdle();
-  buildChaptersPopover();
-}
-
-/** Seek to an exact chapter start, from the list. */
-export function seekChapter(start) {
-  const target = Number(start);
-  if (!ctx || !Number.isFinite(target)) return;
-  seekTo(target);
-  markIdle();
-  buildChaptersPopover();
-}
-
 /** Rebuild every popover. Cheap, and keeps them in step with ctx. */
 function buildMenu() {
   buildSubsPopover();
   buildSyncPopover();
   buildSpeedPopover();
   buildPicturePopover();
-  buildChaptersPopover();
 }
 
 function applyTrack(track) {
@@ -1222,7 +1083,7 @@ export function selectSeason(number) {
  * Setting popovers
  * ----------------------------------------------------------------------- */
 
-const POPOVERS = ['subs', 'sync', 'speed', 'picture', 'chapters'];
+const POPOVERS = ['subs', 'sync', 'speed', 'picture'];
 
 /** Close every popover. Safe to call when none is open. */
 export function closePopovers() {
@@ -1635,14 +1496,8 @@ function attach() {
    * attempt to read it off currentSrc never matched anything and no session
    * was ever actually kept alive.
    */
-  /*
-   * One second is plenty for a timer measured in minutes, and it means the
-   * end-of-episode case is caught even though the media element has gone quiet.
-   */
-  ctx.sleepTimer = setInterval(() => {
-    checkSleepTimer();
-    renderStats();
-  }, 1000);
+  // Stats are a once-a-second job; nothing else needs this cadence.
+  ctx.statsTimer = setInterval(renderStats, 1000);
 
   ctx.hlsTimer = setInterval(() => {
     if (ctx?.info?.hls_session) api.touchHlsSession(ctx.info.hls_session).catch(() => {});
@@ -1652,17 +1507,6 @@ function attach() {
 }
 
 function onEnded() {
-  /*
-   * A sleep timer set to "end of episode" means stop here, so it has to be
-   * consulted before the auto-advance - otherwise reaching the end would start
-   * the next episode and the timer would stop that one instead.
-   */
-  if (ctx?.sleep?.kind === 'episode') {
-    checkSleepTimer();
-    persist(true);
-    return;
-  }
-
   if (ctx?.nextTarget) {
     playNext();
     return;
@@ -1780,12 +1624,6 @@ function onKeyDown(event) {
       event.preventDefault(); nudgeAudioOffset(-0.05); break;
     case ']':
       event.preventDefault(); nudgeAudioOffset(0.05); break;
-    // ',' and '.' are '<' and '>' unshifted, which reads as chapter back and
-    // forward. The bracket keys were already spoken for by the audio delay.
-    case ',':
-      event.preventDefault(); jumpChapter(-1); break;
-    case '.':
-      event.preventDefault(); jumpChapter(1); break;
     case 'f': case 'F':
       toggleFullscreen(); break;
     case 'i': case 'I':
@@ -1826,8 +1664,7 @@ function playNextImmediate() {
 
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
-  skip, setSubtitle, setSpeed, setQuality, setAudioTrack, jumpChapter, seekChapter,
-  setSleepTimer, toggleStats,
+  skip, setSubtitle, setSpeed, setQuality, setAudioTrack, toggleStats,
   togglePopover, closePopovers, setPicture,
   playNext, cancelNext
 };

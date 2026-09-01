@@ -18,7 +18,6 @@ import fs from 'node:fs';
 import config, { createLogger } from '../config/index.js';
 import { parseBitrate } from './quality.js';
 import { SEGMENT_SECONDS } from './hls/playlist.js';
-import { normaliseChapters } from './chapters.js';
 
 const log = createLogger('transcoder');
 
@@ -86,9 +85,6 @@ function runProbe(filePath) {
       '-print_format', 'json',
       '-show_format',
       '-show_streams',
-      // Chapters come from the same probe rather than a second ffprobe run;
-      // nearly every file in the library has them.
-      '-show_chapters',
       filePath
     ], { windowsHide: true });
 
@@ -169,7 +165,6 @@ export async function probe(filePath) {
       title: stream.tags?.title || null,
       default: stream.disposition?.default === 1
     })),
-    chapters: normaliseChapters(raw.chapters, Number(raw.format?.duration) || null),
     subtitles: subtitleStreams.map((stream, index) => ({
       index,
       codec: stream.codec_name,

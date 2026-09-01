@@ -51,8 +51,6 @@ const ICONS = {
   warning: '<path d="M12 4 2 20h20z"/><path d="M12 10v4M12 17h.01"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   trash: '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/>',
-  // Three stacked segments: the shape of a file divided into chapters.
-  chapters: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/><circle cx="9" cy="6" r="1.6" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="7" cy="18" r="1.6" fill="currentColor" stroke="none"/>',
   inbox: '<path d="M3 12h5l2 3h4l2-3h5"/><path d="M5 5h14l2 7v7H3v-7z"/>'
 };
 
@@ -733,7 +731,6 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
       <div class="player__controls">
         <div class="player__scrub" id="scrub">
           <input class="range" id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
-          <div class="player__ticks" id="chapter-ticks" aria-hidden="true"></div>
           <div class="player__band" id="preview-band" aria-hidden="true"></div>
           <div class="player__knob" id="seek-knob" aria-hidden="true"></div>
           <div class="player__ball" id="preview-ball" aria-hidden="true"></div>
@@ -763,11 +760,6 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
           </div>
 
           <div class="player__buttons-right" id="player-settings">
-            <div class="player__pop" id="chapters-control" hidden>
-              <button class="player__btn" data-action="toggle-popover" data-popover="chapters"
-                aria-label="Chapters" title="Chapters">${icon('chapters', 'icon')}</button>
-              <div class="player__pop-panel" id="popover-chapters" hidden></div>
-            </div>
             <div class="player__pop">
               <button class="player__btn" data-action="toggle-popover" data-popover="subs"
                 aria-label="Subtitles" title="Subtitles">${icon('cc', 'icon')}</button>

@@ -201,10 +201,7 @@ router.get('/info', async (req, res, next) => {
       duration: decision.duration,
       video: decision.video || null,
       audio_tracks: decision.audioTracks || [],
-      embedded_subtitles: info?.subtitles || [],
-      // Markers for the scrub bar and the jump controls. Empty for the rare
-      // file with none, and for anything with a single whole-file chapter.
-      chapters: info?.chapters || []
+      embedded_subtitles: info?.subtitles || []
     });
   } catch (error) {
     next(error);

@@ -285,26 +285,6 @@ that point, so the first segment after a jump takes a few seconds — and on 4K
 HDR, where the seek also pays for a tone map, measurably longer. Files that play
 `direct` or from the MP4 cache seek instantly, because those are real files.
 
-### Chapters
-
-Nearly every file here carries chapter marks — a sampled thirty gave
-twenty-nine — so they appear as ticks on the scrub bar, as a list to jump from,
-and on `,` and `.` to step between them. Previous restarts the current chapter
-before leaving it, the way a CD player does.
-
-Titles are not shown when they are not worth showing: every file sampled named
-its chapters "Chapter 1", "Chapter 2", so the list falls back to the number and
-gives you the timestamp instead.
-
-### Sleep timer
-
-In the playback menu: stop after 15, 30 or 60 minutes, or at the end of the
-current episode. It pauses rather than closing, so you can see where you got to,
-and an end-of-episode timer beats the auto-advance rather than racing it.
-
-The timer survives an episode change — setting "stop in 30 minutes" and then
-letting the next episode start is exactly when cancelling it would be wrong.
-
 ### Playback stats
 
 `i`, or Diagnostics in the playback menu, overlays what is actually happening
