@@ -21,6 +21,8 @@ import { createLogger } from '../config/index.js';
 import { isInsideLibrary } from '../services/organizer.js';
 import * as transcoder from '../services/transcoder.js';
 import * as mp4cache from '../services/mp4cache.js';
+import { resolveQuality } from '../services/quality.js';
+import { classifyOrigin } from '../services/network.js';
 
 const log = createLogger('api:stream');
 const router = express.Router();
@@ -101,6 +103,9 @@ const capsFrom = (req) => ({
   ac3: req.query.ac3 === '1' || req.query.ac3 === 'true'
 });
 
+/** The cap this request plays under, from ?q= and where the request came from. */
+const qualityFrom = (req) => resolveQuality(req.query.q, classifyOrigin(req.ip));
+
 /* --------------------------------------------------------------------------
  * GET /api/stream/info
  * ----------------------------------------------------------------------- */
@@ -112,14 +117,22 @@ router.get('/info', async (req, res, next) => {
 
     const audioOffset = transcoder.clampAudioOffset(req.query.audioOffset);
     const caps = capsFrom(req);
+    const quality = qualityFrom(req);
     const info = await transcoder.probe(resolved.filePath);
-    const decision = transcoder.decide(info, caps, { audioOffset });
+    const decision = transcoder.decide(info, caps, { audioOffset, quality });
 
-    // A cached MP4 overrides the decision entirely: it is a real file on disk,
-    // so it seeks natively and needs no ffmpeg. An audio offset still has to go
-    // through the pipe, because the offset lives in the ffmpeg command.
+    /*
+     * A cached MP4 overrides the decision entirely: it is a real file on disk,
+     * so it seeks natively and needs no ffmpeg. An audio offset still has to go
+     * through the pipe, because the offset lives in the ffmpeg command — and so
+     * does a capped stream, because the cached variants are full quality and
+     * serving one would silently ignore the cap.
+     */
+    const capped = Boolean(decision.targetHeight || decision.maxrate);
     const variant = mp4cache.pickVariant(info?.video, caps);
-    const cached = audioOffset === 0 ? mp4cache.readyVariant(resolved.filePath, variant) : null;
+    const cached = (audioOffset === 0 && !capped)
+      ? mp4cache.readyVariant(resolved.filePath, variant)
+      : null;
     if (cached) {
       decision.mode = `cached-${variant}`;
       decision.seekable = true;
@@ -130,7 +143,7 @@ router.get('/info', async (req, res, next) => {
           ? 'playing a cached MP4 — lossless picture, native seeking'
           : 'playing a cached H.264 MP4 — plays anywhere, native seeking'
       ];
-    } else if (audioOffset === 0) {
+    } else if (audioOffset === 0 && !capped) {
       mp4cache.ensureVariant(resolved.filePath, variant).catch(() => {});
     }
 
@@ -143,6 +156,11 @@ router.get('/info', async (req, res, next) => {
       seekable: decision.seekable,
       tonemapped: Boolean(decision.tonemapped),
       tonemap_height: decision.tonemapHeight ?? null,
+      // What the cap actually did, not merely what was asked for: a request for
+      // Low on a file already below it reports original, because nothing was
+      // taken away.
+      quality: capped ? quality.level : 'original',
+      origin: classifyOrigin(req.ip),
       reasons: decision.reasons,
       duration: decision.duration,
       video: decision.video || null,
@@ -213,9 +231,11 @@ async function streamViaFfmpeg(req, res, filePath, decision) {
   const audioIndex = Math.max(0, Number(req.query.audio) || 0);
   const audioOffset = transcoder.clampAudioOffset(req.query.audioOffset);
 
-  // Only asked for when tone mapping, where the CPU is already saturated doing
-  // the colour conversion. A plain transcode is fine on libx264.
-  const encoder = decision.tonemapped ? await transcoder.hardwareEncoder() : null;
+  // Asked for when tone mapping, where the CPU is already saturated doing the
+  // colour conversion — and when capping, which re-encodes every frame for the
+  // same reason. A plain transcode is fine on libx264.
+  const needsEncoder = decision.tonemapped || Boolean(decision.targetHeight || decision.maxrate);
+  const encoder = needsEncoder ? await transcoder.hardwareEncoder() : null;
 
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Cache-Control', 'no-cache');
@@ -234,6 +254,8 @@ async function streamViaFfmpeg(req, res, filePath, decision) {
     audioOffset,
     tonemap: Boolean(decision.tonemapped),
     height: decision.video?.height ?? null,
+    maxHeight: decision.targetHeight,
+    maxrate: decision.maxrate,
     encoder
   });
 
@@ -270,15 +292,19 @@ router.get('/', async (req, res, next) => {
 
     const audioOffset = transcoder.clampAudioOffset(req.query.audioOffset);
 
-    // Escape hatch: ?mode=direct serves raw bytes - but an offset needs ffmpeg,
-    // so it cannot be honoured alongside one.
-    if (req.query.mode === 'direct' && audioOffset === 0) {
+    const quality = qualityFrom(req);
+
+    // Escape hatch: ?mode=direct serves raw bytes - but it must not become a
+    // way around the cap, and an offset needs ffmpeg, so neither can be
+    // honoured alongside one.
+    const uncapped = !quality.height && !quality.maxrate;
+    if (req.query.mode === 'direct' && audioOffset === 0 && uncapped) {
       return streamBytes(req, res, filePath, stats.size);
     }
 
     const info = await transcoder.probe(filePath);
     const caps = capsFrom(req);
-    const decision = transcoder.decide(info, caps, { audioOffset });
+    const decision = transcoder.decide(info, caps, { audioOffset, quality });
 
     if (decision.mode === 'direct') {
       return streamBytes(req, res, filePath, stats.size);
@@ -286,8 +312,9 @@ router.get('/', async (req, res, next) => {
 
     // A cached MP4 turns this into a plain byte-range serve: native seeking,
     // no ffmpeg in the path. An audio offset has to keep going through ffmpeg,
-    // because the offset lives in the command rather than in the file.
-    if (audioOffset === 0) {
+    // because the offset lives in the command rather than in the file — and a
+    // capped stream must too, since the cached variants are full quality.
+    if (audioOffset === 0 && !(decision.targetHeight || decision.maxrate)) {
       const variant = mp4cache.pickVariant(info?.video, caps);
       const cached = mp4cache.readyVariant(filePath, variant);
       if (cached) {
