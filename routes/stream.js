@@ -106,12 +106,32 @@ const capsFrom = (req) => ({
 /** The cap this request plays under, from ?q= and where the request came from. */
 const qualityFrom = (req) => resolveQuality(req.query.q, classifyOrigin(req.ip));
 
+/*
+ * DIAGNOSTIC — remove once the iOS playback failure is understood.
+ *
+ * What a client asks for is the missing evidence: whether it sends a Range
+ * header, and what it claims it can decode. Safari on iOS drives <video>
+ * through AVFoundation rather than the engine desktop WebKit uses, so it
+ * cannot be reproduced here — the device has to tell us directly.
+ */
+function logClientRequest(req, label) {
+  const ua = String(req.headers['user-agent'] || '');
+  const device = /iPhone/i.test(ua) ? 'iPhone'
+    : /iPad/i.test(ua) ? 'iPad'
+      : /Macintosh/i.test(ua) ? 'Mac'
+        : /Android/i.test(ua) ? 'Android' : 'other';
+  log.info(`[diag] ${label} from ${device} (${classifyOrigin(req.ip)}) `
+    + `range=${req.headers.range || 'none'} `
+    + `hevc=${req.query.hevc || '0'} ac3=${req.query.ac3 || '0'} q=${req.query.q || 'unset'}`);
+}
+
 /* --------------------------------------------------------------------------
  * GET /api/stream/info
  * ----------------------------------------------------------------------- */
 
 router.get('/info', async (req, res, next) => {
   try {
+    logClientRequest(req, 'info');
     const resolved = resolveRequestPath(req, res);
     if (!resolved) return;
 
@@ -285,6 +305,7 @@ async function streamViaFfmpeg(req, res, filePath, decision) {
 
 router.get('/', async (req, res, next) => {
   try {
+    logClientRequest(req, 'stream');
     const resolved = resolveRequestPath(req, res);
     if (!resolved) return;
 

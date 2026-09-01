@@ -1201,12 +1201,31 @@ function onEnded() {
   persist(true);
 }
 
+/**
+ * What the four MediaError codes actually mean for this app.
+ *
+ * The old message said "Playback failed while streaming" for everything, which
+ * is the same sentence whether the network dropped, the codec was refused, or
+ * the container was rejected outright — and those need completely different
+ * fixes. On a phone there is no console to check, so the code has to be on
+ * screen or it is not recoverable information.
+ */
+const MEDIA_ERROR_DETAIL = {
+  1: 'Playback was aborted.',
+  2: 'The connection dropped while streaming.',
+  3: 'The video decoded partway and then failed.',
+  4: 'This device refused the stream format.'
+};
+
 function onError() {
   if (!ctx) return;
+  const code = ctx.video?.error?.code ?? 0;
   const mode = ctx.info?.mode || 'direct';
-  const detail = mode === 'direct'
-    ? 'Your browser could not decode this file. ffmpeg may not be installed.'
-    : 'Playback failed while streaming.';
+  const quality = api.getQuality();
+
+  const detail = `${MEDIA_ERROR_DETAIL[code] || 'Playback failed.'} `
+    + `(error ${code}, ${mode}, quality ${quality})`;
+
   toast('error', 'Cannot play this file', detail);
   ctx.node.classList.remove('is-buffering');
 }
