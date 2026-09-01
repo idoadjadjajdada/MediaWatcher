@@ -22,20 +22,7 @@ import * as manager from '../services/hls/manager.js';
 import { buildPlaylist } from '../services/hls/playlist.js';
 import { resolveQuality } from '../services/quality.js';
 import { classifyOrigin } from '../services/network.js';
-import { COOKIE_NAME, parseCookies, hashToken } from '../services/auth.js';
-
-/**
- * Who is asking, for the purposes of not sharing an encoder with them.
- *
- * A remembered device has a stable id; an unremembered session is identified by
- * its own token; the launcher and anything else holding the admin key share one
- * bucket, which is fine because none of them play video.
- */
-function viewerId(req) {
-  if (req.device?.id) return `device:${req.device.id}`;
-  const token = parseCookies(req.headers.cookie)[COOKIE_NAME];
-  return token ? `session:${hashToken(token).slice(0, 16)}` : 'admin';
-}
+import { buildSessionSpec } from '../services/hls/spec.js';
 
 const log = createLogger('api:hls');
 const router = express.Router();
@@ -77,22 +64,9 @@ router.get('/playlist.m3u8', async (req, res, next) => {
 
     const decision = transcoder.decide(info, caps, { audioOffset, quality });
 
-    const session = await manager.openSession({
-      viewer: viewerId(req),
-      filePath,
-      mtimeMs: stats.mtimeMs,
-      size: stats.size,
-      quality: quality.level,
-      audioIndex,
-      audioOffset,
-      caps,
-      duration: info.duration,
-      tonemap: Boolean(decision.tonemapped),
-      sourceHeight: info.video?.height ?? null,
-      // A tone-mapped stream carries its own height ceiling when no cap is set.
-      maxHeight: decision.targetHeight ?? (decision.tonemapped ? decision.tonemapHeight : null),
-      maxrate: decision.maxrate
-    });
+    const session = await manager.openSession(buildSessionSpec({
+      req, filePath, stats, info, decision, quality, audioIndex, audioOffset, caps
+    }));
 
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
     // The session behind this playlist is reaped when idle, so a cached copy
@@ -135,6 +109,15 @@ router.get('/:session/:segment.ts', async (req, res, next) => {
 router.post('/:session/touch', (req, res) => {
   manager.touch(req.params.session);
   res.json({ ok: true });
+});
+
+/*
+ * Closing the player ends the session outright rather than leaving its encoder
+ * running until the idle sweeper notices, which was up to a minute of GPU time
+ * spent on video nobody is watching.
+ */
+router.delete('/:session', (req, res) => {
+  res.json({ ended: manager.endSession(req.params.session) });
 });
 
 export default router;

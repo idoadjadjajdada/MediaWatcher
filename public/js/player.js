@@ -176,13 +176,10 @@ const el = (id) => document.getElementById(id);
  * Position helpers
  * ----------------------------------------------------------------------- */
 
-/** Absolute position in the file, whichever mode we are in. */
+/** Absolute position in the file. Every delivery path reports it directly. */
 function position() {
   if (!ctx?.video) return 0;
-  // While a seek is queued the element still holds the old stream's time, so
-  // the target is the honest answer for the scrub bar and the saved progress.
-  if (ctx.pendingSeek !== null && ctx.pendingSeek !== undefined) return ctx.pendingSeek;
-  return ctx.offset + (ctx.video.currentTime || 0);
+  return ctx.video.currentTime || 0;
 }
 
 function duration() {
@@ -263,7 +260,6 @@ async function openInner(filePath) {
     info,
     seekable,
     duration: totalDuration,
-    offset: 0,
     tracks: Array.isArray(tracks) ? tracks : [],
     // Subtitles load automatically when the file has any: external sidecars are
     // listed before embedded tracks, so [0] is the best available.
@@ -275,14 +271,11 @@ async function openInner(filePath) {
     audioIndex: 0,
     // Global, not per-file: brightness tracks the room, not the master.
     picture: loadPicture(),
-    pendingSeek: null,
-    seekTimer: null,
     // Set by the touch handlers; read by markIdle to choose its timing and by
     // the click guard to ignore the synthetic click that follows a tap.
     lastTouchAt: 0,
     scrubbing: false,
     detachHls: null,
-    wasPlayingBeforeSeek: null,
     advancing: false,
     nextTarget: null,
     video: el('player-video'),
@@ -342,10 +335,13 @@ export async function close({ save = true, keepPage = false } = {}) {
   clearInterval(ctx.saveTimer);
   clearInterval(ctx.hlsTimer);
   clearTimeout(ctx.idleTimer);
-  clearTimeout(ctx.seekTimer);
   clearTimeout(ctx.thumbRetry);
 
-  // Dropping the src stops the server-side ffmpeg process straight away.
+  /*
+   * Dropping the src stopped the old pipe's ffmpeg because the response closed.
+   * An HLS encoder outlives the request that started it, so it has to be told.
+   */
+  endHlsSession();
   detachHls();
   ctx.video.removeAttribute('src');
   ctx.video.load();
@@ -391,15 +387,26 @@ function detachHls() {
   ctx.detachHls = null;
 }
 
+/**
+ * Tell the server nobody is watching this stream any more.
+ *
+ * Without it the encoder keeps producing segments until the idle sweeper
+ * notices, which is up to a minute of GPU time spent on a closed player -
+ * and closing one episode to open another would leave both running.
+ */
+function endHlsSession() {
+  const id = ctx?.info?.hls_session;
+  if (!id) return;
+  api.endHlsSession(id).catch(() => {});
+}
+
 function load(startAt = 0, { autoplay = true } = {}) {
   /*
-   * HLS covers everything that needs ffmpeg. It seeks by segment, so none of
-   * the ?t= restart machinery below applies — currentTime is the real position
-   * and ctx.offset stays at zero.
+   * HLS covers everything that needs ffmpeg, and it seeks by segment, so the
+   * element's own currentTime is the real position.
    */
   if (ctx.info?.hls) {
     detachHls();
-    ctx.offset = 0;
 
     attachHls(ctx.video, ctx.info.hls)
       .then((detach) => {
@@ -424,22 +431,14 @@ function load(startAt = 0, { autoplay = true } = {}) {
     return;
   }
 
-  if (ctx.seekable) {
-    // Byte-range mode: load once, then seek inside the element.
-    if (!ctx.video.src) {
-      ctx.video.src = api.streamUrl(ctx.filePath, { audioOffset: ctx.audioOffset });
-      ctx.offset = 0;
-      if (startAt > 0) {
-        ctx.video.addEventListener('loadedmetadata', () => { ctx.video.currentTime = startAt; }, { once: true });
-      }
-    } else if (startAt >= 0) {
-      ctx.video.currentTime = startAt;
+  // A real file on disk: load once, then seek inside the element.
+  if (!ctx.video.src) {
+    ctx.video.src = api.streamUrl(ctx.filePath, { audioOffset: ctx.audioOffset });
+    if (startAt > 0) {
+      ctx.video.addEventListener('loadedmetadata', () => { ctx.video.currentTime = startAt; }, { once: true });
     }
-  } else {
-    // Pipe mode: the only way to seek is to restart ffmpeg at a timestamp.
-    ctx.offset = Math.max(0, startAt);
-    ctx.video.src = api.streamUrl(ctx.filePath, { start: ctx.offset, audioOffset: ctx.audioOffset });
-    ctx.video.load();
+  } else if (startAt >= 0) {
+    ctx.video.currentTime = startAt;
   }
 
   if (autoplay) {
@@ -452,46 +451,21 @@ function load(startAt = 0, { autoplay = true } = {}) {
 }
 
 /**
- * How long to wait before actually restarting ffmpeg on a seek.
+ * Seeking is now the same operation whatever the delivery: a file seeks by byte
+ * range, HLS seeks by segment, and the element handles both.
  *
- * Every pipe-mode seek kills and respawns ffmpeg, so holding an arrow key used
- * to spawn one process per keypress and each one had to be torn down again.
- * Coalescing means a burst of presses costs a single restart at the final
- * position; the scrub bar still tracks every press immediately.
+ * There used to be a second path here for the raw ffmpeg pipe, which had no
+ * byte offsets and could only seek by restarting the encoder at ?t=. It carried
+ * its own coalescing timer and a ctx.offset the position had to be measured
+ * against - and that offset was the reason a seek with an audio delay set
+ * reported roughly double the real position. HLS replaced the pipe, so the mode
+ * and its accounting are gone rather than left to be tripped over.
  */
-const SEEK_COALESCE_MS = 220;
-
 function seekTo(seconds) {
   const total = duration();
   const target = Math.max(0, Math.min(total ? total - 1 : seconds, seconds));
-
-  if (ctx.seekable) {
-    ctx.video.currentTime = target;
-    tick();
-    return;
-  }
-
-  // Pipe mode: show the new position at once, but let a burst of presses
-  // settle before paying for an ffmpeg restart.
-  ctx.pendingSeek = target;
-  ctx.offset = target;
-  ctx.video.classList.add('is-seeking');
+  ctx.video.currentTime = target;
   tick();
-
-  clearTimeout(ctx.seekTimer);
-  ctx.seekTimer = setTimeout(() => {
-    if (!ctx) return;
-    const wasPlaying = ctx.wasPlayingBeforeSeek ?? !ctx.video.paused;
-    ctx.wasPlayingBeforeSeek = null;
-    const to = ctx.pendingSeek;
-    ctx.pendingSeek = null;
-    ctx.video.classList.remove('is-seeking');
-    load(to, { autoplay: wasPlaying });
-  }, SEEK_COALESCE_MS);
-
-  if (ctx.wasPlayingBeforeSeek === null || ctx.wasPlayingBeforeSeek === undefined) {
-    ctx.wasPlayingBeforeSeek = !ctx.video.paused;
-  }
 }
 
 export function skip(seconds) {
@@ -908,6 +882,7 @@ async function reloadStream(startAt) {
   // (backslashes on Windows), so comparing path strings never matches and
   // would abandon every switch.
   const opened = ctx;
+  const previousSession = ctx.info?.hls_session || null;
 
   let info;
   try {
@@ -924,18 +899,18 @@ async function reloadStream(startAt) {
   // flight; adopting stale info would strand the new stream.
   if (ctx !== opened) return;
 
+  // The parameters changed, so this is a different session. Ending the old one
+  // stops an encoder that would otherwise run on until the sweeper reaped it.
+  if (previousSession && previousSession !== info.hls_session) {
+    api.endHlsSession(previousSession).catch(() => {});
+  }
+
   ctx.info = info;
-  /*
-   * Every delivery path seeks now: a file by byte range, HLS by segment. The
-   * old rule — an audio offset makes the stream unseekable — was true only of
-   * the raw ffmpeg pipe, and leaving it in place sent seeks down the pipe
-   * branch, which sets ctx.offset and made position() double-count.
-   */
+  // Every delivery path seeks: a file by byte range, HLS by segment.
   ctx.seekable = info.seekable !== false;
 
   detachHls();
   ctx.video.removeAttribute('src');
-  ctx.offset = 0;
   load(at, { autoplay: wasPlaying });
   buildMenu();
 }
@@ -1449,10 +1424,14 @@ function attach() {
   /*
    * The server reaps idle HLS sessions so abandoned encoders do not pile up,
    * which means a paused film has to keep saying it is still being watched.
+   *
+   * The id comes from /api/stream/info, not from the media element: hls.js
+   * reports a blob URL and native HLS reports the playlist URL, so the old
+   * attempt to read it off currentSrc never matched anything and no session
+   * was ever actually kept alive.
    */
   ctx.hlsTimer = setInterval(() => {
-    const match = /\/api\/hls\/([0-9a-f]{32})\//.exec(ctx?.video?.currentSrc || '');
-    if (match) api.touchHlsSession(match[1]).catch(() => {});
+    if (ctx?.info?.hls_session) api.touchHlsSession(ctx.info.hls_session).catch(() => {});
   }, 20000);
   setVolumeUi();
   markIdle();

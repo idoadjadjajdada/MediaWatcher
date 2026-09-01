@@ -23,6 +23,7 @@ import * as transcoder from '../services/transcoder.js';
 import * as mp4cache from '../services/mp4cache.js';
 import { resolveQuality } from '../services/quality.js';
 import { classifyOrigin } from '../services/network.js';
+import { buildSessionSpec, specSessionId } from '../services/hls/spec.js';
 
 const log = createLogger('api:stream');
 const router = express.Router();
@@ -166,6 +167,26 @@ router.get('/info', async (req, res, next) => {
       origin: classifyOrigin(req.ip),
       // Present when playback needs ffmpeg. A direct or cached file is a real
       // file with byte ranges and needs nothing here.
+      /*
+       * The id the playlist request will resolve to, computed rather than
+       * created. The player needs it to keep the session alive and to end it
+       * on close, and it cannot read it from the media element: hls.js reports
+       * a blob URL and native HLS reports the playlist URL, neither of which
+       * carries the id.
+       */
+      hls_session: (decision.mode === 'direct' || decision.mode.startsWith('cached-'))
+        ? null
+        : specSessionId(buildSessionSpec({
+          req,
+          filePath: resolved.filePath,
+          stats: resolved.stats,
+          info,
+          decision,
+          quality,
+          audioIndex: Math.max(0, Number(req.query.audio) || 0),
+          audioOffset,
+          caps
+        })),
       hls: (decision.mode === 'direct' || decision.mode.startsWith('cached-'))
         ? null
         : `/api/hls/playlist.m3u8?${new URLSearchParams({

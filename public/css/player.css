@@ -110,7 +110,6 @@ html.is-player-open body { overflow: hidden; }
 
 /* A queued seek has not restarted the stream yet; dim the picture slightly so
    the jump reads as deliberate rather than as a stall. */
-.player__video.is-seeking { opacity: .55; transition: opacity 90ms linear; }
 
 .player__spinner { position: absolute; inset: 0; display: none; place-items: center; z-index: 2; }
 .player.is-buffering .player__spinner { display: grid; }

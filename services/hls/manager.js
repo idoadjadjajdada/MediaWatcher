@@ -328,6 +328,14 @@ export function stopSweeper() {
   sweeper = null;
 }
 
+/** End one session now. True if there was one to end. */
+export function endSession(id) {
+  const session = sessions.get(id);
+  if (!session) return false;
+  destroy(session);
+  return true;
+}
+
 /** Kill every session, so no ffmpeg outlives the server. */
 export function shutdownAll() {
   stopSweeper();
@@ -350,6 +358,6 @@ export function clearOrphans() {
 export const activeCount = () => sessions.size;
 
 export default {
-  openSession, getSession, requestSegment, touch, activeCount,
+  openSession, getSession, requestSegment, touch, endSession, activeCount,
   startSweeper, stopSweeper, shutdownAll, clearOrphans
 };
