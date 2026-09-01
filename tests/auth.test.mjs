@@ -11,6 +11,10 @@ import { randomUUID } from 'node:crypto';
 import {
   insertDevice, findDeviceByTokenHash, touchDevice, listDevices, revokeDevice
 } from '../db/devices.js';
+import {
+  mintToken, hashToken, parseCookies, rememberSession, hasSession, dropSession,
+  resolveToken, recordFailure, blockedForMs, clearFailures, COOKIE_NAME
+} from '../services/auth.js';
 
 let total = 0;
 let failures = 0;
@@ -58,6 +62,56 @@ check('the device appears in the list',
 check('revoking reports success', revokeDevice(device.id) === true);
 check('a revoked device no longer resolves', !findDeviceByTokenHash(device.tokenHash));
 check('revoking twice reports failure', revokeDevice(device.id) === false);
+
+console.log('\ntokens');
+const tokenA = mintToken();
+const tokenB = mintToken();
+check('a token is 64 hex characters', /^[0-9a-f]{64}$/.test(tokenA));
+check('two tokens differ', tokenA !== tokenB);
+check('hashing is stable', hashToken(tokenA) === hashToken(tokenA));
+check('the hash is not the token', hashToken(tokenA) !== tokenA);
+check('different tokens hash differently', hashToken(tokenA) !== hashToken(tokenB));
+
+console.log('\ncookie parsing');
+check('reads one cookie', parseCookies('mw_device=abc').mw_device === 'abc');
+check('reads several', parseCookies('a=1; mw_device=xyz; b=2').mw_device === 'xyz');
+check('tolerates no header', Object.keys(parseCookies(undefined)).length === 0);
+check('tolerates an empty header', Object.keys(parseCookies('')).length === 0);
+check('decodes percent-encoding', parseCookies('k=a%20b').k === 'a b');
+check('ignores a malformed pair', parseCookies('novalue; k=1').k === '1');
+check('the cookie name is exported', COOKIE_NAME === 'mw_device');
+
+console.log('\nsessions');
+const sessionToken = mintToken();
+check('an unknown token has no session', hasSession(hashToken(sessionToken)) === false);
+rememberSession(hashToken(sessionToken));
+check('a remembered session is found', hasSession(hashToken(sessionToken)) === true);
+check('resolveToken reports a session', resolveToken(sessionToken)?.kind === 'session');
+dropSession(hashToken(sessionToken));
+check('a dropped session is gone', hasSession(hashToken(sessionToken)) === false);
+check('resolveToken rejects an unissued token', resolveToken(mintToken()) === null);
+
+// A persistent device must win over the session path.
+const persistentToken = mintToken();
+insertDevice(makeDevice({ tokenHash: hashToken(persistentToken) }));
+const resolved = resolveToken(persistentToken);
+check('resolveToken reports a device', resolved?.kind === 'device');
+check('resolveToken hands back the row', resolved?.device?.name === 'Test iPad');
+
+console.log('\nfailed-attempt backoff');
+const ip = '203.0.113.9';
+clearFailures(ip);
+check('a clean IP is not blocked', blockedForMs(ip) === 0);
+recordFailure(ip);
+recordFailure(ip);
+check('two failures are still free', blockedForMs(ip) === 0);
+recordFailure(ip);
+check('the third failure starts the backoff', blockedForMs(ip) > 0);
+const afterThree = blockedForMs(ip);
+recordFailure(ip);
+check('the backoff grows', blockedForMs(ip) > afterThree);
+clearFailures(ip);
+check('a success clears the record', blockedForMs(ip) === 0);
 
 console.log(`\n${total - failures}/${total} passed`);
 process.exit(failures > 0 ? 1 : 0);

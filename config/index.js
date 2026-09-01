@@ -8,6 +8,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
@@ -119,6 +120,44 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
+/*
+ * The password gate is the only thing between a tunnelled server and the
+ * internet-facing world, so a missing or trivial password is fatal rather than
+ * a warning. Booting open behind a tunnel is the worst failure available here.
+ */
+const authPassword = str('AUTH_PASSWORD');
+if (authPassword.length < 8) {
+  console.error([
+    '',
+    'MediaWatcher cannot start: AUTH_PASSWORD is missing or too short.',
+    '',
+    '  Set AUTH_PASSWORD in .env to at least 8 characters. Every device must',
+    '  enter it once before it can browse or play anything.',
+    ''
+  ].join('\n'));
+  process.exit(1);
+}
+
+/*
+ * A key only something on this machine can read. The launcher needs to list
+ * and revoke devices, and it cannot be waved through on the basis of coming
+ * from loopback — tailscale serve makes every remote request look local. So it
+ * proves itself with a file instead.
+ */
+const ADMIN_KEY_PATH = path.join(ROOT_DIR, 'config', 'admin-key');
+
+function loadOrCreateAdminKey() {
+  try {
+    const existing = fs.readFileSync(ADMIN_KEY_PATH, 'utf8').trim();
+    if (existing.length === 64) return existing;
+  } catch {
+    // Absent or unreadable: fall through and mint a new one.
+  }
+  const key = randomBytes(32).toString('hex');
+  fs.writeFileSync(ADMIN_KEY_PATH, key, { mode: 0o600 });
+  return key;
+}
+
 /* --------------------------------------------------------------------------
  * Config object
  * ----------------------------------------------------------------------- */
@@ -131,6 +170,14 @@ const config = {
   port: int('PORT', 3000),
   host: '127.0.0.1',
   logLevel: LOG_LEVEL,
+
+  auth: {
+    password: authPassword,
+    adminKey: loadOrCreateAdminKey(),
+    // The tailnet hostname tailscale serve publishes, e.g.
+    // "mediapc.tail1a2b3c.ts.net". Needed so CORS accepts that origin.
+    tailnetHost: str('TAILNET_HOST')
+  },
 
   // Filesystem
   libraryPath,
