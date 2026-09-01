@@ -13,6 +13,8 @@ import cors from 'cors';
 
 import config, { ensureRuntimeDirs, log } from './config/index.js';
 import { closeDatabase } from './db/index.js';
+import requireAuth from './middleware/requireAuth.js';
+import authRouter from './routes/auth.js';
 import mediaRouter from './routes/media.js';
 import discoverRouter from './routes/discover.js';
 import torrentsRouter from './routes/torrents.js';
@@ -33,6 +35,14 @@ const INDEX_HTML = path.join(PUBLIC_DIR, 'index.html');
 
 app.disable('x-powered-by');
 app.set('etag', 'strong');
+
+/*
+ * X-Forwarded-For is only meaningful because the sole thing allowed to reach
+ * this port is tailscale serve on loopback. Without this every tunnelled
+ * request reports req.ip as 127.0.0.1 and remote clients become invisible —
+ * both to the device list and to the quality cap.
+ */
+app.set('trust proxy', 'loopback');
 
 /* --------------------------------------------------------------------------
  * Security + middleware
@@ -66,13 +76,22 @@ app.use(helmet({
 
 const LOCALHOST_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
+/** The tailnet origin tailscale serve publishes, when one is configured. */
+const tailnetOrigin = config.auth.tailnetHost
+  ? `https://${config.auth.tailnetHost.toLowerCase()}`
+  : null;
+
 app.use(cors({
   origin(origin, callback) {
     // No Origin header = same-origin navigation, curl, or the <video> element.
-    if (!origin || LOCALHOST_ORIGIN.test(origin)) return callback(null, true);
+    if (!origin) return callback(null, true);
+    if (LOCALHOST_ORIGIN.test(origin)) return callback(null, true);
+    if (tailnetOrigin && origin.toLowerCase() === tailnetOrigin) return callback(null, true);
     return callback(new Error(`Origin not allowed: ${origin}`));
   },
-  credentials: false
+  // The device cookie has to ride along, so the browser needs permission to
+  // send it.
+  credentials: true
 }));
 
 app.use(express.json({ limit: '1mb' }));
@@ -83,6 +102,17 @@ if (config.logLevel === 'debug') {
     next();
   });
 }
+
+/* --------------------------------------------------------------------------
+ * Authentication
+ *
+ * The gate mounts here, ahead of the static handler: below this line nothing
+ * is served to a client that has not passed it. The login route itself is
+ * mounted first, because it is what hands out the cookie the gate looks for.
+ * ----------------------------------------------------------------------- */
+
+app.use('/api/auth', authRouter);
+app.use(requireAuth);
 
 /* --------------------------------------------------------------------------
  * Static frontend
