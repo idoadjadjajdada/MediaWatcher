@@ -114,9 +114,38 @@ export function decoderCapabilities() {
   };
 }
 
+/*
+ * Playback quality, per device rather than per account: the right level is a
+ * property of the connection you are on, which is also why it lives in
+ * localStorage rather than in the database. 'auto' lets the server decide from
+ * whether the request arrived over the LAN or the tunnel.
+ */
+const QUALITY_KEY = 'mw.quality';
+export const QUALITY_LEVELS = ['auto', 'original', 'high', 'medium', 'low'];
+
+export function getQuality() {
+  try {
+    const stored = localStorage.getItem(QUALITY_KEY);
+    return QUALITY_LEVELS.includes(stored) ? stored : 'auto';
+  } catch {
+    // Private mode and some embedded webviews throw on access.
+    return 'auto';
+  }
+}
+
+export function setQuality(level) {
+  if (!QUALITY_LEVELS.includes(level)) return;
+  try { localStorage.setItem(QUALITY_KEY, level); } catch { /* not worth failing playback over */ }
+}
+
 export const getStreamInfo = (filePath) => {
   const caps = decoderCapabilities();
-  return get(`/api/stream/info?${q({ path: filePath, hevc: caps.hevc ? 1 : '', ac3: caps.ac3 ? 1 : '' })}`);
+  return get(`/api/stream/info?${q({
+    path: filePath,
+    hevc: caps.hevc ? 1 : '',
+    ac3: caps.ac3 ? 1 : '',
+    q: getQuality()
+  })}`);
 };
 
 export function streamUrl(filePath, { start = 0, audio, audioOffset = 0 } = {}) {
@@ -127,7 +156,8 @@ export function streamUrl(filePath, { start = 0, audio, audioOffset = 0 } = {}) 
     audio,
     audioOffset: audioOffset || '',
     hevc: caps.hevc ? 1 : '',
-    ac3: caps.ac3 ? 1 : ''
+    ac3: caps.ac3 ? 1 : '',
+    q: getQuality()
   })}`;
 }
 
@@ -150,5 +180,6 @@ export default {
   getJobs, startDownload, cancelJob,
   getContinueWatching, getAllProgress, getProgressFor, saveProgress,
   getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities,
+  getQuality, setQuality, QUALITY_LEVELS,
   thumbMetaUrl, thumbUrl
 };

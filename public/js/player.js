@@ -607,11 +607,24 @@ function buildSyncPopover() {
     </div>`;
 }
 
+const QUALITY_LABELS = [
+  ['auto', 'Auto'],
+  ['original', 'Original'],
+  ['high', 'High &middot; 1080p'],
+  ['medium', 'Medium &middot; 720p'],
+  ['low', 'Low &middot; 480p']
+];
+
 function buildSpeedPopover() {
+  const quality = api.getQuality();
+
   el('popover-speed').innerHTML = `
     <div class="player__menu-label">Playback speed</div>
     ${SPEEDS.map((speed) => `
-      <button class="player__menu-item${ctx.speed === speed ? ' is-active' : ''}" data-action="set-speed" data-speed="${speed}">${speed}&times;</button>`).join('')}`;
+      <button class="player__menu-item${ctx.speed === speed ? ' is-active' : ''}" data-action="set-speed" data-speed="${speed}">${speed}&times;</button>`).join('')}
+    <div class="player__menu-label">Quality</div>
+    ${QUALITY_LABELS.map(([value, label]) => `
+      <button class="player__menu-item${quality === value ? ' is-active' : ''}" data-action="set-quality" data-quality="${value}">${label}</button>`).join('')}`;
   const rate = el('rate-btn');
   if (rate) rate.innerHTML = `${ctx.speed}&times;`;
 }
@@ -710,6 +723,44 @@ export function setSpeed(speed) {
   if (!ctx) return;
   ctx.speed = Number(speed);
   ctx.video.playbackRate = ctx.speed;
+  buildMenu();
+}
+
+/**
+ * Change the quality cap and restart the stream where it left off.
+ *
+ * The cap lives in the ffmpeg command, so like an audio offset it can only
+ * take effect on a new stream. Seekability has to be re-asked rather than
+ * assumed: a capped stream is a pipe and cannot seek natively, and only the
+ * server knows whether the cap actually bites on this particular file.
+ */
+export async function setQuality(level) {
+  if (!ctx || level === api.getQuality()) return;
+  api.setQuality(level);
+  buildMenu();
+
+  const at = position();
+  const wasPlaying = !ctx.video.paused;
+  // Identity, not the path: the server answers with its own resolved form
+  // (backslashes on Windows), so comparing path strings never matches and
+  // would abandon every switch.
+  const opened = ctx;
+
+  try {
+    const info = await api.getStreamInfo(ctx.filePath);
+    // The player may have been closed or switched files while this was in
+    // flight; adopting stale info would strand the new stream.
+    if (ctx !== opened) return;
+    ctx.info = info;
+    ctx.nativeSeekable = Boolean(info.seekable);
+    ctx.seekable = ctx.audioOffset === 0 ? ctx.nativeSeekable : false;
+  } catch {
+    // Keep playing at the old settings rather than dropping the stream.
+    return;
+  }
+
+  ctx.video.removeAttribute('src');
+  load(at, { autoplay: wasPlaying });
   buildMenu();
 }
 
@@ -1248,6 +1299,6 @@ function playNextImmediate() {
 
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
-  skip, setSubtitle, setSpeed, togglePopover, closePopovers, setPicture,
+  skip, setSubtitle, setSpeed, setQuality, togglePopover, closePopovers, setPicture,
   playNext, cancelNext
 };

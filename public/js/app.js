@@ -420,6 +420,7 @@ const ACTIONS = {
   'picture-reset': () => player.setPicture({ brightness: 100, contrast: 100 }),
   'set-subtitle': (el) => player.setSubtitle(el.dataset.track),
   'set-speed': (el) => player.setSpeed(el.dataset.speed),
+  'set-quality': (el) => player.setQuality(el.dataset.quality),
   'prev-episode': () => player.playPrevious(),
   'next-episode': () => player.playNextEpisode(),
   'audio-nudge': (el) => player.nudgeAudioOffset(Number(el.dataset.delta)),
