@@ -258,3 +258,85 @@ function Set-ApiPollerJobsWanted {
   param([hashtable]$Handle, [bool]$Wanted)
   if ($null -ne $Handle) { $Handle.Control['JobsWanted'] = $Wanted }
 }
+
+<#
+  Device management.
+
+  Synchronous, unlike the polling loop above: the device list is only fetched
+  on an explicit tab open or refresh, so a short timeout against loopback will
+  not hang the window the way a background poll would.
+
+  These authenticate with the admin key rather than a device cookie. The server
+  cannot wave the launcher through for coming from 127.0.0.1, because
+  tailscale serve makes every remote request look like it came from there too.
+#>
+
+function Get-MwAdminKey {
+  param([Parameter(Mandatory)][string]$RootDir)
+
+  $path = Join-Path $RootDir 'config\admin-key'
+  if (-not (Test-Path -LiteralPath $path)) { return '' }
+  try {
+    return (Get-Content -LiteralPath $path -Raw -ErrorAction Stop).Trim()
+  } catch {
+    # Absent or locked means the server has not started yet, which is a normal
+    # state for the launcher to be in - not something to take the window down.
+    return ''
+  }
+}
+
+function ConvertTo-MwDeviceSummary {
+  param($Payload)
+
+  if ($null -eq $Payload) { return ,@() }
+
+  $rows = @()
+  foreach ($row in @($Payload.devices)) {
+    $ua = [string]$row.user_agent
+
+    # Order matters: Chrome and Edge both carry "Safari" in their user agent,
+    # and Edge carries "Chrome", so the most specific match has to win.
+    $browser = 'Unknown'
+    if ($ua -match 'Edg/') { $browser = 'Edge' }
+    elseif ($ua -match 'Chrome/') { $browser = 'Chrome' }
+    elseif ($ua -match 'Firefox/') { $browser = 'Firefox' }
+    elseif ($ua -match 'Safari/') { $browser = 'Safari' }
+
+    $rows += @{
+      Id        = [string]$row.id
+      Name      = [string]$row.name
+      Browser   = $browser
+      LastIp    = [string]$row.last_ip
+      Origin    = [string]$row.origin
+      FirstSeen = [System.DateTimeOffset]::FromUnixTimeMilliseconds([int64]$row.first_seen).LocalDateTime
+      LastSeen  = [System.DateTimeOffset]::FromUnixTimeMilliseconds([int64]$row.last_seen).LocalDateTime
+    }
+  }
+  return ,$rows
+}
+
+function Get-MwDeviceList {
+  param([Parameter(Mandatory)][hashtable]$Config)
+
+  $key = Get-MwAdminKey $Config.Root
+  if (-not $key) { throw 'admin key not found - start the server once first' }
+
+  $uri = "http://127.0.0.1:$($Config.Port)/api/devices"
+  $payload = Invoke-RestMethod -Uri $uri -Method GET -TimeoutSec 5 `
+    -Headers @{ 'X-MediaWatcher-Key' = $key } -UseBasicParsing -ErrorAction Stop
+  return ConvertTo-MwDeviceSummary $payload
+}
+
+function Remove-MwDevice {
+  param(
+    [Parameter(Mandatory)][hashtable]$Config,
+    [Parameter(Mandatory)][string]$Id
+  )
+
+  $key = Get-MwAdminKey $Config.Root
+  if (-not $key) { throw 'admin key not found - start the server once first' }
+
+  $uri = "http://127.0.0.1:$($Config.Port)/api/devices/$Id"
+  Invoke-RestMethod -Uri $uri -Method DELETE -TimeoutSec 5 `
+    -Headers @{ 'X-MediaWatcher-Key' = $key } -UseBasicParsing -ErrorAction Stop | Out-Null
+}

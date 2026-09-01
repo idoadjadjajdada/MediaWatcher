@@ -529,21 +529,119 @@ $BtnRescan.Add_Click({
   Select-Tab 'log'
 })
 
+# --- devices ---------------------------------------------------------------
+#
+# Every row here is a live credential, and the list is complete, so anything
+# unfamiliar can be revoked on sight. That is the whole point of the tab.
+
+function New-DeviceRow {
+  param([hashtable]$Device)
+
+  $row = New-Object System.Windows.Controls.Grid
+  $row.Margin = New-Object System.Windows.Thickness 0, 0, 0, 12
+
+  $colBody = New-Object System.Windows.Controls.ColumnDefinition
+  $colBody.Width = New-Object System.Windows.GridLength 1, ([System.Windows.GridUnitType]::Star)
+  $colAction = New-Object System.Windows.Controls.ColumnDefinition
+  $colAction.Width = New-Object System.Windows.GridLength 84
+  $row.ColumnDefinitions.Add($colBody)
+  $row.ColumnDefinitions.Add($colAction)
+
+  $stack = New-Object System.Windows.Controls.StackPanel
+
+  $label = New-Object System.Windows.Controls.TextBlock
+  $label.Text = $Device.Name
+  $label.FontSize = 13
+  $label.Foreground = $script:LogBrushes['plain']
+  [void]$stack.Children.Add($label)
+
+  $where = 'LAN'
+  if ($Device.Origin -eq 'tailscale') { $where = 'Tailscale' }
+
+  $detail = New-Object System.Windows.Controls.TextBlock
+  $detail.Text = "$($Device.Browser) - $where - $($Device.LastIp) - last seen $($Device.LastSeen.ToString('d MMM HH:mm'))"
+  $detail.FontSize = 10.5
+  $detail.TextWrapping = 'Wrap'
+  $detail.Margin = New-Object System.Windows.Thickness 0, 1, 8, 0
+  $detail.Foreground = $script:LogBrushes['debug']
+  [void]$stack.Children.Add($detail)
+
+  [System.Windows.Controls.Grid]::SetColumn($stack, 0)
+  [void]$row.Children.Add($stack)
+
+  $button = New-Object System.Windows.Controls.Button
+  $button.Content = 'Revoke'
+  $button.Style = $window.FindResource('SecondaryButton')
+  $button.FontSize = 11
+  $button.Padding = New-Object System.Windows.Thickness 12, 4, 12, 4
+  $button.VerticalAlignment = 'Top'
+  # Carried on the control rather than captured, matching the pre-flight rows:
+  # the list is rebuilt on every refresh, and a closure would go stale.
+  $button.Tag = $Device
+  $button.Add_Click({
+    $device = $this.Tag
+    $answer = [System.Windows.MessageBox]::Show(
+      "Revoke $($device.Name)? It will have to enter the password again.",
+      'Revoke device', 'YesNo', 'Warning')
+    if ($answer -ne 'Yes') { return }
+
+    try {
+      Remove-MwDevice $script:Config $device.Id
+      Write-MwQueueNotice $script:OutputQueue "revoked device: $($device.Name)"
+      Update-DeviceList
+    } catch {
+      Write-MwQueueNotice $script:OutputQueue "revoke failed: $($_.Exception.Message)"
+    }
+  })
+  [System.Windows.Controls.Grid]::SetColumn($button, 1)
+  [void]$row.Children.Add($button)
+
+  return $row
+}
+
+function Update-DeviceList {
+  $DeviceItems.Children.Clear()
+
+  $devices = @()
+  try {
+    # Assigned directly, NOT wrapped in @(). Get-MwDeviceList already hands
+    # back an array via the ,$rows idiom, and wrapping it again produces a
+    # one-element array holding the empty array - so an empty list would
+    # report Count 1 and the "no devices" state would never appear.
+    $devices = Get-MwDeviceList $script:Config
+  } catch {
+    # A stopped server is the usual cause, and the log already says so.
+    Write-MwQueueNotice $script:OutputQueue "device list unavailable: $($_.Exception.Message)"
+  }
+
+  if ($null -eq $devices -or $devices.Count -eq 0) {
+    $DevicesEmpty.Visibility = 'Visible'
+    return
+  }
+
+  $DevicesEmpty.Visibility = 'Collapsed'
+  foreach ($device in $devices) {
+    [void]$DeviceItems.Children.Add((New-DeviceRow $device))
+  }
+}
+
 # --- tabs ------------------------------------------------------------------
 function Select-Tab {
-  param([string]$Name)   # log | preflight | downloads
+  param([string]$Name)   # log | preflight | downloads | devices
 
   $script:CurrentTab = $Name
 
   $PaneLog.Visibility = 'Collapsed'
   $PanePreflight.Visibility = 'Collapsed'
   $PaneDownloads.Visibility = 'Collapsed'
+  $PaneDevices.Visibility = 'Collapsed'
 
   $dim = $script:LogBrushes['debug']
   $bright = $script:LogBrushes['plain']
   $TabLog.Foreground = $dim
   $TabPreflight.Foreground = $dim
   $TabDownloads.Foreground = $dim
+  $TabDevices.Foreground = $dim
 
   # The underline jumps rather than slides - the slide animation was cut by design.
   switch ($Name) {
@@ -560,6 +658,14 @@ function Select-Tab {
       $TabUnderline.Width = $TabDownloads.ActualWidth
       $TabUnderline.Margin = New-Object System.Windows.Thickness ($TabLog.ActualWidth + $TabPreflight.ActualWidth), 0, 0, 0
       Start-PaneEntrance $PaneDownloads
+    }
+    'devices' {
+      $PaneDevices.Visibility = 'Visible'
+      $TabDevices.Foreground = $bright
+      $TabUnderline.Width = $TabDevices.ActualWidth
+      $TabUnderline.Margin = New-Object System.Windows.Thickness ($TabLog.ActualWidth + $TabPreflight.ActualWidth + $TabDownloads.ActualWidth), 0, 0, 0
+      Start-PaneEntrance $PaneDevices
+      Update-DeviceList
     }
     default {
       $PaneLog.Visibility = 'Visible'
@@ -586,6 +692,8 @@ function Select-Tab {
 $TabLog.Add_Click({ Select-Tab 'log' })
 $TabPreflight.Add_Click({ Select-Tab 'preflight' })
 $TabDownloads.Add_Click({ Select-Tab 'downloads' })
+$TabDevices.Add_Click({ Select-Tab 'devices' })
+$BtnRefreshDevices.Add_Click({ Update-DeviceList })
 
 # --- pre-flight ------------------------------------------------------------
 function New-PreflightRow {
