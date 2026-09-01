@@ -56,3 +56,20 @@ CREATE TABLE IF NOT EXISTS discover_cache (
   data TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- Remembered devices. One row per "remember me" login; the row IS the
+-- credential, so revoking it locks that device out on its very next request.
+-- Only the hash is stored: a leaked database file yields nothing usable.
+CREATE TABLE IF NOT EXISTS devices (
+  id           TEXT PRIMARY KEY,
+  token_hash   TEXT NOT NULL UNIQUE,
+  name         TEXT NOT NULL,
+  user_agent   TEXT,
+  last_ip      TEXT,
+  origin       TEXT,
+  first_seen   INTEGER NOT NULL,
+  last_seen    INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_devices_last_seen
+  ON devices(last_seen DESC);
