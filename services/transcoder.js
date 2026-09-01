@@ -17,6 +17,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import config, { createLogger } from '../config/index.js';
 import { parseBitrate } from './quality.js';
+import { SEGMENT_SECONDS } from './hls/playlist.js';
 
 const log = createLogger('transcoder');
 
@@ -492,6 +493,108 @@ export function buildArgs(filePath, {
 }
 
 /**
+ * ffmpeg arguments for HLS segment output.
+ *
+ * Separate from buildArgs rather than a flag on it: the two differ in output
+ * muxer, timestamp handling and keyframe placement, and folding both into one
+ * function would mean every caller reasoning about which half applies. The
+ * video settings deliberately mirror buildArgs — same encoder choice, same cap
+ * handling — because a stream should not look different depending on how it
+ * happens to be delivered.
+ */
+export function buildSegmentArgs(filePath, {
+  startSegment = 0, outputPattern, audioIndex = 0, audioOffset = 0,
+  tonemap = false, height = null, maxHeight = null, maxrate = null, encoder = null
+}) {
+  const startSeconds = startSegment * SEGMENT_SECONDS;
+  const args = ['-hide_banner', '-loglevel', 'error'];
+  const offset = clampAudioOffset(audioOffset);
+
+  if (tonemap && encoder === 'h264_nvenc') args.push('-hwaccel', 'cuda');
+
+  const seek = () => { if (startSeconds > 0) args.push('-ss', String(startSeconds)); };
+
+  seek();
+  args.push('-i', filePath);
+
+  if (offset !== 0) {
+    args.push('-itsoffset', String(offset));
+    seek();
+    args.push('-i', filePath);
+    args.push('-map', '0:v:0', '-map', `1:a:${audioIndex}?`);
+  } else {
+    args.push('-map', '0:v:0', '-map', `0:a:${audioIndex}?`);
+  }
+
+  // -map_chapters because ffmpeg otherwise turns MKV chapters into a text
+  // track that is not in the source and that nothing here ever reads.
+  args.push('-sn', '-dn', '-map_chapters', '-1');
+
+  if (tonemap) {
+    args.push('-vf', tonemapChain(height, maxHeight ?? TONEMAP_MAX_HEIGHT));
+  } else if (maxHeight) {
+    args.push('-vf', `scale=-2:${maxHeight}`);
+  }
+
+  const rate = maxrate || config.ffmpeg.videoMaxrate;
+
+  if (encoder) {
+    args.push('-c:v', encoder);
+    if (encoder === 'h264_nvenc') args.push('-preset', 'p4', '-cq', String(config.ffmpeg.videoCrf));
+    else args.push('-global_quality', String(config.ffmpeg.videoCrf));
+    args.push('-maxrate', rate, '-bufsize', '24M');
+  } else {
+    args.push(
+      '-c:v', 'libx264',
+      '-preset', config.ffmpeg.videoPreset,
+      '-crf', String(config.ffmpeg.videoCrf),
+      '-maxrate', rate,
+      '-bufsize', '24M'
+    );
+  }
+
+  if (!tonemap) args.push('-pix_fmt', 'yuv420p');
+
+  /*
+   * A segment that does not begin on a keyframe cannot be decoded on its own,
+   * so the player would either stall or land somewhere other than where it
+   * asked for. This is the single most important argument here.
+   */
+  args.push('-force_key_frames', `expr:gte(t,n_forced*${SEGMENT_SECONDS})`);
+
+  args.push('-c:a', 'aac', '-ac', String(config.ffmpeg.audioChannels), '-b:a', config.ffmpeg.audioBitrate);
+
+  /*
+   * -ss rewinds the output clock to zero. Left alone, segments produced after a
+   * seek would claim to start at 0 and the player would treat the seek as a
+   * jump back to the beginning. This puts them back on the file's own timeline.
+   */
+  if (startSeconds > 0) args.push('-output_ts_offset', String(startSeconds));
+
+  /*
+   * The mpegts muxer otherwise starts every segment's PTS about 1.4s late — a
+   * constant offset, measured at every seek point including segment 0 where
+   * there is no seek at all, so it is the muxer rather than the seek. Harmless
+   * because it is uniform, but zeroing it makes a segment's timestamps match
+   * the time the playlist claims for it, to within about 20ms.
+   */
+  args.push('-muxdelay', '0', '-muxpreload', '0');
+
+  args.push(
+    '-f', 'segment',
+    '-segment_time', String(SEGMENT_SECONDS),
+    '-segment_format', 'mpegts',
+    '-segment_start_number', String(startSegment),
+    // Lets a boundary land on the keyframe just before the exact time rather
+    // than pushing it into the next segment.
+    '-segment_time_delta', '0.05',
+    outputPattern
+  );
+
+  return args;
+}
+
+/**
  * Spawn ffmpeg and hand back its stdout.
  * Callers MUST call kill() when the response closes or ffmpeg will linger.
  */
@@ -543,4 +646,4 @@ export function extractSubtitle(filePath, streamIndex) {
   };
 }
 
-export default { isAvailable, probe, decide, openStream, extractSubtitle };
+export default { isAvailable, probe, decide, openStream, buildSegmentArgs, extractSubtitle };

@@ -10,6 +10,8 @@
 import {
   sessionKey, nextAction, completedThrough, segmentsToPrune, LOOKAHEAD
 } from '../services/hls/session.js';
+import { buildSegmentArgs } from '../services/transcoder.js';
+import { SEGMENT_SECONDS } from '../services/hls/playlist.js';
 
 let total = 0;
 let failures = 0;
@@ -90,6 +92,58 @@ check('nothing is pruned early on',
 check('the current segment is never pruned',
   !segmentsToPrune([0, 1, 2, 3], 3, 0).includes(3));
 check('an empty set prunes nothing', segmentsToPrune([], 5, 2).length === 0);
+
+console.log('\nsegment encoder arguments');
+const args = buildSegmentArgs('C:/lib/movie.mkv', {
+  startSegment: 0,
+  outputPattern: 'C:/cache/hls/abc/%d.ts',
+  audioIndex: 0
+});
+const joined = args.join(' ');
+
+check('outputs the segment muxer', joined.includes('-f segment'));
+check('uses mpegts segments', joined.includes('-segment_format mpegts'));
+check('segments are the configured length',
+  joined.includes(`-segment_time ${SEGMENT_SECONDS}`));
+check('writes to the given pattern', args[args.length - 1] === 'C:/cache/hls/abc/%d.ts');
+check('numbers from the start segment', joined.includes('-segment_start_number 0'));
+// Without forced keyframes a segment can begin mid-GOP, which is undecodable
+// on its own and makes every seek land in the wrong place.
+check('forces keyframes on the boundary',
+  joined.includes(`-force_key_frames expr:gte(t,n_forced*${SEGMENT_SECONDS})`));
+check('drops subtitles and data', args.includes('-sn') && args.includes('-dn'));
+// ffmpeg otherwise turns MKV chapters into a text track the source never had.
+check('drops chapters', joined.includes('-map_chapters -1'));
+check('audio is always re-encoded to aac for TS', joined.includes('-c:a aac'));
+
+console.log('\nseeking into the file');
+const mid = buildSegmentArgs('C:/lib/movie.mkv', {
+  startSegment: 100, outputPattern: 'C:/cache/hls/abc/%d.ts', audioIndex: 0
+});
+const midJoined = mid.join(' ');
+const startSeconds = 100 * SEGMENT_SECONDS;
+check('seeks to the segment start', midJoined.includes(`-ss ${startSeconds}`));
+check('numbers segments from the seek point',
+  midJoined.includes('-segment_start_number 100'));
+// -ss resets output timestamps to zero; without this the restarted segments
+// claim to begin at 0 and the player treats the seek as a jump to the start.
+check('shifts timestamps back onto the real timeline',
+  midJoined.includes(`-output_ts_offset ${startSeconds}`));
+
+console.log('\ncaps carry over to segments');
+const capped = buildSegmentArgs('C:/lib/movie.mkv', {
+  startSegment: 0, outputPattern: 'p/%d.ts', audioIndex: 0, maxHeight: 720, maxrate: '5M'
+});
+check('scales to the cap', capped.join(' ').includes('scale=-2:720'));
+check('applies the bitrate ceiling', capped.includes('5M'));
+
+const hdr = buildSegmentArgs('C:/lib/movie.mkv', {
+  startSegment: 0, outputPattern: 'p/%d.ts', audioIndex: 0,
+  tonemap: true, height: 2160, maxHeight: 720
+});
+const chain = hdr[hdr.indexOf('-vf') + 1];
+check('tone mapping composes with the cap', chain.includes('scale=-2:720'));
+check('only one resize step', (chain.match(/(^|,)scale=/g) || []).length === 1);
 
 console.log(`\n${total - failures}/${total} passed`);
 process.exit(failures > 0 ? 1 : 0);
