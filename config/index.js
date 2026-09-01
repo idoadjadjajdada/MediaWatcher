@@ -171,6 +171,19 @@ const config = {
   host: '127.0.0.1',
   logLevel: LOG_LEVEL,
 
+  // Remote playback caps. The host serves at ~800 Mbps symmetric, so none of
+  // this protects the server — it protects a client on hotel wifi or cellular,
+  // and it is why Auto never picks Original over the tunnel.
+  remote: {
+    defaultLevel: str('REMOTE_DEFAULT_QUALITY', 'high'),
+    levels: {
+      original: { height: null, maxrate: null },
+      high: { height: int('QUALITY_HIGH_HEIGHT', 1080), maxrate: str('QUALITY_HIGH_MAXRATE', '12M') },
+      medium: { height: int('QUALITY_MEDIUM_HEIGHT', 720), maxrate: str('QUALITY_MEDIUM_MAXRATE', '5M') },
+      low: { height: int('QUALITY_LOW_HEIGHT', 480), maxrate: str('QUALITY_LOW_MAXRATE', '1.5M') }
+    }
+  },
+
   auth: {
     password: authPassword,
     adminKey: loadOrCreateAdminKey(),

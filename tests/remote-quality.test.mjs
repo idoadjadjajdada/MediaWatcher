@@ -4,6 +4,8 @@
  * Run: node tests/remote-quality.test.mjs
  */
 import { isTailscaleAddress, classifyOrigin } from '../services/network.js';
+import { parseBitrate, resolveQuality, LEVELS } from '../services/quality.js';
+import { decide, buildArgs } from '../services/transcoder.js';
 
 let total = 0;
 let failures = 0;
@@ -46,6 +48,100 @@ check('tailscale addresses classify as tailscale',
 check('LAN addresses classify as lan', classifyOrigin('192.168.1.20') === 'lan');
 check('loopback classifies as lan', classifyOrigin('127.0.0.1') === 'lan');
 check('an unknown address classifies as lan', classifyOrigin(null) === 'lan');
+
+console.log('\nbitrate parsing');
+check('plain digits are bits per second', parseBitrate('800000') === 800000);
+check('M means megabits', parseBitrate('12M') === 12000000);
+check('a fractional M works', parseBitrate('1.5M') === 1500000);
+check('K means kilobits', parseBitrate('800K') === 800000);
+check('lowercase is accepted', parseBitrate('12m') === 12000000);
+check('null parses to null', parseBitrate(null) === null);
+check('nonsense parses to null', parseBitrate('fast') === null);
+
+console.log('\nquality resolution');
+check('auto on the LAN is original', resolveQuality('auto', 'lan').level === 'original');
+// The host can serve more than any client will pull, so the remote default is
+// High rather than a defensive Medium.
+check('auto over tailscale is high', resolveQuality('auto', 'tailscale').level === 'high');
+check('an explicit level wins over auto',
+  resolveQuality('low', 'tailscale').level === 'low');
+check('an explicit level wins on the LAN too',
+  resolveQuality('medium', 'lan').level === 'medium');
+check('original explicitly over tailscale is honoured',
+  resolveQuality('original', 'tailscale').level === 'original');
+check('an unknown level falls back to auto behaviour',
+  resolveQuality('ludicrous', 'tailscale').level === 'high');
+check('a missing level falls back to auto behaviour',
+  resolveQuality(undefined, 'lan').level === 'original');
+check('original carries no height cap', resolveQuality('original', 'lan').height === null);
+check('high caps at 1080', resolveQuality('high', 'tailscale').height === 1080);
+check('low caps at 480', LEVELS.low.height === 480);
+
+console.log('\ncapped decisions');
+const mp4_1080 = {
+  container: '.mp4', duration: 100, bitrate: 5_000_000,
+  video: { codec: 'h264', width: 1920, height: 1080, transfer: 'bt709' },
+  audio: [{ index: 0, codec: 'aac', default: true }],
+  subtitles: []
+};
+const mkv_4k_hdr = {
+  container: '.mkv', duration: 100, bitrate: 80_000_000,
+  video: { codec: 'hevc', width: 3840, height: 2160, transfer: 'smpte2084' },
+  audio: [{ index: 0, codec: 'eac3', default: true }],
+  subtitles: []
+};
+
+const uncapped = decide(mp4_1080, {}, {});
+check('an untouched 1080p mp4 still plays direct', uncapped.mode === 'direct');
+
+const capped = decide(mp4_1080, {}, { quality: resolveQuality('low', 'tailscale') });
+check('a cap forces a direct file to transcode', capped.mode === 'transcode');
+check('the cap sets the target height', capped.targetHeight === 480);
+check('the cap sets a maxrate', capped.maxrate === '1.5M');
+check('a capped stream is not lossless', capped.lossless === false);
+check('a capped stream is not seekable', capped.seekable === false);
+check('the cap explains itself',
+  capped.reasons.some((r) => /capped/i.test(r)));
+
+// Under the cap there is nothing to gain by re-encoding.
+const underCap = decide(mp4_1080, {}, { quality: resolveQuality('high', 'tailscale') });
+check('a source already under the cap is left direct', underCap.mode === 'direct');
+
+// Bitrate alone must trigger the cap: a 720p file at 40 Mbps is under the
+// height limit and still far too fat for a hotel connection.
+const fat720 = {
+  ...mp4_1080,
+  bitrate: 40_000_000,
+  video: { codec: 'h264', width: 1280, height: 720, transfer: 'bt709' }
+};
+const fatCapped = decide(fat720, {}, { quality: resolveQuality('high', 'tailscale') });
+check('an over-bitrate source is capped even when short enough',
+  fatCapped.mode === 'transcode');
+
+// HDR already forces a transcode; the cap must tighten the height, not fight it.
+const hdrCapped = decide(mkv_4k_hdr, {}, { quality: resolveQuality('medium', 'tailscale') });
+check('HDR under a cap still transcodes', hdrCapped.mode === 'transcode');
+check('HDR is still tone mapped under a cap', hdrCapped.tonemapped === true);
+check('the cap wins over the default tonemap height', hdrCapped.tonemapHeight === 720);
+
+console.log('\ncapped ffmpeg arguments');
+const args = buildArgs('C:\\lib\\movie.mkv', {
+  mode: 'transcode', maxHeight: 720, maxrate: '5M'
+});
+check('a scale filter is applied', args.join(' ').includes('scale=-2:720'));
+check('the maxrate is passed to the encoder', args.includes('5M'));
+check('bufsize accompanies maxrate', args.includes('-bufsize'));
+
+const tonemapArgs = buildArgs('C:\\lib\\movie.mkv', {
+  mode: 'transcode', tonemap: true, height: 2160, maxHeight: 720, maxrate: '5M'
+});
+const chain = tonemapArgs[tonemapArgs.indexOf('-vf') + 1];
+check('the tone map chain scales to the cap, not to 1080',
+  chain.includes('scale=-2:720'));
+// Anchored to a filter boundary so the three zscale colour steps in the tone
+// map chain are not miscounted as resizes.
+check('only one resize step is emitted',
+  (chain.match(/(^|,)scale=/g) || []).length === 1);
 
 console.log(`\n${total - failures}/${total} passed`);
 process.exit(failures > 0 ? 1 : 0);

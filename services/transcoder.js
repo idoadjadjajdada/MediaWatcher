@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import config, { createLogger } from '../config/index.js';
+import { parseBitrate } from './quality.js';
 
 const log = createLogger('transcoder');
 
@@ -328,6 +329,36 @@ export function decide(info, caps = {}, options = {}) {
     reasons.push(`audio offset ${audioOffset}s requires ffmpeg — remuxing instead of direct`);
   }
 
+  /*
+   * A quality cap has to be able to overrule every cheaper path. direct and
+   * remux both copy the video stream untouched, so neither can shrink a 4K
+   * remux down to something a hotel connection will carry — only a re-encode
+   * can. This is the one place that decision belongs, which is why it sits
+   * here rather than in the stream route.
+   */
+  const cap = options.quality || null;
+  let targetHeight = null;
+  let maxrate = null;
+
+  if (cap && (cap.height || cap.maxrate)) {
+    const sourceHeight = info.video?.height ?? null;
+    const capBits = parseBitrate(cap.maxrate);
+
+    const tooTall = Boolean(cap.height) && Number.isFinite(sourceHeight) && sourceHeight > cap.height;
+    // Container bitrate, so it counts audio too — which is the right number,
+    // since that is what actually has to cross the link.
+    const tooFat = Boolean(capBits) && Number.isFinite(info.bitrate) && info.bitrate > capBits;
+
+    if (tooTall || tooFat) {
+      mode = 'transcode';
+      targetHeight = cap.height;
+      maxrate = cap.maxrate;
+      reasons.push(tooTall
+        ? `capped to ${cap.height}p for this connection (source is ${sourceHeight}p)`
+        : `capped to ${cap.maxrate} for this connection`);
+    }
+  }
+
   if (mode === 'direct') reasons.push('plays natively — streaming untouched bytes');
 
   return {
@@ -345,9 +376,14 @@ export function decide(info, caps = {}, options = {}) {
     // Told to the client so the badge can say "HDR → SDR" rather than the bare
     // "Transcode", which would look like an unexplained quality loss.
     tonemapped: hdr,
-    tonemapHeight: hdr && Number.isFinite(info.video?.height) && info.video.height > TONEMAP_MAX_HEIGHT
-      ? TONEMAP_MAX_HEIGHT
-      : (info.video?.height ?? null)
+    // The active cap wins over the default tone map ceiling: both are height
+    // limits, and the tighter one is the one that has to apply.
+    tonemapHeight: targetHeight
+      ?? (hdr && Number.isFinite(info.video?.height) && info.video.height > TONEMAP_MAX_HEIGHT
+        ? TONEMAP_MAX_HEIGHT
+        : (info.video?.height ?? null)),
+    targetHeight,
+    maxrate
   };
 }
 
@@ -357,7 +393,8 @@ export function decide(info, caps = {}, options = {}) {
 
 export function buildArgs(filePath, {
   mode, startSeconds = 0, audioIndex = 0, audioOffset = 0,
-  tonemap = false, height = null, encoder = null
+  tonemap = false, height = null, encoder = null,
+  maxHeight = null, maxrate = null
 }) {
   const args = ['-hide_banner', '-loglevel', 'error'];
   const offset = clampAudioOffset(audioOffset);
@@ -390,7 +427,17 @@ export function buildArgs(filePath, {
   args.push('-sn', '-dn');
 
   if (mode === 'transcode') {
-    if (tonemap) args.push('-vf', tonemapChain(height));
+    if (tonemap) {
+      // tonemapChain already emits a scale step, so the cap is handed to it
+      // rather than added separately — two scale filters would be wasteful and
+      // the second would fight the first.
+      args.push('-vf', tonemapChain(height, maxHeight ?? TONEMAP_MAX_HEIGHT));
+    } else if (maxHeight) {
+      // -2 keeps the width even, which H.264 requires.
+      args.push('-vf', `scale=-2:${maxHeight}`);
+    }
+
+    const rate = maxrate || config.ffmpeg.videoMaxrate;
 
     if (encoder) {
       // Hardware encoders take a quality target rather than a CRF, and p4 is
@@ -399,13 +446,13 @@ export function buildArgs(filePath, {
       args.push('-c:v', encoder);
       if (encoder === 'h264_nvenc') args.push('-preset', 'p4', '-cq', String(config.ffmpeg.videoCrf));
       else args.push('-global_quality', String(config.ffmpeg.videoCrf));
-      args.push('-maxrate', config.ffmpeg.videoMaxrate, '-bufsize', '24M');
+      args.push('-maxrate', rate, '-bufsize', '24M');
     } else {
       args.push(
         '-c:v', 'libx264',
         '-preset', config.ffmpeg.videoPreset,
         '-crf', String(config.ffmpeg.videoCrf),
-        '-maxrate', config.ffmpeg.videoMaxrate,
+        '-maxrate', rate,
         '-bufsize', '24M'
       );
     }
