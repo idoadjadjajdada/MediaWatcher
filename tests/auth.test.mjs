@@ -15,6 +15,8 @@ import {
   mintToken, hashToken, parseCookies, rememberSession, hasSession, dropSession,
   resolveToken, recordFailure, blockedForMs, clearFailures, COOKIE_NAME
 } from '../services/auth.js';
+import config from '../config/index.js';
+import { isAdminRequest } from '../routes/devices.js';
 
 let total = 0;
 let failures = 0;
@@ -93,10 +95,17 @@ check('resolveToken rejects an unissued token', resolveToken(mintToken()) === nu
 
 // A persistent device must win over the session path.
 const persistentToken = mintToken();
-insertDevice(makeDevice({ tokenHash: hashToken(persistentToken) }));
+const persistentDevice = makeDevice({ tokenHash: hashToken(persistentToken) });
+insertDevice(persistentDevice);
 const resolved = resolveToken(persistentToken);
 check('resolveToken reports a device', resolved?.kind === 'device');
 check('resolveToken hands back the row', resolved?.device?.name === 'Test iPad');
+// This runs against the real database, and the device list is an audit
+// surface: a test that leaves rows behind is a test that trains you to ignore
+// unfamiliar entries, which is the one habit it exists to prevent.
+revokeDevice(persistentDevice.id);
+check('the test device is cleaned up',
+  !findDeviceByTokenHash(persistentDevice.tokenHash));
 
 console.log('\nfailed-attempt backoff');
 const ip = '203.0.113.9';
@@ -112,6 +121,21 @@ recordFailure(ip);
 check('the backoff grows', blockedForMs(ip) > afterThree);
 clearFailures(ip);
 check('a success clears the record', blockedForMs(ip) === 0);
+
+console.log('\nadmin key');
+check('an admin key exists', /^[0-9a-f]{64}$/.test(config.auth.adminKey));
+check('the correct key is accepted',
+  isAdminRequest({ headers: { 'x-mediawatcher-key': config.auth.adminKey } }) === true);
+check('a wrong key of the same length is rejected',
+  isAdminRequest({ headers: { 'x-mediawatcher-key': 'a'.repeat(64) } }) === false);
+check('a missing key is rejected', isAdminRequest({ headers: {} }) === false);
+check('an empty key is rejected',
+  isAdminRequest({ headers: { 'x-mediawatcher-key': '' } }) === false);
+check('a short key is rejected without throwing',
+  isAdminRequest({ headers: { 'x-mediawatcher-key': 'abc' } }) === false);
+// A signed-in device must not be able to enumerate or revoke the others.
+check('a device cookie is not admin',
+  isAdminRequest({ headers: {}, device: { id: 'x', name: 'iPad' } }) === false);
 
 console.log(`\n${total - failures}/${total} passed`);
 process.exit(failures > 0 ? 1 : 0);

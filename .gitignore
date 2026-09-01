@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 
+# Machine-local admin key: the launcher proves itself with this rather than
+# being trusted for coming from loopback. Never commit it.
+config/admin-key
+
 # Dependencies
 node_modules/
 

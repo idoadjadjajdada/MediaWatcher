@@ -15,6 +15,7 @@ import config, { ensureRuntimeDirs, log } from './config/index.js';
 import { closeDatabase } from './db/index.js';
 import requireAuth from './middleware/requireAuth.js';
 import authRouter from './routes/auth.js';
+import devicesRouter from './routes/devices.js';
 import mediaRouter from './routes/media.js';
 import discoverRouter from './routes/discover.js';
 import torrentsRouter from './routes/torrents.js';
@@ -112,6 +113,15 @@ if (config.logLevel === 'debug') {
  * ----------------------------------------------------------------------- */
 
 app.use('/api/auth', authRouter);
+
+/*
+ * Above the gate, not below it: device management authenticates with the local
+ * admin key instead of a device cookie, and that is a strictly stronger claim.
+ * Mounting it below would mean the launcher — which holds the key but has no
+ * cookie — was turned away by requireAuth before its own check ever ran.
+ */
+app.use('/api/devices', devicesRouter);
+
 app.use(requireAuth);
 
 /* --------------------------------------------------------------------------
