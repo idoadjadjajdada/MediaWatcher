@@ -12,7 +12,7 @@ globalThis.document = {
   removeEventListener: () => {}
 };
 
-const { classifyTap, DOUBLE_TAP_MS } = await import('../public/js/player.js');
+const { classifyTap, tapAction, DOUBLE_TAP_MS } = await import('../public/js/player.js');
 
 let total = 0;
 let failures = 0;
@@ -35,6 +35,29 @@ check('a negative width never throws', classifyTap(5, -10) === 'centre');
 
 console.log('\nDOUBLE_TAP_MS');
 check('double tap window is 300ms', DOUBLE_TAP_MS === 300);
+
+console.log('\ntapAction');
+const tap = (over) => tapAction({ chromeHidden: true, zone: 'centre', isDouble: false, ...over });
+
+// A double tap at the edges seeks, and must win over everything else.
+check('double tap left seeks', tap({ zone: 'left', isDouble: true }) === 'seek');
+check('double tap right seeks', tap({ zone: 'right', isDouble: true }) === 'seek');
+check('double tap in the centre does not seek',
+  tap({ zone: 'centre', isDouble: true }) !== 'seek');
+check('a double tap seeks even when the chrome is up',
+  tap({ zone: 'left', isDouble: true, chromeHidden: false }) === 'seek');
+
+/*
+ * The point of the change: the tap that reveals the controls must not also act
+ * on playback. Tapping a video you cannot see the controls of should show them
+ * and nothing else.
+ */
+check('the first tap only reveals the chrome', tap({ chromeHidden: true }) === 'reveal');
+check('revealing happens at the edges too',
+  tap({ chromeHidden: true, zone: 'left' }) === 'reveal');
+check('a second tap toggles playback', tap({ chromeHidden: false }) === 'toggle');
+check('a second tap at the edge also toggles',
+  tap({ chromeHidden: false, zone: 'right' }) === 'toggle');
 
 console.log('');
 if (failures === 0) { console.log(`${total} checks, all passed\n`); process.exit(0); }

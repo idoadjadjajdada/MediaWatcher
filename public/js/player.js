@@ -24,6 +24,17 @@ import { attachHls } from './hls-player.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
+/*
+ * Touch gets longer. 2.6s is fine when a mouse can bring the controls back by
+ * moving a pixel, but on a phone every recall costs a deliberate tap, and the
+ * controls kept vanishing before they could be used.
+ */
+const TOUCH_IDLE_MS = 5200;
+/*
+ * A tap produces a pointerup and then, on Safari, a synthetic click. Clicks
+ * arriving within this window of a touch belong to that touch, not a mouse.
+ */
+const CLICK_AFTER_TOUCH_MS = 700;
 /**
  * How close to the end the "up next" card appears, in seconds.
  *
@@ -76,6 +87,25 @@ export function classifyTap(x, width) {
   if (x < edge) return 'left';
   if (x >= width - edge) return 'right';
   return 'centre';
+}
+
+/**
+ * What a tap should do.
+ *
+ * The rule that matters: a tap on a video whose controls are hidden only
+ * reveals them. It used to reveal the controls AND toggle playback, so opening
+ * the overlay to check where you were also stopped the show — and the reveal
+ * then fought the auto-hide, leaving the controls up for about a second.
+ *
+ * Acting on playback needs a second, deliberate tap once you can actually see
+ * what you are tapping.
+ */
+export function tapAction({ chromeHidden, zone, isDouble }) {
+  // Seeking wins outright: a double tap at the edge is unambiguous, and having
+  // it depend on whether the chrome happened to be up would make it unreliable.
+  if (isDouble && zone !== 'centre') return 'seek';
+  if (chromeHidden) return 'reveal';
+  return 'toggle';
 }
 const RESUME_MIN = 5;
 const RESUME_MAX_RATIO = 0.95;
@@ -611,8 +641,23 @@ function setVolumeUi() {
   el('mute-btn').innerHTML = icon(ctx.video.muted || ctx.video.volume === 0 ? 'mute' : 'volume');
 }
 
-function markIdle() {
+/**
+ * Show the controls and arm the auto-hide.
+ *
+ * The delay follows how the viewer is driving the player rather than the call
+ * site, because the call sites are not all reachable from the input: tapping
+ * play fires the media element's own 'play' event, and if that used the mouse
+ * timing it would cut short the reveal the tap had just asked for.
+ */
+function markIdle(after) {
   if (!ctx) return;
+  // Number.isFinite rather than a null check: this is easy to wire up as an
+  // event listener by accident, and a MouseEvent as the delay would otherwise
+  // become NaN and hide the controls immediately.
+  const delay = (Number.isFinite(after) ? after : null)
+    ?? (Date.now() - (ctx.lastTouchAt || 0) < CLICK_AFTER_TOUCH_MS * 3
+    ? TOUCH_IDLE_MS
+    : IDLE_MS);
   clearTimeout(ctx.idleTimer);
   ctx.node.classList.remove('is-idle');
   ctx.idleTimer = setTimeout(() => {
@@ -621,7 +666,7 @@ function markIdle() {
       closePopovers();
       ctx.node.classList.add('is-idle');
     }
-  }, IDLE_MS);
+  }, delay);
 }
 
 /* --------------------------------------------------------------------------
@@ -1191,16 +1236,39 @@ function attach() {
   };
   document.addEventListener('click', ctx.outsideClick, true);
 
-  node.addEventListener('mousemove', markIdle);
-  node.addEventListener('click', (event) => {
-    // Clicking the video itself toggles playback; controls handle their own
-    // clicks. Touch is handled by the gesture block below instead.
-    if (event.target === video && event.pointerType !== 'touch') togglePlay();
+  /*
+   * Wrapped, not passed directly: markIdle takes a delay, and handing it
+   * straight to addEventListener passes the MouseEvent as that delay, which
+   * setTimeout coerces to NaN and fires immediately.
+   *
+   * The touch guard matters just as much. A tap synthesises a mousemove, and
+   * revealing the chrome from it would beat the tap's own deferred decision to
+   * it - so every first tap would look like a tap on already-visible controls
+   * and pause the video, which is the behaviour being fixed.
+   */
+  node.addEventListener('mousemove', () => {
+    if (Date.now() - (ctx?.lastTouchAt || 0) < CLICK_AFTER_TOUCH_MS) return;
+    markIdle();
   });
 
   /* ---- touch gestures ---- */
   let lastTapAt = 0;
   let lastTapZone = null;
+
+  node.addEventListener('click', (event) => {
+    /*
+     * Clicking the video toggles playback; controls handle their own clicks.
+     * Touch is handled by the pointerup block below.
+     *
+     * The old guard was `event.pointerType !== 'touch'`, which does not work:
+     * Safari delivers click as a MouseEvent, where pointerType is undefined, so
+     * every tap fell through and paused the video. Chrome sends a PointerEvent
+     * and was filtered correctly, which is why this only ever showed on iOS.
+     * Timing off the preceding touch is the portable test.
+     */
+    if (Date.now() - (ctx?.lastTouchAt || 0) < CLICK_AFTER_TOUCH_MS) return;
+    if (event.target === video) togglePlay();
+  });
 
   const flashRipple = (zone) => {
     const ripple = el(zone === 'left' ? 'ripple-l' : 'ripple-r');
@@ -1213,12 +1281,19 @@ function attach() {
   video.addEventListener('pointerup', (event) => {
     if (event.pointerType === 'mouse') return;   // mouse keeps click-to-pause
 
+    // Suppresses the synthetic click Safari fires after a tap, and tells
+    // markIdle to use the longer touch timing.
+    ctx.lastTouchAt = Date.now();
+
     const rect = video.getBoundingClientRect();
     const zone = classifyTap(event.clientX - rect.left, rect.width);
     const now = Date.now();
     const isDouble = (now - lastTapAt) < DOUBLE_TAP_MS && lastTapZone === zone;
+    // Captured now, not when the deferred decision runs: what the viewer could
+    // see when they tapped is what the tap should mean.
+    const chromeHidden = node.classList.contains('is-idle');
 
-    if (isDouble && zone !== 'centre') {
+    if (tapAction({ chromeHidden, zone, isDouble }) === 'seek') {
       skip(zone === 'left' ? -SKIP_SECONDS : SKIP_SECONDS);
       flashRipple(zone);
       lastTapAt = 0;
@@ -1229,12 +1304,18 @@ function attach() {
     lastTapAt = now;
     lastTapZone = zone;
 
-    // A single tap toggles the chrome, but only once the double-tap window has
-    // closed - otherwise every seek also flickers the controls on and off.
+    /*
+     * Deferred past the double-tap window, or the first tap of a seek would
+     * flash the controls on its way to being a double tap.
+     */
     setTimeout(() => {
       if (lastTapAt !== now) return;
-      if (node.classList.contains('is-idle')) markIdle();
-      else node.classList.add('is-idle');
+      ctx.lastTouchAt = Date.now();
+
+      if (tapAction({ chromeHidden, zone, isDouble: false }) === 'toggle') togglePlay();
+      // Either way the controls stay up: after a reveal so you can use them,
+      // and after a toggle so the pause button you just pressed is still there.
+      markIdle();
     }, DOUBLE_TAP_MS);
   });
 
