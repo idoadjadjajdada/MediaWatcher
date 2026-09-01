@@ -24,6 +24,7 @@ import {
   chapterIndexAt, nextChapterStart, previousChapterStart, chapterLabel
 } from './chapters.js';
 import { attachHls } from './hls-player.js';
+import { SLEEP_OPTIONS, shouldSleep, createTimer, timerLabel } from './sleep.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -156,6 +157,13 @@ const root = () => document.getElementById('player-root');
 
 export const PLAYER_HASH = 'player';
 
+/**
+ * The sleep timer lives outside ctx so it survives an episode swap. Setting
+ * "stop in 30 minutes" and then letting the next episode start must not quietly
+ * cancel it - that is exactly when it matters.
+ */
+let pendingSleep = null;
+
 let previousHash = '';
 /** Carried across an episode swap, where close() cannot restore it itself. */
 let pendingScrollY = null;
@@ -275,6 +283,9 @@ async function openInner(filePath) {
     // Boundaries only: almost every file here has chapters and almost none
     // have titles worth reading, so these are for seeing and jumping.
     chapters: info?.chapters || [],
+    // Survives an episode swap: "stop after this episode" would be useless if
+    // starting the next one silently cleared it.
+    sleep: pendingSleep,
     // Global, not per-file: brightness tracks the room, not the master.
     picture: loadPicture(),
     // Set by the touch handlers; read by markIdle to choose its timing and by
@@ -340,6 +351,7 @@ export async function close({ save = true, keepPage = false } = {}) {
   if (ctx.outsideClick) document.removeEventListener('click', ctx.outsideClick, true);
   clearInterval(ctx.saveTimer);
   clearInterval(ctx.hlsTimer);
+  clearInterval(ctx.sleepTimer);
   clearTimeout(ctx.idleTimer);
   clearTimeout(ctx.thumbRetry);
 
@@ -752,6 +764,59 @@ const QUALITY_LABELS = [
   ['low', 'Low &middot; 480p']
 ];
 
+/**
+ * Stop playing after a while, or at the end of this episode.
+ *
+ * Pauses rather than closing the player: waking up to a paused frame tells you
+ * where you were, and the position is saved either way.
+ */
+export function setSleepTimer(optionId) {
+  if (!ctx) return;
+  pendingSleep = createTimer(optionId, Date.now());
+  ctx.sleep = pendingSleep;
+  buildMenu();
+  toast('info', 'Sleep timer', pendingSleep
+    ? `Playback will stop: ${timerLabel(pendingSleep, Date.now()).toLowerCase()}`
+    : 'Sleep timer cancelled');
+}
+
+/**
+ * Stops playback once the timer says so, then clears itself.
+ *
+ * Driven by its own interval rather than by timeupdate: timeupdate stops the
+ * moment a video ends, which is exactly when an end-of-episode timer needs to
+ * act, and it stops while buffering, which is when a duration timer would be
+ * left hanging.
+ */
+function checkSleepTimer() {
+  if (!ctx?.sleep) return;
+  if (!shouldSleep(ctx.sleep, {
+    now: Date.now(),
+    position: position(),
+    duration: duration()
+  })) return;
+
+  pendingSleep = null;
+  ctx.sleep = null;
+  // Cancel any pending auto-advance, or the next episode would start straight
+  // after the timer stopped this one.
+  ctx.nextTarget = null;
+  ctx.video.pause();
+  markIdle();
+  buildMenu();
+  toast('info', 'Sleep timer', 'Playback stopped. Sleep well.');
+}
+
+function buildSleepSection() {
+  const active = ctx.sleep?.optionId || 'off';
+  return `
+    <div class="player__menu-label">Sleep timer</div>
+    ${SLEEP_OPTIONS.map((option) => `
+      <button class="player__menu-item${option.id === active ? ' is-active' : ''}" data-action="set-sleep" data-sleep="${option.id}">
+        ${esc(option.label)}
+      </button>`).join('')}`;
+}
+
 function buildSpeedPopover() {
   const quality = api.getQuality();
 
@@ -761,7 +826,8 @@ function buildSpeedPopover() {
       <button class="player__menu-item${ctx.speed === speed ? ' is-active' : ''}" data-action="set-speed" data-speed="${speed}">${speed}&times;</button>`).join('')}
     <div class="player__menu-label">Quality</div>
     ${QUALITY_LABELS.map(([value, label]) => `
-      <button class="player__menu-item${quality === value ? ' is-active' : ''}" data-action="set-quality" data-quality="${value}">${label}</button>`).join('')}`;
+      <button class="player__menu-item${quality === value ? ' is-active' : ''}" data-action="set-quality" data-quality="${value}">${label}</button>`).join('')}
+    ${buildSleepSection()}`;
   const rate = el('rate-btn');
   if (rate) rate.innerHTML = `${ctx.speed}&times;`;
 }
@@ -1503,6 +1569,12 @@ function attach() {
    * attempt to read it off currentSrc never matched anything and no session
    * was ever actually kept alive.
    */
+  /*
+   * One second is plenty for a timer measured in minutes, and it means the
+   * end-of-episode case is caught even though the media element has gone quiet.
+   */
+  ctx.sleepTimer = setInterval(checkSleepTimer, 1000);
+
   ctx.hlsTimer = setInterval(() => {
     if (ctx?.info?.hls_session) api.touchHlsSession(ctx.info.hls_session).catch(() => {});
   }, 20000);
@@ -1511,6 +1583,17 @@ function attach() {
 }
 
 function onEnded() {
+  /*
+   * A sleep timer set to "end of episode" means stop here, so it has to be
+   * consulted before the auto-advance - otherwise reaching the end would start
+   * the next episode and the timer would stop that one instead.
+   */
+  if (ctx?.sleep?.kind === 'episode') {
+    checkSleepTimer();
+    persist(true);
+    return;
+  }
+
   if (ctx?.nextTarget) {
     playNext();
     return;
@@ -1672,7 +1755,7 @@ function playNextImmediate() {
 
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
-  skip, setSubtitle, setSpeed, setQuality, setAudioTrack, jumpChapter, seekChapter,
+  skip, setSubtitle, setSpeed, setQuality, setAudioTrack, jumpChapter, seekChapter, setSleepTimer,
   togglePopover, closePopovers, setPicture,
   playNext, cancelNext
 };
