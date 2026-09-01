@@ -35,6 +35,13 @@ async function request(method, url, body) {
     try { data = JSON.parse(text); } catch { data = text; }
   }
 
+  // A revoked or expired device goes back to the gate rather than leaving
+  // every panel on the page to fail with its own error toast.
+  if (response.status === 401) {
+    window.location.replace('/login.html');
+    throw new ApiError(401, 'Authentication required');
+  }
+
   if (!response.ok) {
     const message = (data && data.error) || `Request failed (${response.status})`;
     throw new ApiError(response.status, message, data);

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>MediaWatcher</title>
+
+  <!-- Inline so there is no favicon request to 404 on. -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23a855f7'/><stop offset='1' stop-color='%23ec4899'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M13 10.5v11l9-5.5z' fill='%23fff'/></svg>">
+
+  <link rel="stylesheet" href="/css/login.css">
+</head>
+<body>
+  <main class="gate">
+    <h1 class="gate__title">MediaWatcher</h1>
+    <p class="gate__sub">Enter the password to continue.</p>
+
+    <form id="gate-form" class="gate__form" autocomplete="on">
+      <label class="gate__label" for="password">Password</label>
+      <input class="gate__input" id="password" name="password" type="password"
+             autocomplete="current-password" required autofocus>
+
+      <label class="gate__label" for="device-name">Device name</label>
+      <input class="gate__input" id="device-name" name="deviceName" type="text"
+             placeholder="iPad" autocomplete="off" maxlength="60">
+
+      <label class="gate__remember">
+        <input id="remember" type="checkbox" checked>
+        <span>Remember this device</span>
+      </label>
+
+      <button class="gate__submit" type="submit">Unlock</button>
+      <p class="gate__error" id="gate-error" role="alert"></p>
+    </form>
+  </main>
+
+  <script type="module" src="/js/login.js"></script>
+</body>
+</html>
