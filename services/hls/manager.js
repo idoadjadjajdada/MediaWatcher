@@ -74,9 +74,18 @@ async function startEncoder(session, startSegment) {
   const proc = spawn(config.ffmpeg.ffmpegPath, args, { windowsHide: true });
   session.proc = proc;
 
+  // Nothing reads stdout, and an unread pipe that fills would block ffmpeg.
+  proc.stdout?.resume();
+
+  // Kept so a failure can say why. An encoder that dies on startup otherwise
+  // shows up only as segments that never arrive.
+  let stderrTail = '';
   proc.stderr?.on('data', (chunk) => {
     const text = String(chunk).trim();
-    if (text) log.debug(`session ${session.id}: ${text}`);
+    if (!text) return;
+    stderrTail = `${stderrTail}
+${text}`.slice(-400);
+    log.debug(`session ${session.id}: ${text}`);
   });
 
   proc.on('error', (error) => {
@@ -87,12 +96,19 @@ async function startEncoder(session, startSegment) {
     }
   });
 
-  proc.on('close', () => {
+  proc.on('close', (code) => {
     // Only mark exited when this is still the current process — a restart will
     // have replaced it, and that close belongs to the one we killed.
-    if (session.proc === proc) {
-      session.proc = null;
-      session.exited = true;
+    if (session.proc !== proc) return;
+    session.proc = null;
+    session.exited = true;
+    /*
+     * A non-zero exit here is the difference between "the encoder is still
+     * working" and "no segment is ever coming", and it used to be invisible:
+     * stderr went to debug, so a failed start looked exactly like a slow one.
+     */
+    if (code !== 0) {
+      log.warn(`session ${session.id}: encoder exited ${code}${stderrTail ? ` -${stderrTail}` : ''}`);
     }
   });
 }
@@ -133,7 +149,13 @@ export async function openSession(spec) {
   };
 
   sessions.set(id, session);
-  log.info(`session ${id}: opened for ${path.basename(spec.filePath)} (${session.count} segments)`);
+  // The spec is in the log because two sessions for one file means two
+  // different specs, and without this there is no way to see which field
+  // differed.
+  log.info(`session ${id}: opened for ${path.basename(spec.filePath)} `
+    + `(${session.count} segments, quality=${spec.quality} audio=${spec.audioIndex} `
+    + `offset=${spec.audioOffset} hevc=${spec.caps?.hevc ? 1 : 0} ac3=${spec.caps?.ac3 ? 1 : 0} `
+    + `maxHeight=${spec.maxHeight} maxrate=${spec.maxrate})`);
   return session;
 }
 
@@ -148,6 +170,9 @@ export function touch(id) {
 function prune(session, current) {
   const stale = segmentsToPrune(segmentIndices(session.dir), current, config.hls.keepBehind);
   for (const index of stale) {
+    // Never touch what the running encoder is still writing towards; deleting
+    // ahead of it would make completedThrough read a gap as the end.
+    if (session.proc && index >= session.startSegment) continue;
     try { fs.unlinkSync(segmentPath(session, index)); } catch { /* already gone */ }
   }
 }
@@ -210,8 +235,26 @@ export async function requestSegment(id, index, signal) {
     });
 
     if (action === 'serve') {
+      const file = segmentPath(session, index);
+      /*
+       * Existence is not implied by the bookkeeping. Pruning removes segments
+       * behind the play position, so a player that re-requests one it has
+       * already passed - hls.js does after a buffer flush - would otherwise be
+       * handed a path to a deleted file.
+       */
+      if (!fs.existsSync(file)) {
+        /*
+         * The bookkeeping says produced, the file says otherwise: it was
+         * pruned behind the play position and the viewer has come back for it.
+         * restartTo is serialised, so concurrent requests for the same gap
+         * queue behind one restart rather than each starting their own.
+         */
+        log.info(`session ${id}: segment ${index} was pruned, re-encoding`);
+        await restartTo(session, index);
+        continue;
+      }
       prune(session, index);
-      return segmentPath(session, index);
+      return file;
     }
 
     if (action === 'restart') {

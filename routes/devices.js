@@ -8,21 +8,15 @@
  * Only something that can read config/admin-key gets in, which means something
  * running on this machine.
  */
-import { timingSafeEqual } from 'node:crypto';
 import express from 'express';
-import config, { createLogger } from '../config/index.js';
+import { createLogger } from '../config/index.js';
+import { verifyAdminKey } from '../services/auth.js';
 import { listDevices, revokeDevice } from '../db/devices.js';
 
 const log = createLogger('api:devices');
 const router = express.Router();
 
-export function isAdminRequest(req) {
-  const supplied = String(req.headers?.['x-mediawatcher-key'] || '');
-  const expected = config.auth.adminKey;
-  // timingSafeEqual throws on a length mismatch, so screen for that first.
-  if (supplied.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
-}
+export const isAdminRequest = (req) => verifyAdminKey(req.headers?.['x-mediawatcher-key']);
 
 const requireAdmin = (req, res, next) => {
   if (!isAdminRequest(req)) return res.status(403).json({ error: 'Admin key required' });

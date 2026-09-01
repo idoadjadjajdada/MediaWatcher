@@ -49,6 +49,21 @@ export function verifyPassword(supplied) {
   return timingSafeEqual(expected, actual);
 }
 
+/**
+ * Does this request carry the machine-local admin key?
+ *
+ * A stronger claim than a device cookie: the key is a file only something
+ * running on this host can read. The launcher uses it for every call, because
+ * it has no browser and therefore no cookie to present.
+ */
+export function verifyAdminKey(supplied) {
+  const expected = config.auth.adminKey;
+  const given = String(supplied || '');
+  // timingSafeEqual throws on a length mismatch, so screen for that first.
+  if (given.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+}
+
 /* --------------------------------------------------------------------------
  * Non-remembered sessions
  *
@@ -112,7 +127,7 @@ export function blockedForMs(ip) {
 export const clearFailures = (ip) => { failures.delete(ip); };
 
 export default {
-  COOKIE_NAME, mintToken, hashToken, parseCookies, verifyPassword,
+  COOKIE_NAME, mintToken, hashToken, parseCookies, verifyPassword, verifyAdminKey,
   rememberSession, hasSession, dropSession, resolveToken,
   recordFailure, blockedForMs, clearFailures
 };

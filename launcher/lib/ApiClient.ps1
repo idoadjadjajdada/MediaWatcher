@@ -110,6 +110,9 @@ function Start-ApiPoller {
   $runspace.SessionStateProxy.SetVariable('Control', $control)
   $runspace.SessionStateProxy.SetVariable('ResultQueue', $ResultQueue)
   $runspace.SessionStateProxy.SetVariable('BaseUrl', "http://127.0.0.1:$($Config.Port)")
+  # Every poll needs it: the server gate turns away anything with neither a
+  # device cookie nor this key, and a background runspace has no browser.
+  $runspace.SessionStateProxy.SetVariable('AdminKey', (Get-MwAdminKey $Config.Root))
 
   $worker = {
     # A fresh runspace defaults to 'Continue'. Without this, a failing
@@ -124,8 +127,10 @@ function Start-ApiPoller {
 
     function Invoke-Api($Path, $TimeoutSec, $Method) {
       $uri = $BaseUrl + $Path
+      $headers = @{}
+      if ($AdminKey) { $headers['X-MediaWatcher-Key'] = $AdminKey }
       return Invoke-RestMethod -Uri $uri -Method $Method -TimeoutSec $TimeoutSec `
-        -UseBasicParsing -ErrorAction Stop
+        -Headers $headers -UseBasicParsing -ErrorAction Stop
     }
 
     $lastHealth = [datetime]::MinValue

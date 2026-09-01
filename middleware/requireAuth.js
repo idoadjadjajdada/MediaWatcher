@@ -6,9 +6,12 @@
  * request while looking correct on the desk it was written at. Access is
  * decided by the cookie and nothing else.
  */
-import { COOKIE_NAME, parseCookies, resolveToken } from '../services/auth.js';
+import { createLogger } from '../config/index.js';
+import { COOKIE_NAME, parseCookies, resolveToken, verifyAdminKey } from '../services/auth.js';
 import { touchDevice } from '../db/devices.js';
 import { classifyOrigin } from '../services/network.js';
+
+const log = createLogger('auth');
 
 /** Exact matches only — a prefix test would let /js/login.js.map through. */
 const PUBLIC_GET = new Set([
@@ -34,11 +37,31 @@ export default function requireAuth(req, res, next) {
 
   if (isAllowlisted(req.method, urlPath)) return next();
 
+  /*
+   * The launcher polls the library and the job list and has no cookie, so
+   * adding the gate silently broke both - it reads the admin key off disk
+   * instead. This is not a loopback bypass: the key has to be presented, and
+   * only something that can read the file can present it.
+   */
+  if (verifyAdminKey(req.headers['x-mediawatcher-key'])) {
+    req.device = null;
+    return next();
+  }
+
   const token = parseCookies(req.headers.cookie)[COOKIE_NAME];
   const resolved = resolveToken(token);
 
   if (!resolved) {
     req.device = null;
+    /*
+     * "No cookie" and "cookie we do not recognise" are completely different
+     * faults - the first is a client that never logged in, the second is a
+     * credential this process has lost - and they were indistinguishable from
+     * the outside.
+     */
+    log.debug(token
+      ? `rejected an unrecognised device token from ${req.ip} for ${urlPath}`
+      : `no device cookie from ${req.ip} for ${urlPath}`);
     // An API caller wants a status it can branch on; a browser navigating
     // wants the login page. Sending HTML to fetch() would surface as a JSON
     // parse error and tell the user nothing.

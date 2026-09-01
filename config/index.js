@@ -286,9 +286,16 @@ const config = {
     // Long enough to cover a pause and a phone locking its screen.
     idleTimeoutMs: int('HLS_IDLE_TIMEOUT_MS', 60000),
     sweepIntervalMs: int('HLS_SWEEP_INTERVAL_MS', 30000),
-    // Segments kept behind the play position. A two-hour film is 1200 of them,
-    // and none are reused once watched.
-    keepBehind: int('HLS_KEEP_BEHIND', 6),
+    /*
+     * Segments kept behind the play position, in segments (6s each).
+     *
+     * 6 was far too tight. Players re-request recent segments routinely - a
+     * buffer flush, a track change, a brief seek back - and finding one deleted
+     * forces the encoder to restart to rewrite it, which stalls playback. Ten
+     * minutes of history costs roughly 150MB at the capped bitrate, which is
+     * nothing beside the MP4 cache, and makes that case disappear.
+     */
+    keepBehind: int('HLS_KEEP_BEHIND', 100),
     // How long a request waits for the encoder to reach a segment before
     // giving up. Generous: a restart has to seek and refill first.
     segmentTimeoutMs: int('HLS_SEGMENT_TIMEOUT_MS', 30000)
