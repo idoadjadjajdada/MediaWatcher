@@ -106,32 +106,12 @@ const capsFrom = (req) => ({
 /** The cap this request plays under, from ?q= and where the request came from. */
 const qualityFrom = (req) => resolveQuality(req.query.q, classifyOrigin(req.ip));
 
-/*
- * DIAGNOSTIC — remove once the iOS playback failure is understood.
- *
- * What a client asks for is the missing evidence: whether it sends a Range
- * header, and what it claims it can decode. Safari on iOS drives <video>
- * through AVFoundation rather than the engine desktop WebKit uses, so it
- * cannot be reproduced here — the device has to tell us directly.
- */
-function logClientRequest(req, label) {
-  const ua = String(req.headers['user-agent'] || '');
-  const device = /iPhone/i.test(ua) ? 'iPhone'
-    : /iPad/i.test(ua) ? 'iPad'
-      : /Macintosh/i.test(ua) ? 'Mac'
-        : /Android/i.test(ua) ? 'Android' : 'other';
-  log.info(`[diag] ${label} from ${device} (${classifyOrigin(req.ip)}) `
-    + `range=${req.headers.range || 'none'} `
-    + `hevc=${req.query.hevc || '0'} ac3=${req.query.ac3 || '0'} q=${req.query.q || 'unset'}`);
-}
-
 /* --------------------------------------------------------------------------
  * GET /api/stream/info
  * ----------------------------------------------------------------------- */
 
 router.get('/info', async (req, res, next) => {
   try {
-    logClientRequest(req, 'info');
     const resolved = resolveRequestPath(req, res);
     if (!resolved) return;
 
@@ -173,7 +153,10 @@ router.get('/info', async (req, res, next) => {
       ffmpeg_available: await transcoder.isAvailable(),
       mode: decision.mode,
       lossless: decision.lossless,
-      seekable: decision.seekable,
+      // Files seek by byte range and HLS seeks by segment, so the only path
+      // that could not seek - the raw ffmpeg pipe - is no longer reachable
+      // from the player.
+      seekable: true,
       tonemapped: Boolean(decision.tonemapped),
       tonemap_height: decision.tonemapHeight ?? null,
       // What the cap actually did, not merely what was asked for: a request for
@@ -181,6 +164,18 @@ router.get('/info', async (req, res, next) => {
       // taken away.
       quality: capped ? quality.level : 'original',
       origin: classifyOrigin(req.ip),
+      // Present when playback needs ffmpeg. A direct or cached file is a real
+      // file with byte ranges and needs nothing here.
+      hls: (decision.mode === 'direct' || decision.mode.startsWith('cached-'))
+        ? null
+        : `/api/hls/playlist.m3u8?${new URLSearchParams({
+          path: resolved.filePath,
+          q: String(req.query.q || 'auto'),
+          hevc: caps.hevc ? '1' : '',
+          ac3: caps.ac3 ? '1' : '',
+          audio: String(req.query.audio || 0),
+          audioOffset: String(audioOffset || 0)
+        })}`,
       reasons: decision.reasons,
       duration: decision.duration,
       video: decision.video || null,
@@ -305,7 +300,6 @@ async function streamViaFfmpeg(req, res, filePath, decision) {
 
 router.get('/', async (req, res, next) => {
   try {
-    logClientRequest(req, 'stream');
     const resolved = resolveRequestPath(req, res);
     if (!resolved) return;
 

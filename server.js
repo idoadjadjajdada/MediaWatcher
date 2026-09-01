@@ -16,6 +16,7 @@ import { closeDatabase } from './db/index.js';
 import requireAuth from './middleware/requireAuth.js';
 import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
+import hlsRouter from './routes/hls.js';
 import mediaRouter from './routes/media.js';
 import discoverRouter from './routes/discover.js';
 import torrentsRouter from './routes/torrents.js';
@@ -27,6 +28,7 @@ import * as scanner from './services/scanner.js';
 import * as downloader from './services/downloader.js';
 import * as transcoder from './services/transcoder.js';
 import * as watcher from './services/watcher.js';
+import * as hls from './services/hls/manager.js';
 
 ensureRuntimeDirs();
 
@@ -153,6 +155,7 @@ app.use('/api/progress', progressRouter);
 app.use('/api/stream', streamRouter);
 app.use('/api/subs', subsRouter);
 app.use('/api/thumbs', thumbsRouter);
+app.use('/api/hls', hlsRouter);
 
 /* --------------------------------------------------------------------------
  * Fallbacks
@@ -194,6 +197,11 @@ const server = app.listen(config.port, config.host, () => {
   // Files dropped into the library are picked up without pressing Rescan.
   watcher.start();
 
+  // Segment directories from a previous run are orphaned: the encoders that
+  // owned them died with that process.
+  hls.clearOrphans();
+  hls.startSweeper();
+
   transcoder.isAvailable().then((available) => {
     log.info(available
       ? 'ffmpeg found — incompatible files will be remuxed on the fly'
@@ -217,6 +225,8 @@ function shutdown(signal) {
   shuttingDown = true;
   log.info(`${signal} received, shutting down`);
   watcher.stop().catch(() => {});
+  // No ffmpeg should outlive the server.
+  hls.shutdownAll();
   server.close(() => {
     closeDatabase();
     process.exit(0);
