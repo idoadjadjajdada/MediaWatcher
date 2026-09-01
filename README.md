@@ -163,6 +163,112 @@ at a timestamp, so seek accuracy is bounded by the source's keyframe interval.
 
 ---
 
+## Remote access
+
+MediaWatcher still binds to `127.0.0.1` and is never exposed to the internet or
+even to your LAN. Remote devices reach it over a Tailscale tunnel, and
+everything behind the tunnel is behind a password.
+
+### One-time setup
+
+1. Install [Tailscale](https://tailscale.com/download/windows) on this machine
+   and sign in.
+2. In the [admin console](https://login.tailscale.com/admin/dns), enable
+   **MagicDNS** *and* **HTTPS Certificates**. Both are required — without them
+   there is no valid certificate, and iOS Safari gates several video and
+   secure-context behaviours behind one.
+3. Publish the server:
+
+   ```
+   tailscale serve --bg 3000
+   ```
+
+   This prints a hostname like `desktop-9dikq29.taila824ee.ts.net`. It says
+   "Available within your tailnet" — this is the private serve, not Funnel, so
+   nothing is reachable from the public internet.
+4. Put that hostname (bare — no `https://`, no trailing slash) into `.env`:
+
+   ```
+   TAILNET_HOST=desktop-9dikq29.taila824ee.ts.net
+   ```
+
+   Restart the server so CORS accepts the new origin.
+5. Install Tailscale on each device, signed into the same account, and open
+   `https://<your-host>.ts.net`.
+
+`tailscale serve` configuration does not always survive a Tailscale upgrade. If
+remote access stops working, re-run step 3 before looking anywhere else.
+
+### The password gate
+
+`AUTH_PASSWORD` in `.env` is required and must be at least 8 characters — the
+server refuses to start without it, because booting an unauthenticated server
+behind a tunnel is the worst failure available here.
+
+Every device enters it once. Ticking **Remember this device** stores a row in
+the `devices` table keyed by the SHA-256 of a random 256-bit token, which is
+kept in an `HttpOnly` cookie. Only the hash is stored, so a leaked database file
+yields no working credential. Leaving it unticked gives a session that dies with
+the browser and is never recorded.
+
+A device is identified by that minted token, never by a browser fingerprint. A
+fingerprint merely *describes* a device, and a description can be forged by
+anyone who knows the shape of an authorised one. It also could not work here:
+playback is driven by `<video src="/api/stream?...">`, which issues its own
+range requests with no JavaScript in the loop to attach a header or compute
+anything — a cookie is the only credential that rides along.
+
+**Loopback is deliberately not trusted.** `tailscale serve` proxies from
+`127.0.0.1`, so every remote request arrives looking local; a "trust loopback"
+shortcut would disable authentication for exactly the traffic the gate exists to
+stop. `tests/auth-loopback.test.mjs` guards this.
+
+### Managing devices
+
+The launcher's **Devices** tab lists every remembered device — name, browser,
+LAN or Tailscale, last IP, last seen — and revokes any of them. Revocation takes
+effect on that device's very next request.
+
+The tab authenticates with `config/admin-key`, a 32-byte key the server writes
+on first boot. It is machine-local, gitignored, and must never be committed. A
+signed-in phone holds a device cookie but not this key, so it cannot enumerate
+or revoke anything.
+
+### Remote quality
+
+Playback over the tunnel is capped, because the constraint is the *client's*
+connection — hotel wifi, cellular, or Tailscale's DERP relay fallback when a
+direct peer-to-peer connection cannot be established. The host's uplink is not
+the bottleneck.
+
+| Level | Height | Max bitrate |
+|-------|--------|-------------|
+| Original | source | uncapped |
+| High | 1080p | 12M |
+| Medium | 720p | 5M |
+| Low | 480p | 1.5M |
+
+`Auto` — the default, and selectable per device in the player's speed menu —
+means Original on the LAN and High over the tunnel. It never picks Original
+remotely even though the host could serve it: a 4K remux runs 60–100 Mbps, past
+most client links, and shipping tens of gigabytes over a possibly-metered
+connection is not something to do unasked. Original remains available by
+explicit request.
+
+A cap overrules `direct` and `remux` alike — both copy the video stream, so
+neither can shrink a 4K source. Height *and* container bitrate are both grounds
+for capping, since a 720p file at 40 Mbps is under the height limit and still
+far too fat.
+
+Capped playback skips the MP4 cache, because those variants are full quality and
+serving one would silently ignore the cap. The cost is that remote seeking
+restarts the encode at `?t=` instead of seeking natively.
+
+All of this is tunable in `.env`: `REMOTE_DEFAULT_QUALITY`, and
+`QUALITY_{HIGH,MEDIUM,LOW}_{HEIGHT,MAXRATE}`.
+
+---
+
 ## Search and downloads
 
 Searching queries every configured source in parallel and merges the results,
@@ -294,12 +400,13 @@ and rebuilt on rescan. Scans are single-flight — concurrent callers share one 
 
 ## Configuration
 
-Everything lives in `.env`. Only the first two are required.
+Everything lives in `.env`. Only the first three are required.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `TMDB_API_KEY` | — | **Required.** Metadata |
 | `ALLDEBRID_API_KEY` | — | **Required.** Downloads |
+| `AUTH_PASSWORD` | — | **Required, 8+ chars.** The password every device enters once |
 | `LIBRARY_PATH` | `./library` | Where your media lives |
 | `TEMP_PATH` | `./temp` | In-progress downloads |
 | `PORT` | `3000` | HTTP port |
@@ -312,6 +419,9 @@ Everything lives in `.env`. Only the first two are required.
 | `FFMPEG_PATH` / `FFPROBE_PATH` | `ffmpeg` / `ffprobe` | Override if not on `PATH` |
 | `FFMPEG_ENABLED` | `1` | Set `0` to force raw byte streaming only |
 | `TRANSCODE_*` | see `.env.example` | Re-encode quality settings |
+| `TAILNET_HOST` | empty | Tailnet hostname, so CORS accepts that origin |
+| `REMOTE_DEFAULT_QUALITY` | `high` | What `Auto` means over the tunnel |
+| `QUALITY_*_HEIGHT` / `QUALITY_*_MAXRATE` | see `.env.example` | The remote quality ladder |
 
 ---
 
