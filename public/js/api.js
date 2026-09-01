@@ -138,13 +138,23 @@ export function setQuality(level) {
   try { localStorage.setItem(QUALITY_KEY, level); } catch { /* not worth failing playback over */ }
 }
 
-export const getStreamInfo = (filePath) => {
+/**
+ * How this file should be played, and the URL to play it from.
+ *
+ * The audio track and delay have to be sent: the server bakes both into the
+ * HLS playlist URL it returns, so asking without them yields a URL for a
+ * stream with no delay and the first audio track - which is why the delay
+ * control silently did nothing on anything that went through ffmpeg.
+ */
+export const getStreamInfo = (filePath, { audioOffset = 0, audio = 0 } = {}) => {
   const caps = decoderCapabilities();
   return get(`/api/stream/info?${q({
     path: filePath,
     hevc: caps.hevc ? 1 : '',
     ac3: caps.ac3 ? 1 : '',
-    q: getQuality()
+    q: getQuality(),
+    audioOffset: audioOffset || '',
+    audio: audio || ''
   })}`);
 };
 

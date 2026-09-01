@@ -262,7 +262,6 @@ async function openInner(filePath) {
     located,
     info,
     seekable,
-    nativeSeekable: seekable,
     duration: totalDuration,
     offset: 0,
     tracks: Array.isArray(tracks) ? tracks : [],
@@ -271,10 +270,18 @@ async function openInner(filePath) {
     activeTrack: (Array.isArray(tracks) && tracks[0]) || null,
     speed: 1,
     audioOffset: (saved && Number(saved.audio_offset)) || 0,
+    // Which audio stream of the file to decode. The server re-encodes the
+    // chosen one, so changing it means a new stream, exactly like the delay.
+    audioIndex: 0,
     // Global, not per-file: brightness tracks the room, not the master.
     picture: loadPicture(),
     pendingSeek: null,
     seekTimer: null,
+    // Set by the touch handlers; read by markIdle to choose its timing and by
+    // the click guard to ignore the synthetic click that follows a tap.
+    lastTouchAt: 0,
+    scrubbing: false,
+    detachHls: null,
     wasPlayingBeforeSeek: null,
     advancing: false,
     nextTarget: null,
@@ -305,6 +312,14 @@ async function openInner(filePath) {
   loadThumbMeta();
   attach();
   load(resumeAt, { autoplay: true });
+
+  /*
+   * The stream URL is fetched in parallel with the saved progress, so it cannot
+   * carry a delay that is only known once that progress arrives. Rather than
+   * serialise two round trips on every open — the common case has no delay —
+   * the rare file that does have one re-opens its stream once.
+   */
+  if (ctx.audioOffset !== 0) reloadStream(resumeAt).catch(() => {});
 
   ctx.node.focus();
   document.addEventListener('keydown', onKeyDown);
@@ -705,7 +720,34 @@ function buildSubsPopover() {
       <button class="player__menu-item${ctx.activeTrack === track ? ' is-active' : ''}" data-action="set-subtitle" data-track="${index}">
         ${esc(track.label || track.lang || 'Track')}${track.source === 'embedded' ? ' (embedded)' : ''}
       </button>`).join('')}
-    ${ctx.tracks.length === 0 ? '<div class="player__menu-label">None found</div>' : ''}`;
+    ${ctx.tracks.length === 0 ? '<div class="player__menu-label">None found</div>' : ''}
+    ${buildAudioTrackSection()}`;
+}
+
+/**
+ * The audio track list, shown only when the file actually has a choice.
+ *
+ * /api/stream/info has always reported these and both stream routes have
+ * always accepted ?audio=N; nothing in the interface ever offered them, so a
+ * dual-audio file could only ever be played in its default language.
+ */
+function buildAudioTrackSection() {
+  const tracks = ctx.info?.audio_tracks || [];
+  if (tracks.length < 2) return '';
+
+  const label = (track, index) => {
+    const parts = [track.language || track.title || `Track ${index + 1}`];
+    if (track.channels) parts.push(`${track.channels}ch`);
+    if (track.codec) parts.push(String(track.codec).toUpperCase());
+    return parts.join(' · ');
+  };
+
+  return `
+    <div class="player__menu-label">Audio</div>
+    ${tracks.map((track, index) => `
+      <button class="player__menu-item${index === ctx.audioIndex ? ' is-active' : ''}" data-action="set-audio-track" data-index="${index}">
+        ${esc(label(track, index))}
+      </button>`).join('')}`;
 }
 
 function buildSyncPopover() {
@@ -820,15 +862,14 @@ function applyAudioOffset(value) {
   if (!ctx || value === ctx.audioOffset) return;
   ctx.audioOffset = value;
 
-  // The offset lives in the ffmpeg command, so it can only change by restarting
-  // the stream - the same mechanic as seeking in pipe mode. A non-zero offset
-  // always forces ffmpeg, so this is never byte-range seekable while it is set.
-  const at = position();
-  const wasPlaying = !ctx.video.paused;
-  ctx.seekable = value === 0 ? ctx.nativeSeekable : false;
-  detachHls();
-  ctx.video.removeAttribute('src');
-  load(at, { autoplay: wasPlaying });
+  /*
+   * The offset lives in the ffmpeg command, so it only takes effect on a new
+   * stream — and the server bakes it into the HLS playlist URL, which is why
+   * this has to re-ask for that URL rather than reload the one it already has.
+   * Reloading the old URL reuses the same session key and therefore the same
+   * encoder, and the delay silently did nothing.
+   */
+  reloadStream().catch(() => {});
 
   persist().catch(() => {});
   buildMenu();
@@ -850,35 +891,69 @@ export function setSpeed(speed) {
  * assumed: a capped stream is a pipe and cannot seek natively, and only the
  * server knows whether the cap actually bites on this particular file.
  */
-export async function setQuality(level) {
-  if (!ctx || level === api.getQuality()) return;
-  api.setQuality(level);
-  buildMenu();
+/**
+ * Re-ask the server how to play this file, then reopen the stream where it was.
+ *
+ * Every parameter that changes the bytes — quality, audio track, audio offset —
+ * is resolved server-side and baked into the URL it hands back, so changing one
+ * means fetching a new URL rather than reloading the old one. Both callers used
+ * to do this by hand and only one of them did it correctly.
+ */
+async function reloadStream(startAt) {
+  if (!ctx) return;
 
-  const at = position();
+  const at = Number.isFinite(startAt) ? startAt : position();
   const wasPlaying = !ctx.video.paused;
   // Identity, not the path: the server answers with its own resolved form
   // (backslashes on Windows), so comparing path strings never matches and
   // would abandon every switch.
   const opened = ctx;
 
+  let info;
   try {
-    const info = await api.getStreamInfo(ctx.filePath);
-    // The player may have been closed or switched files while this was in
-    // flight; adopting stale info would strand the new stream.
-    if (ctx !== opened) return;
-    ctx.info = info;
-    ctx.nativeSeekable = Boolean(info.seekable);
-    ctx.seekable = ctx.audioOffset === 0 ? ctx.nativeSeekable : false;
+    info = await api.getStreamInfo(ctx.filePath, {
+      audioOffset: ctx.audioOffset,
+      audio: ctx.audioIndex
+    });
   } catch {
     // Keep playing at the old settings rather than dropping the stream.
     return;
   }
 
+  // The player may have been closed or switched files while this was in
+  // flight; adopting stale info would strand the new stream.
+  if (ctx !== opened) return;
+
+  ctx.info = info;
+  /*
+   * Every delivery path seeks now: a file by byte range, HLS by segment. The
+   * old rule — an audio offset makes the stream unseekable — was true only of
+   * the raw ffmpeg pipe, and leaving it in place sent seeks down the pipe
+   * branch, which sets ctx.offset and made position() double-count.
+   */
+  ctx.seekable = info.seekable !== false;
+
   detachHls();
   ctx.video.removeAttribute('src');
+  ctx.offset = 0;
   load(at, { autoplay: wasPlaying });
   buildMenu();
+}
+
+/** Pick an audio stream. Index is into info.audio_tracks. */
+export async function setAudioTrack(index) {
+  const wanted = Number(index);
+  if (!ctx || !Number.isFinite(wanted) || wanted === ctx.audioIndex) return;
+  ctx.audioIndex = wanted;
+  buildMenu();
+  await reloadStream();
+}
+
+export async function setQuality(level) {
+  if (!ctx || level === api.getQuality()) return;
+  api.setQuality(level);
+  buildMenu();
+  await reloadStream();
 }
 
 /* --------------------------------------------------------------------------
@@ -1539,6 +1614,6 @@ function playNextImmediate() {
 
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
-  skip, setSubtitle, setSpeed, setQuality, togglePopover, closePopovers, setPicture,
+  skip, setSubtitle, setSpeed, setQuality, setAudioTrack, togglePopover, closePopovers, setPicture,
   playNext, cancelNext
 };

@@ -15,6 +15,16 @@ import { buildSegmentArgs, hardwareEncoder } from '../transcoder.js';
 
 const log = createLogger('hls');
 
+/**
+ * How many times a session may restart its encoder without producing the
+ * segment being asked for, before the request is failed instead.
+ *
+ * Running out of a bounded encode is normal and restarts are how playback
+ * continues, so this has to allow several; an encoder that dies on startup
+ * every time must not spin forever.
+ */
+const MAX_RESTARTS_WITHOUT_PROGRESS = 3;
+
 /** Live sessions by id. */
 const sessions = new Map();
 
@@ -67,7 +77,8 @@ async function startEncoder(session, startSegment) {
     height: session.sourceHeight,
     maxHeight: session.maxHeight,
     maxrate: session.maxrate,
-    encoder
+    encoder,
+    durationSeconds: config.hls.encodeAheadSeconds
   });
 
   log.info(`session ${session.id}: encoding from segment ${startSegment}`);
@@ -145,6 +156,7 @@ export async function openSession(spec) {
     // No encoder has run yet, so nothing is finished and nothing is coming.
     exited: false,
     started: false,
+    restartsWithoutProgress: 0,
     lastAccess: Date.now()
   };
 
@@ -253,6 +265,8 @@ export async function requestSegment(id, index, signal) {
         await restartTo(session, index);
         continue;
       }
+      // Real progress: the next stall gets a full set of attempts again.
+      session.restartsWithoutProgress = 0;
       prune(session, index);
       return file;
     }
@@ -267,10 +281,21 @@ export async function requestSegment(id, index, signal) {
       log.warn(`session ${id}: segment ${index} timed out`);
       return null;
     }
-    // A dead encoder that never reached the segment will never reach it now.
+    /*
+     * The encoder has stopped short of what was asked for. Normally that is
+     * simply the end of its bounded run, so the answer is to start the next one
+     * here rather than give up - but a genuinely broken encoder would restart
+     * forever, so repeated failures without progress eventually surrender.
+     */
     if (session.exited && index > through) {
-      log.warn(`session ${id}: encoder ended before segment ${index}`);
-      return null;
+      if (session.restartsWithoutProgress >= MAX_RESTARTS_WITHOUT_PROGRESS) {
+        log.warn(`session ${id}: giving up on segment ${index} after `
+          + `${session.restartsWithoutProgress} restarts that produced nothing`);
+        return null;
+      }
+      session.restartsWithoutProgress += 1;
+      await restartTo(session, index);
+      continue;
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }

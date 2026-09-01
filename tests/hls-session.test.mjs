@@ -22,6 +22,7 @@ const check = (name, condition) => {
 };
 
 const spec = (over = {}) => ({
+  viewer: 'device:abc',
   filePath: 'C:/lib/movie.mkv',
   mtimeMs: 1700000000000,
   size: 2201685207,
@@ -49,6 +50,17 @@ check('ac3 capability changes it',
 // An edited file must not serve stale segments.
 check('mtime changes it', sessionKey(spec()) !== sessionKey(spec({ mtimeMs: 1 })));
 check('size changes it', sessionKey(spec()) !== sessionKey(spec({ size: 1 })));
+
+/*
+ * Two viewers on the same file at the same quality must not share an encoder:
+ * a seek by one restarts it and deletes the segments the other is playing, so
+ * a phone and a television on the same episode broke each other.
+ */
+check('a different viewer gets a different session',
+  sessionKey(spec()) !== sessionKey(spec({ viewer: 'device:xyz' })));
+check('the same viewer reuses one', sessionKey(spec()) === sessionKey(spec()));
+check('an unremembered session is its own viewer',
+  sessionKey(spec({ viewer: 'session:1234' })) !== sessionKey(spec({ viewer: 'session:5678' })));
 
 console.log('\nnext action');
 const action = (over) => nextAction({

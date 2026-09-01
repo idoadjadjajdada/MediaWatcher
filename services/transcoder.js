@@ -504,7 +504,8 @@ export function buildArgs(filePath, {
  */
 export function buildSegmentArgs(filePath, {
   startSegment = 0, outputPattern, audioIndex = 0, audioOffset = 0,
-  tonemap = false, height = null, maxHeight = null, maxrate = null, encoder = null
+  tonemap = false, height = null, maxHeight = null, maxrate = null, encoder = null,
+  durationSeconds = null
 }) {
   const startSeconds = startSegment * SEGMENT_SECONDS;
   const args = ['-hide_banner', '-loglevel', 'error'];
@@ -579,6 +580,15 @@ export function buildSegmentArgs(filePath, {
    * the time the playlist claims for it, to within about 20ms.
    */
   args.push('-muxdelay', '0', '-muxpreload', '0');
+
+  /*
+   * Bounds one run. Without it ffmpeg encodes to the end of the file whether or
+   * not anyone watches that far. Running out is not an error: the manager
+   * starts the next run at the segment the viewer has reached.
+   */
+  if (Number.isFinite(durationSeconds) && durationSeconds > 0) {
+    args.push('-t', String(durationSeconds));
+  }
 
   args.push(
     '-f', 'segment',

@@ -298,7 +298,17 @@ const config = {
     keepBehind: int('HLS_KEEP_BEHIND', 100),
     // How long a request waits for the encoder to reach a segment before
     // giving up. Generous: a restart has to seek and refill first.
-    segmentTimeoutMs: int('HLS_SEGMENT_TIMEOUT_MS', 30000)
+    segmentTimeoutMs: int('HLS_SEGMENT_TIMEOUT_MS', 30000),
+    /*
+     * Seconds of video one encoder run produces before stopping.
+     *
+     * Unbounded, ffmpeg races to the end of the file as fast as the GPU
+     * allows: watching two minutes of a forty-minute episode still encoded the
+     * whole episode and wrote it to disk. Five minutes is far more than any
+     * player buffers, so the bound is invisible during playback, and running
+     * out simply starts the next run where the last one stopped.
+     */
+    encodeAheadSeconds: int('HLS_ENCODE_AHEAD_SECONDS', 300)
   },
 
   ffmpeg: {
