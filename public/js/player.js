@@ -682,8 +682,9 @@ function markIdle(after) {
   clearTimeout(ctx.idleTimer);
   ctx.node.classList.remove('is-idle');
   ctx.idleTimer = setTimeout(() => {
-    // A panel left open over a hidden control bar floats unanchored.
-    if (ctx && !ctx.video.paused) {
+    // A panel left open over a hidden control bar floats unanchored — and the
+    // bar must not vanish out from under a finger that is dragging it.
+    if (ctx && !ctx.video.paused && !ctx.scrubbing) {
       closePopovers();
       ctx.node.classList.add('is-idle');
     }
@@ -1183,7 +1184,28 @@ function attach() {
   video.addEventListener('ended', onEnded);
   video.addEventListener('error', onError);
 
-  el('seek').addEventListener('input', (event) => {
+  /*
+   * Dragging the scrub bar has to hold the controls open.
+   *
+   * On touch there is no mousemove to keep resetting the idle timer - the
+   * finger produces pointer and touch events instead - so the bar timed out
+   * mid-drag and disappeared under the thumb that was moving it.
+   */
+  const seek = el('seek');
+  const holdChrome = () => { ctx.scrubbing = true; markIdle(); };
+  const releaseChrome = () => { ctx.scrubbing = false; markIdle(); };
+
+  seek.addEventListener('pointerdown', holdChrome);
+  seek.addEventListener('pointerup', releaseChrome);
+  seek.addEventListener('pointercancel', releaseChrome);
+  // Keyboard and assistive input never send pointer events, so the drag has to
+  // be released by the value settling too.
+  seek.addEventListener('change', releaseChrome);
+  seek.addEventListener('blur', releaseChrome);
+
+  seek.addEventListener('input', (event) => {
+    // Every step of the drag counts as activity, whatever produced it.
+    markIdle();
     const total = duration();
     if (!total) return;
     const fraction = Number(event.target.value) / 1000;
@@ -1200,6 +1222,7 @@ function attach() {
 
   const scrub = el('scrub');
   scrub.addEventListener('pointermove', (event) => {
+    markIdle();
     const rect = scrub.getBoundingClientRect();
     showPreview(previewFraction(event.clientX - rect.left, rect.width));
   });
