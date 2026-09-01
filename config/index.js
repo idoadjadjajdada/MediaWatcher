@@ -280,6 +280,20 @@ const config = {
     enabled: str('MP4_CACHE_ENABLED', '1') !== '0'
   },
 
+  hls: {
+    dir: path.join(ROOT_DIR, 'cache', 'hls'),
+    // How long a session survives without a keepalive before it is reaped.
+    // Long enough to cover a pause and a phone locking its screen.
+    idleTimeoutMs: int('HLS_IDLE_TIMEOUT_MS', 60000),
+    sweepIntervalMs: int('HLS_SWEEP_INTERVAL_MS', 30000),
+    // Segments kept behind the play position. A two-hour film is 1200 of them,
+    // and none are reused once watched.
+    keepBehind: int('HLS_KEEP_BEHIND', 6),
+    // How long a request waits for the encoder to reach a segment before
+    // giving up. Generous: a restart has to seek and refill first.
+    segmentTimeoutMs: int('HLS_SEGMENT_TIMEOUT_MS', 30000)
+  },
+
   ffmpeg: {
     enabled: str('FFMPEG_ENABLED', '1') !== '0',
     ffmpegPath: str('FFMPEG_PATH', 'ffmpeg'),

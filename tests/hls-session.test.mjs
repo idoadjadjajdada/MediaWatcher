@@ -76,13 +76,30 @@ check('a fresh session waits for its first segment',
 console.log('\ncompleted through');
 // ffmpeg is still writing the highest-numbered segment, so it is not complete
 // until the next one appears.
-check('the highest segment is still being written', completedThrough([0, 1, 2], false) === 1);
-check('an empty directory has produced nothing', completedThrough([], false) === -1);
-check('one segment alone is incomplete', completedThrough([0], false) === -1);
+check('the highest segment is still being written', completedThrough([0, 1, 2], 0, false) === 1);
+check('an empty directory has produced nothing', completedThrough([], 0, false) === -1);
+check('one segment alone is incomplete', completedThrough([0], 0, false) === -1);
 // Once the process exits, the last one is finished.
-check('exiting completes the highest', completedThrough([0, 1, 2], true) === 2);
-check('an exited empty run completes nothing', completedThrough([], true) === -1);
-check('gaps do not confuse it', completedThrough([10, 11, 12], false) === 11);
+check('exiting completes the highest', completedThrough([0, 1, 2], 0, true) === 2);
+check('an exited empty run completes nothing', completedThrough([], 0, true) === -1);
+check('gaps do not confuse it', completedThrough([10, 11, 12], 0, false) === 11);
+
+/*
+ * Segments left by an earlier start point are real content but say nothing
+ * about where the current encoder has reached. Counting them made a session
+ * that restarted at 150 read its leftover segment 2 as "produced through 1",
+ * decide the encoder would never arrive, and restart in a tight loop.
+ */
+check('leftovers from an earlier start point are ignored',
+  completedThrough([0, 1, 2], 150, false) === 149);
+check('a fresh run reports one below its start',
+  completedThrough([], 150, false) === 149);
+check('the first segment of a run is still being written',
+  completedThrough([150], 150, false) === 149);
+check('a run counts only its own segments',
+  completedThrough([0, 1, 2, 150, 151, 152], 150, false) === 151);
+check('an exited run counts its highest own segment',
+  completedThrough([0, 1, 2, 150, 151], 150, true) === 151);
 
 console.log('\npruning');
 check('segments well behind are pruned',
