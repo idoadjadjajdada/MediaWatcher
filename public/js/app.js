@@ -422,6 +422,7 @@ const ACTIONS = {
   'set-speed': (el) => player.setSpeed(el.dataset.speed),
   'set-quality': (el) => player.setQuality(el.dataset.quality),
   'set-audio-track': (el) => player.setAudioTrack(el.dataset.index),
+  'seek-chapter': (el) => player.seekChapter(el.dataset.start),
   'prev-episode': () => player.playPrevious(),
   'next-episode': () => player.playNextEpisode(),
   'audio-nudge': (el) => player.nudgeAudioOffset(Number(el.dataset.delta)),

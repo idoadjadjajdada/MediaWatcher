@@ -20,6 +20,9 @@ import {
 import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episodeTag } from './views.js';
 import { clampPicture, pictureFilter, loadPicture, savePicture, PICTURE_MIN, PICTURE_MAX } from './picture.js';
 import { previewFraction, cardLeft, frameIndex } from './preview.js';
+import {
+  chapterIndexAt, nextChapterStart, previousChapterStart, chapterLabel
+} from './chapters.js';
 import { attachHls } from './hls-player.js';
 
 const SAVE_INTERVAL_MS = 5000;
@@ -269,6 +272,9 @@ async function openInner(filePath) {
     // Which audio stream of the file to decode. The server re-encodes the
     // chosen one, so changing it means a new stream, exactly like the delay.
     audioIndex: 0,
+    // Boundaries only: almost every file here has chapters and almost none
+    // have titles worth reading, so these are for seeing and jumping.
+    chapters: info?.chapters || [],
     // Global, not per-file: brightness tracks the room, not the master.
     picture: loadPicture(),
     // Set by the touch handlers; read by markIdle to choose its timing and by
@@ -778,12 +784,79 @@ function buildPicturePopover() {
     <button class="audiodelay__reset" data-action="picture-reset">Reset</button>`;
 }
 
-/** Rebuild every popover. Cheap, and keeps the four in step with ctx. */
+/**
+ * The chapter list, and the ticks that mark the same boundaries on the bar.
+ *
+ * The whole control hides when a file has none, rather than offering an empty
+ * menu — a handful of files in the library have no chapters at all.
+ */
+function buildChaptersPopover() {
+  const control = el('chapters-control');
+  const panel = el('popover-chapters');
+  const ticks = el('chapter-ticks');
+  if (!control || !panel || !ticks) return;
+
+  const chapters = ctx.chapters || [];
+  control.hidden = chapters.length === 0;
+  if (chapters.length === 0) {
+    panel.innerHTML = '';
+    ticks.innerHTML = '';
+    return;
+  }
+
+  const total = duration();
+  const here = chapterIndexAt(chapters, position());
+
+  panel.innerHTML = `
+    <div class="player__menu-label">Chapters</div>
+    ${chapters.map((chapter, index) => `
+      <button class="player__menu-item player__menu-item--chapter${index === here ? ' is-active' : ''}"
+        data-action="seek-chapter" data-start="${chapter.start}">
+        <span>${esc(chapterLabel(chapter))}</span>
+        <span class="player__chapter-time t-num">${formatTime(chapter.start)}</span>
+      </button>`).join('')}`;
+
+  // A tick at zero would sit under the knob at the start and read as an
+  // artefact, so the first boundary is skipped.
+  ticks.innerHTML = total > 0
+    ? chapters
+      .filter((chapter) => chapter.start > 0 && chapter.start < total)
+      .map((chapter) => `<i class="player__tick" style="left:${((chapter.start / total) * 100).toFixed(3)}%"></i>`)
+      .join('')
+    : '';
+}
+
+/** Jump a whole chapter. Direction is 1 for forward, -1 for back. */
+export function jumpChapter(direction) {
+  if (!ctx || !ctx.chapters?.length) return;
+
+  const at = position();
+  const target = direction > 0
+    ? nextChapterStart(ctx.chapters, at)
+    : previousChapterStart(ctx.chapters, at);
+
+  if (target === null) return;
+  seekTo(target);
+  markIdle();
+  buildChaptersPopover();
+}
+
+/** Seek to an exact chapter start, from the list. */
+export function seekChapter(start) {
+  const target = Number(start);
+  if (!ctx || !Number.isFinite(target)) return;
+  seekTo(target);
+  markIdle();
+  buildChaptersPopover();
+}
+
+/** Rebuild every popover. Cheap, and keeps them in step with ctx. */
 function buildMenu() {
   buildSubsPopover();
   buildSyncPopover();
   buildSpeedPopover();
   buildPicturePopover();
+  buildChaptersPopover();
 }
 
 function applyTrack(track) {
@@ -1017,7 +1090,7 @@ export function selectSeason(number) {
  * Setting popovers
  * ----------------------------------------------------------------------- */
 
-const POPOVERS = ['subs', 'sync', 'speed', 'picture'];
+const POPOVERS = ['subs', 'sync', 'speed', 'picture', 'chapters'];
 
 /** Close every popover. Safe to call when none is open. */
 export function closePopovers() {
@@ -1555,6 +1628,12 @@ function onKeyDown(event) {
       event.preventDefault(); nudgeAudioOffset(-0.05); break;
     case ']':
       event.preventDefault(); nudgeAudioOffset(0.05); break;
+    // ',' and '.' are '<' and '>' unshifted, which reads as chapter back and
+    // forward. The bracket keys were already spoken for by the audio delay.
+    case ',':
+      event.preventDefault(); jumpChapter(-1); break;
+    case '.':
+      event.preventDefault(); jumpChapter(1); break;
     case 'f': case 'F':
       toggleFullscreen(); break;
     case 'n': case 'N':
@@ -1593,6 +1672,7 @@ function playNextImmediate() {
 
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
-  skip, setSubtitle, setSpeed, setQuality, setAudioTrack, togglePopover, closePopovers, setPicture,
+  skip, setSubtitle, setSpeed, setQuality, setAudioTrack, jumpChapter, seekChapter,
+  togglePopover, closePopovers, setPicture,
   playNext, cancelNext
 };

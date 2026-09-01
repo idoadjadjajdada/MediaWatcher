@@ -21,6 +21,40 @@ html.is-player-open body { overflow: hidden; }
  */
 .player.is-no-volume .range--vol { display: none; }
 
+/*
+ * Chapter boundaries, drawn on the track itself rather than as a separate
+ * strip: they are positions in the film, so they belong on the thing that
+ * represents the film. Sits under the knob and the preview card, and never
+ * takes a pointer event - the range input underneath has to keep every one.
+ */
+.player__ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.player__tick {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 10px;
+  margin-top: -5px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, .55);
+  /* Dark side so a tick stays visible over the filled part of the bar too. */
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35);
+}
+
+.player__chapter-time {
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--fg-3, #8a8a94);
+  font-variant-numeric: tabular-nums;
+}
+
+.player__menu-item--chapter { display: flex; align-items: center; }
+
 .player__top, .player__controls { transition: opacity var(--state), transform var(--state); }
 .player.is-idle .player__top { opacity: 0; transform: translateY(-8px); pointer-events: none; }
 .player.is-idle .player__controls { opacity: 0; transform: translateY(8px); pointer-events: none; }
