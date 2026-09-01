@@ -7,8 +7,13 @@ Date: 2026-09-01
 MediaWatcher binds to `127.0.0.1:3000` and has no authentication of any kind.
 It is reachable only from the machine it runs on. The goal is to reach it from
 an iPad (and any other personal device) from anywhere, without port forwarding,
-without exposing the library to the public internet, and without saturating a
-residential uplink when streaming a 4K remux over cellular.
+without exposing the library to the public internet, and without stalling on a
+weak client connection when streaming a 4K remux.
+
+The host has a symmetric ~800 Mbps connection, so the serving side is not a
+bottleneck. Every quality decision here is about the *client's* downlink —
+hotel wifi, cellular, a congested guest network — and about Tailscale relay
+fallback, never about the host's upload.
 
 Three pieces, built together because they interact:
 
@@ -190,16 +195,49 @@ Tailscale assigns addresses in `100.64.0.0/10`. A request whose resolved
 
 ### Ladder
 
-Configurable via `.env` so it can be tuned to the actual uplink. Defaults:
+Configurable via `.env`. Defaults:
 
 | Level    | Height | Max bitrate |
 |----------|--------|-------------|
 | Original | source | uncapped    |
-| High     | 1080p  | 8 Mbps      |
-| Medium   | 720p   | 4 Mbps      |
+| High     | 1080p  | 12 Mbps     |
+| Medium   | 720p   | 5 Mbps      |
 | Low      | 480p   | 1.5 Mbps    |
 
-`Auto` is the default and means Original on the LAN, Medium over Tailscale.
+`Auto` is the default and means Original on the LAN, **High** over Tailscale.
+
+High rather than Medium because the host can push far more than any client is
+likely to pull, so the conservative choice costs picture quality without buying
+anything. 12 Mbps at 1080p is comfortably within a decent hotel connection or a
+good 5G signal, and Low exists for when it is not.
+
+Note that `Auto` deliberately never selects Original remotely, even though the
+host could serve it. A 4K remux runs 60-100 Mbps, which is beyond most client
+connections and would also mean shipping tens of gigabytes over a metered link
+without being asked. Original remains available as an explicit choice.
+
+### The relay case
+
+Tailscale normally establishes a direct peer-to-peer connection, which on this
+host means effectively LAN-grade throughput. When both ends sit behind
+uncooperative NATs it falls back to a DERP relay: a shared Tailscale-operated
+server that is bandwidth-limited and latency-prone. That fallback, not the
+host's uplink, is the realistic worst case for remote playback.
+
+Tailscale reports which is in use (`tailscale status` shows `direct` or
+`relay`), but reading it per request would mean shelling out on the hot path.
+Out of scope for now; the manual quality picker is the escape hatch when a
+relayed connection struggles. Worth revisiting if relaying turns out to be
+common rather than occasional.
+
+### Cost shifts to CPU
+
+With bandwidth no longer scarce, the cost of a capped stream is ffmpeg. A
+1080p12 encode of a 4K HDR source is materially more expensive than copying
+bytes, and `decide()` already routes HDR through a full transcode regardless.
+`hardwareEncoder()` is therefore worth requesting for capped streams too, not
+just tone-mapped ones as it is today — same rationale, the CPU is the scarce
+resource in both cases.
 
 ### Integration
 
