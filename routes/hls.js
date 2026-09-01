@@ -96,7 +96,15 @@ router.get('/:session/:segment.ts', async (req, res, next) => {
       return res.status(400).json({ error: 'bad segment number' });
     }
 
-    const file = await manager.requestSegment(req.params.session, index);
+    /*
+     * hls.js abandons in-flight segment requests on every seek. Without
+     * telling the manager, the orphaned handler keeps waiting - and can move
+     * the encoder to a segment nobody wants any more.
+     */
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
+
+    const file = await manager.requestSegment(req.params.session, index, controller.signal);
     if (!file) return res.status(404).json({ error: 'segment unavailable' });
 
     res.setHeader('Content-Type', 'video/mp2t');

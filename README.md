@@ -234,6 +234,40 @@ on first boot. It is machine-local, gitignored, and must never be committed. A
 signed-in phone holds a device cookie but not this key, so it cannot enumerate
 or revoke anything.
 
+### Playback delivery
+
+Three ways a file reaches a player, in order of preference:
+
+| Path | When | Seeking |
+|------|------|---------|
+| `direct` | the browser can decode the file as it sits on disk | byte ranges |
+| `cached-*` | a converted MP4 already exists in `cache/mp4` | byte ranges |
+| HLS | anything else — a container swap, an audio re-encode, HDR tone mapping, or a quality cap | by segment |
+
+HLS replaced a raw ffmpeg pipe, for two reasons.
+
+**iOS could not play the pipe at all.** Safari on iOS opens a source through
+AVFoundation, which probes it with `Range: bytes=0-1` and requires a `206`. A
+pipe has no byte offsets, so it answered `200` with `Accept-Ranges: none` and
+iOS abandoned the source with `MEDIA_ERR_SRC_NOT_SUPPORTED`. Segments are
+ordinary files, so the problem disappears.
+
+**The pipe could not seek.** Seeking meant restarting ffmpeg at `?t=`, roughly
+630ms per seek and impossible to scrub. HLS seeks by segment.
+
+MediaWatcher writes the playlist itself from the probed duration, so the whole
+timeline exists before a single segment does and the scrub bar is accurate
+immediately. ffmpeg only writes segments, numbered by us — which is what lets
+the encoder be killed and restarted at any point when you seek.
+
+Sessions live in `cache/hls/`, are keyed on everything that changes the output
+(file, quality, audio track, offset, client capabilities), and are reaped once
+idle. Nothing is kept between sessions: segments are quality-specific and cheap
+to remake.
+
+Safari and iOS play HLS natively. Everything else uses `hls.js`, served from
+`public/js/vendor/` and loaded only when a stream actually needs it.
+
 ### Remote quality
 
 Playback over the tunnel is capped, because the constraint is the *client's*
@@ -250,22 +284,19 @@ the bottleneck.
 
 `Auto` — the default, and selectable per device in the player's speed menu —
 means Original on the LAN and High over the tunnel. It never picks Original
-remotely even though the host could serve it: a 4K remux runs 60–100 Mbps, past
+remotely even though the host could serve it: a 4K remux runs 60-100 Mbps, past
 most client links, and shipping tens of gigabytes over a possibly-metered
 connection is not something to do unasked. Original remains available by
 explicit request.
 
-A cap overrules `direct` and `remux` alike — both copy the video stream, so
-neither can shrink a 4K source. Height *and* container bitrate are both grounds
-for capping, since a 720p file at 40 Mbps is under the height limit and still
-far too fat.
+A cap overrules `direct` and `cached-*` alike — both hand over full-quality
+bytes, so neither can shrink a 4K source. Height *and* container bitrate are
+both grounds for capping, since a 720p file at 40 Mbps is under the height
+limit and still far too fat.
 
-Capped playback skips the MP4 cache, because those variants are full quality and
-serving one would silently ignore the cap. The cost is that remote seeking
-restarts the encode at `?t=` instead of seeking natively.
-
-All of this is tunable in `.env`: `REMOTE_DEFAULT_QUALITY`, and
-`QUALITY_{HIGH,MEDIUM,LOW}_{HEIGHT,MAXRATE}`.
+Tunable in `.env`: `REMOTE_DEFAULT_QUALITY`,
+`QUALITY_{HIGH,MEDIUM,LOW}_{HEIGHT,MAXRATE}`, and the session behaviour via
+`HLS_IDLE_TIMEOUT_MS`, `HLS_KEEP_BEHIND` and `HLS_SEGMENT_TIMEOUT_MS`.
 
 ---
 

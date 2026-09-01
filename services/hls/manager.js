@@ -156,7 +156,34 @@ function prune(session, current) {
  * The path to a finished segment, waiting for or restarting the encoder as
  * needed. Resolves null if it never arrives.
  */
-export async function requestSegment(id, index) {
+/**
+ * Move the encoder, but never while another request is already moving it.
+ *
+ * Two requests for different segments would otherwise kill each other's
+ * process in turn and neither would ever produce anything — a livelock that
+ * looks exactly like a slow encoder.
+ */
+async function restartTo(session, index) {
+  while (session.restarting) await session.restarting;
+
+  // The winner of that wait may have already moved the encoder somewhere that
+  // serves us, in which case moving it again would undo their work.
+  if (session.startSegment === index && session.proc) return;
+
+  session.restarting = startEncoder(session, index)
+    .finally(() => { session.restarting = null; });
+  await session.restarting;
+}
+
+/**
+ * The path to a finished segment, waiting for or restarting the encoder as
+ * needed. Resolves null if it never arrives or the caller goes away.
+ *
+ * `signal` aborts when the client disconnects. hls.js drops in-flight segment
+ * requests on every seek, and without this the abandoned handler keeps looping
+ * — and can restart the encoder for a segment nobody is waiting for any more.
+ */
+export async function requestSegment(id, index, signal) {
   const session = sessions.get(id);
   if (!session) return null;
   if (index < 0 || index >= session.count) return null;
@@ -166,10 +193,12 @@ export async function requestSegment(id, index) {
   const deadline = Date.now() + config.hls.segmentTimeoutMs;
 
   for (;;) {
+    if (signal?.aborted) return null;
+
     // A session that has never encoded anything has nothing to wait for.
     if (!session.started) {
       session.started = true;
-      await startEncoder(session, index);
+      await restartTo(session, index);
       continue;
     }
 
@@ -186,7 +215,7 @@ export async function requestSegment(id, index) {
     }
 
     if (action === 'restart') {
-      await startEncoder(session, index);
+      await restartTo(session, index);
       continue;
     }
 

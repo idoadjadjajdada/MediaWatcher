@@ -20,6 +20,7 @@ import {
 import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episodeTag } from './views.js';
 import { clampPicture, pictureFilter, loadPicture, savePicture, PICTURE_MIN, PICTURE_MAX } from './picture.js';
 import { previewFraction, cardLeft, frameIndex } from './preview.js';
+import { attachHls } from './hls-player.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -294,11 +295,13 @@ export async function close({ save = true, keepPage = false } = {}) {
   document.removeEventListener('keydown', onKeyDown);
   if (ctx.outsideClick) document.removeEventListener('click', ctx.outsideClick, true);
   clearInterval(ctx.saveTimer);
+  clearInterval(ctx.hlsTimer);
   clearTimeout(ctx.idleTimer);
   clearTimeout(ctx.seekTimer);
   clearTimeout(ctx.thumbRetry);
 
   // Dropping the src stops the server-side ffmpeg process straight away.
+  detachHls();
   ctx.video.removeAttribute('src');
   ctx.video.load();
 
@@ -330,7 +333,52 @@ export const isOpen = () => ctx !== null;
  * Loading + seeking
  * ----------------------------------------------------------------------- */
 
+/**
+ * Tear down an attached HLS stream.
+ *
+ * Not optional: hls.js keeps fetching segments and driving the media element
+ * until it is destroyed, so reusing the element without this leaves the old
+ * stream loading underneath the new one.
+ */
+function detachHls() {
+  if (!ctx?.detachHls) return;
+  ctx.detachHls();
+  ctx.detachHls = null;
+}
+
 function load(startAt = 0, { autoplay = true } = {}) {
+  /*
+   * HLS covers everything that needs ffmpeg. It seeks by segment, so none of
+   * the ?t= restart machinery below applies — currentTime is the real position
+   * and ctx.offset stays at zero.
+   */
+  if (ctx.info?.hls) {
+    detachHls();
+    ctx.offset = 0;
+
+    attachHls(ctx.video, ctx.info.hls)
+      .then((detach) => {
+        // The player may have closed or switched files while the library was
+        // loading; detaching immediately avoids a stream with no owner.
+        if (!ctx) { detach(); return; }
+        ctx.detachHls = detach;
+
+        if (startAt > 0) {
+          ctx.video.addEventListener('loadedmetadata', () => {
+            ctx.video.currentTime = startAt;
+          }, { once: true });
+        }
+        if (autoplay) ctx.video.play().catch(() => {});
+      })
+      .catch((error) => {
+        toast('error', 'Cannot play this file', error.message);
+      });
+
+    applyTrack(ctx.activeTrack);
+    tick();
+    return;
+  }
+
   if (ctx.seekable) {
     // Byte-range mode: load once, then seek inside the element.
     if (!ctx.video.src) {
@@ -711,6 +759,7 @@ function applyAudioOffset(value) {
   const at = position();
   const wasPlaying = !ctx.video.paused;
   ctx.seekable = value === 0 ? ctx.nativeSeekable : false;
+  detachHls();
   ctx.video.removeAttribute('src');
   load(at, { autoplay: wasPlaying });
 
@@ -759,6 +808,7 @@ export async function setQuality(level) {
     return;
   }
 
+  detachHls();
   ctx.video.removeAttribute('src');
   load(at, { autoplay: wasPlaying });
   buildMenu();
@@ -1189,6 +1239,15 @@ function attach() {
   });
 
   ctx.saveTimer = setInterval(persist, SAVE_INTERVAL_MS);
+
+  /*
+   * The server reaps idle HLS sessions so abandoned encoders do not pile up,
+   * which means a paused film has to keep saying it is still being watched.
+   */
+  ctx.hlsTimer = setInterval(() => {
+    const match = /\/api\/hls\/([0-9a-f]{32})\//.exec(ctx?.video?.currentSrc || '');
+    if (match) api.touchHlsSession(match[1]).catch(() => {});
+  }, 20000);
   setVolumeUi();
   markIdle();
 }

@@ -170,6 +170,9 @@ export const subsUrl = (filePath, track) => {
 
 export const listSubtitles = (filePath) => get(`/api/subs?${q({ path: filePath, list: 1 })}`);
 
+/** Keepalive so the server does not reap a session that is still playing. */
+export const touchHlsSession = (sessionId) => post(`/api/hls/${sessionId}/touch`, {});
+
 export const thumbMetaUrl = (filePath) => `/api/thumbs/meta?${q({ path: filePath })}`;
 export const thumbUrl = (filePath, index) => `/api/thumbs?${q({ path: filePath, i: index })}`;
 
@@ -181,5 +184,5 @@ export default {
   getContinueWatching, getAllProgress, getProgressFor, saveProgress,
   getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities,
   getQuality, setQuality, QUALITY_LEVELS,
-  thumbMetaUrl, thumbUrl
+  thumbMetaUrl, thumbUrl, touchHlsSession
 };
