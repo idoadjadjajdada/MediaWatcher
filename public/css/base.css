@@ -15,6 +15,23 @@ img { max-width: 100%; display: block; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 input, select { font: inherit; }
 
+/*
+ * Double-tap to zoom applies to the whole app, not just the player: tapping a
+ * poster twice in quick succession would otherwise zoom the page instead of
+ * opening it.
+ */
+html { touch-action: manipulation; }
+
+/*
+ * iOS zooms the page whenever a focused input is smaller than 16px, which is
+ * how tapping the search box ended up scaling everything. The app's own type
+ * scale is 13px, so the floor is applied only where a touch keyboard exists -
+ * desktop keeps the smaller field.
+ */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px; }
+}
+
 :root {
   /* Surfaces - true black so artwork sits on it, not near-black. */
   --bg: #000000;

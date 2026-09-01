@@ -14,6 +14,13 @@ html.is-player-open body { overflow: hidden; }
   touch-action: manipulation;
 }
 
+/*
+ * Hidden where the platform ignores volume changes - iOS reports a volume it
+ * will not let you set, so the slider moves and nothing happens. The mute
+ * button survives, because muting does work there.
+ */
+.player.is-no-volume .range--vol { display: none; }
+
 .player__top, .player__controls { transition: opacity var(--state), transform var(--state); }
 .player.is-idle .player__top { opacity: 0; transform: translateY(-8px); pointer-events: none; }
 .player.is-idle .player__controls { opacity: 0; transform: translateY(8px); pointer-events: none; }

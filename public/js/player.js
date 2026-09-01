@@ -649,6 +649,27 @@ function setVolumeUi() {
  * play fires the media element's own 'play' event, and if that used the mouse
  * timing it would cut short the reveal the tap had just asked for.
  */
+/**
+ * Can this device actually change the output volume?
+ *
+ * iOS makes video.volume read-only — assignments are accepted and ignored — so
+ * the slider is inert there and the hardware buttons are the only control. A
+ * feature test rather than a device check, because that is the actual
+ * condition: anything that cannot set volume should not show a volume slider.
+ */
+function volumeIsAdjustable(video) {
+  try {
+    const original = video.volume;
+    const probe = original > 0.5 ? 0.25 : 0.75;
+    video.volume = probe;
+    const moved = Math.abs(video.volume - probe) < 0.01;
+    video.volume = original;
+    return moved;
+  } catch {
+    return false;
+  }
+}
+
 function markIdle(after) {
   if (!ctx) return;
   // Number.isFinite rather than a null check: this is easy to wire up as an
@@ -1246,6 +1267,12 @@ function attach() {
    * it - so every first tap would look like a tap on already-visible controls
    * and pause the video, which is the behaviour being fixed.
    */
+  /*
+   * The mute button stays either way: muted IS settable on iOS, so it remains
+   * useful even where the slider is not.
+   */
+  if (!volumeIsAdjustable(video)) node.classList.add('is-no-volume');
+
   node.addEventListener('mousemove', () => {
     if (Date.now() - (ctx?.lastTouchAt || 0) < CLICK_AFTER_TOUCH_MS) return;
     markIdle();
@@ -1381,10 +1408,41 @@ export function toggleMute() {
   ctx.video.muted = !ctx.video.muted;
 }
 
+/**
+ * Fullscreen, including the one platform that does not have it.
+ *
+ * iPhone has no Element.requestFullscreen at all — only the video element can
+ * go fullscreen, through webkitEnterFullscreen, which hands over to the native
+ * player. The old code optional-chained the missing method, so the button
+ * silently did nothing there.
+ *
+ * The element path is still preferred everywhere it exists, because it keeps
+ * our own controls; the native handover is the fallback, not the default.
+ */
 export function toggleFullscreen() {
   if (!ctx) return;
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  else ctx.node.requestFullscreen?.().catch(() => {});
+  const video = ctx.video;
+
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen?.() ?? document.webkitExitFullscreen?.())?.catch?.(() => {});
+    return;
+  }
+
+  if (video.webkitDisplayingFullscreen) {
+    video.webkitExitFullscreen?.();
+    return;
+  }
+
+  const request = ctx.node.requestFullscreen || ctx.node.webkitRequestFullscreen;
+  if (request) {
+    const result = request.call(ctx.node);
+    // webkitRequestFullscreen returns undefined rather than a promise.
+    result?.catch?.(() => {});
+    return;
+  }
+
+  // iPhone: the video itself, natively.
+  video.webkitEnterFullscreen?.();
 }
 
 function adjustVolume(delta) {
