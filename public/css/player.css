@@ -22,6 +22,34 @@ html.is-player-open body { overflow: hidden; }
 .player.is-no-volume .range--vol { display: none; }
 
 /*
+ * Playback stats. Deliberately plain and monospaced - this is an instrument,
+ * not decoration, and the numbers have to be readable against any frame.
+ */
+.player__stats {
+  position: absolute;
+  top: 64px;
+  left: 20px;
+  z-index: 5;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, .72);
+  color: #e8e8ea;
+  font: 11px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  pointer-events: none;
+  max-width: min(340px, 60vw);
+}
+
+.player__stats b {
+  display: inline-block;
+  min-width: 92px;
+  color: #8a8a94;
+  font-weight: 500;
+}
+
+/* The bar hides with the rest of the chrome; the stats should not. */
+.player.is-idle .player__stats { opacity: .85; }
+
+/*
  * Chapter boundaries, drawn on the track itself rather than as a separate
  * strip: they are positions in the film, so they belong on the thing that
  * represents the film. Sits under the knob and the preview card, and never

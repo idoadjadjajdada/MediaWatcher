@@ -305,6 +305,17 @@ and an end-of-episode timer beats the auto-advance rather than racing it.
 The timer survives an episode change — setting "stop in 30 minutes" and then
 letting the next episode start is exactly when cancelling it would be wrong.
 
+### Playback stats
+
+`i`, or Diagnostics in the playback menu, overlays what is actually happening
+to the stream: which delivery path it took, whether a cap applied, the source
+and output resolutions, buffer ahead, dropped frames, and the HLS session id.
+
+It exists because working out those exact numbers from the outside is slow.
+When something looks wrong — a stall, a soft picture, a stream that will not
+start — this answers "what is it actually doing" in one glance, and the session
+id is what to grep the server log for.
+
 ### Remote quality
 
 Playback over the tunnel is capped, because the constraint is the *client's*

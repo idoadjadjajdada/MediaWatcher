@@ -728,6 +728,8 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
         <div class="player__ep-list" id="ep-list"></div>
       </aside>
 
+      <div class="player__stats" id="player-stats" hidden aria-live="off"></div>
+
       <div class="player__controls">
         <div class="player__scrub" id="scrub">
           <input class="range" id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">

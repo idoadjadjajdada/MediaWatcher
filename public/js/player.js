@@ -807,6 +807,71 @@ function checkSleepTimer() {
   toast('info', 'Sleep timer', 'Playback stopped. Sleep well.');
 }
 
+/**
+ * What is actually happening to this stream.
+ *
+ * Written because a whole session was spent guessing at exactly these numbers:
+ * which delivery path a file took, whether a cap applied, how much buffer there
+ * was, and which encoder session the player was talking to. Reading them off
+ * the screen is faster than reading them out of a log.
+ */
+function renderStats() {
+  const panel = el('player-stats');
+  if (!panel || panel.hidden || !ctx) return;
+
+  const video = ctx.video;
+  const info = ctx.info || {};
+
+  const buffered = video.buffered.length
+    ? Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime)
+    : 0;
+
+  // Not implemented everywhere; absent is better than a wrong number.
+  const q = typeof video.getVideoPlaybackQuality === 'function'
+    ? video.getVideoPlaybackQuality()
+    : null;
+
+  const source = info.video
+    ? `${info.video.width}x${info.video.height} ${String(info.video.codec || '').toUpperCase()}`
+    : 'unknown';
+
+  const rows = [
+    ['delivery', info.hls ? 'hls' : (info.mode || 'direct')],
+    ['quality', `${info.quality || 'original'}${info.tonemapped ? ' · hdr→sdr' : ''}`],
+    ['origin', info.origin || '—'],
+    ['source', source],
+    ['output', video.videoWidth ? `${video.videoWidth}x${video.videoHeight}` : '—'],
+    ['buffer', `${buffered.toFixed(1)}s`],
+    ['position', `${formatTime(position())} / ${formatTime(duration())}`]
+  ];
+
+  if (q) rows.push(['frames', `${q.droppedVideoFrames} dropped of ${q.totalVideoFrames}`]);
+  if (info.hls_session) rows.push(['session', info.hls_session.slice(0, 12)]);
+  if (ctx.sleep) rows.push(['sleep', timerLabel(ctx.sleep, Date.now())]);
+
+  panel.innerHTML = rows
+    .map(([label, value]) => `<div><b>${label}</b>${esc(String(value))}</div>`)
+    .join('');
+}
+
+/** Show or hide the stats panel. */
+export function toggleStats() {
+  const panel = el('player-stats');
+  if (!panel || !ctx) return;
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) renderStats();
+  buildMenu();
+}
+
+function buildStatsSection() {
+  const shown = el('player-stats') && !el('player-stats').hidden;
+  return `
+    <div class="player__menu-label">Diagnostics</div>
+    <button class="player__menu-item${shown ? ' is-active' : ''}" data-action="toggle-stats">
+      Playback stats
+    </button>`;
+}
+
 function buildSleepSection() {
   const active = ctx.sleep?.optionId || 'off';
   return `
@@ -827,7 +892,8 @@ function buildSpeedPopover() {
     <div class="player__menu-label">Quality</div>
     ${QUALITY_LABELS.map(([value, label]) => `
       <button class="player__menu-item${quality === value ? ' is-active' : ''}" data-action="set-quality" data-quality="${value}">${label}</button>`).join('')}
-    ${buildSleepSection()}`;
+    ${buildSleepSection()}
+    ${buildStatsSection()}`;
   const rate = el('rate-btn');
   if (rate) rate.innerHTML = `${ctx.speed}&times;`;
 }
@@ -1573,7 +1639,10 @@ function attach() {
    * One second is plenty for a timer measured in minutes, and it means the
    * end-of-episode case is caught even though the media element has gone quiet.
    */
-  ctx.sleepTimer = setInterval(checkSleepTimer, 1000);
+  ctx.sleepTimer = setInterval(() => {
+    checkSleepTimer();
+    renderStats();
+  }, 1000);
 
   ctx.hlsTimer = setInterval(() => {
     if (ctx?.info?.hls_session) api.touchHlsSession(ctx.info.hls_session).catch(() => {});
@@ -1719,6 +1788,8 @@ function onKeyDown(event) {
       event.preventDefault(); jumpChapter(1); break;
     case 'f': case 'F':
       toggleFullscreen(); break;
+    case 'i': case 'I':
+      event.preventDefault(); toggleStats(); break;
     case 'n': case 'N':
       if (ctx.located?.type === 'episode') playNextImmediate(); break;
     case 'Escape':
@@ -1755,7 +1826,8 @@ function playNextImmediate() {
 
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
-  skip, setSubtitle, setSpeed, setQuality, setAudioTrack, jumpChapter, seekChapter, setSleepTimer,
+  skip, setSubtitle, setSpeed, setQuality, setAudioTrack, jumpChapter, seekChapter,
+  setSleepTimer, toggleStats,
   togglePopover, closePopovers, setPicture,
   playNext, cancelNext
 };

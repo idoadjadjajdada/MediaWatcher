@@ -424,6 +424,7 @@ const ACTIONS = {
   'set-audio-track': (el) => player.setAudioTrack(el.dataset.index),
   'seek-chapter': (el) => player.seekChapter(el.dataset.start),
   'set-sleep': (el) => player.setSleepTimer(el.dataset.sleep),
+  'toggle-stats': () => player.toggleStats(),
   'prev-episode': () => player.playPrevious(),
   'next-episode': () => player.playNextEpisode(),
   'audio-nudge': (el) => player.nudgeAudioOffset(Number(el.dataset.delta)),
