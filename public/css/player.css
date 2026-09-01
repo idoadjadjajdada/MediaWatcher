@@ -49,6 +49,61 @@ html.is-player-open body { overflow: hidden; }
 /* The bar hides with the rest of the chrome; the stats should not. */
 .player.is-idle .player__stats { opacity: .85; }
 
+/*
+ * Resume card. Centred and blocking on purpose - it exists because jumping
+ * straight into the middle of something with no explanation is disorienting,
+ * so it has to be seen before playback starts.
+ */
+.player__resume {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  text-align: center;
+  background: rgba(0, 0, 0, .55);
+  backdrop-filter: blur(3px);
+}
+
+.player__resume-label { color: #b9b9c2; font-size: 13px; }
+.player__resume-time { font-size: 30px; font-weight: 700; }
+.player__resume-actions { display: flex; gap: 10px; margin-top: 14px; justify-content: center; }
+
+.player__shortcuts {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  min-width: 300px;
+  max-width: min(420px, 88vw);
+  max-height: 78vh;
+  overflow: auto;
+  padding: 16px 18px;
+  border-radius: 12px;
+  background: rgba(14, 14, 17, .95);
+  border: 1px solid var(--border, #26262c);
+}
+
+.player__shortcuts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.player__shortcuts-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.player__shortcuts-list dt { color: #8a8a94; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.player__shortcuts-list dd { margin: 0; }
+
 .player__top, .player__controls { transition: opacity var(--state), transform var(--state); }
 .player.is-idle .player__top { opacity: 0; transform: translateY(-8px); pointer-events: none; }
 .player.is-idle .player__controls { opacity: 0; transform: translateY(8px); pointer-events: none; }

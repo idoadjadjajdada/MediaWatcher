@@ -285,6 +285,21 @@ that point, so the first segment after a jump takes a few seconds — and on 4K
 HDR, where the seek also pays for a tone map, measurably longer. Files that play
 `direct` or from the MP4 cache seek instantly, because those are real files.
 
+### On a phone
+
+The lock screen and Control Centre show the poster, the episode title and
+working transport controls, including next and previous episode for a show.
+
+**AirPlay** appears as a button in the control bar once Safari reports a
+receiver on the network. It works because everything needing ffmpeg is HLS —
+AirPlay will not accept an arbitrary progressive stream.
+
+### Resuming
+
+A saved position is offered, not taken: opening something you were part way
+through shows where you got to, with Resume and Start over. Playback waits for
+the answer rather than dropping you into the middle of a scene.
+
 ### Playback stats
 
 `i`, or Diagnostics in the playback menu, overlays what is actually happening

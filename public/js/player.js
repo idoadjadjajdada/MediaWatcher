@@ -21,6 +21,7 @@ import { renderPlayer, toast, formatTime, esc, playIcon, pauseIcon, icon, episod
 import { clampPicture, pictureFilter, loadPicture, savePicture, PICTURE_MIN, PICTURE_MAX } from './picture.js';
 import { previewFraction, cardLeft, frameIndex } from './preview.js';
 import { attachHls } from './hls-player.js';
+import * as mediaSession from './media-session.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -304,7 +305,21 @@ async function openInner(filePath) {
   // Deliberately not awaited: opening the player must never wait on ffmpeg.
   loadThumbMeta();
   attach();
-  load(resumeAt, { autoplay: true });
+
+  /*
+   * A saved position is offered rather than taken. Dropping someone into the
+   * middle of something with no explanation is disorienting, and "start over"
+   * used to mean scrubbing all the way back by hand.
+   */
+  if (resumeAt > RESUME_MIN) {
+    ctx.pendingResume = resumeAt;
+    el('resume-time').textContent = formatTime(resumeAt);
+    el('resume-card').hidden = false;
+    load(resumeAt, { autoplay: false });
+    markIdle();
+  } else {
+    load(resumeAt, { autoplay: true });
+  }
 
   /*
    * The stream URL is fetched in parallel with the saved progress, so it cannot
@@ -342,6 +357,7 @@ export async function close({ save = true, keepPage = false } = {}) {
    * Dropping the src stopped the old pipe's ffmpeg because the response closed.
    * An HLS encoder outlives the request that started it, so it has to be told.
    */
+  mediaSession.clearSession();
   endHlsSession();
   detachHls();
   ctx.video.removeAttribute('src');
@@ -791,6 +807,76 @@ function renderStats() {
   panel.innerHTML = rows
     .map(([label, value]) => `<div><b>${label}</b>${esc(String(value))}</div>`)
     .join('');
+}
+
+/** Take the offered resume point, or start from the beginning instead. */
+export function answerResume(choice) {
+  if (!ctx) return;
+  const card = el('resume-card');
+  if (card) card.hidden = true;
+
+  const at = choice === 'restart' ? 0 : (ctx.pendingResume || 0);
+  ctx.pendingResume = null;
+
+  seekTo(at);
+  ctx.video.play().catch(() => {});
+  markIdle();
+}
+
+/**
+ * Hand the stream to an Apple TV.
+ *
+ * Only reachable on Safari, and only once the platform has told us a target
+ * exists — the button stays hidden otherwise rather than offering something
+ * that would do nothing.
+ */
+export function showAirplayPicker() {
+  const video = ctx?.video;
+  if (typeof video?.webkitShowPlaybackTargetPicker !== 'function') return;
+  video.webkitShowPlaybackTargetPicker();
+}
+
+/**
+ * Tell the platform what is playing and which controls to offer.
+ *
+ * Re-published on every episode change, because the lock screen would
+ * otherwise keep showing the previous episode's title and poster.
+ */
+function publishNowPlaying() {
+  if (!ctx) return;
+
+  const located = ctx.located;
+  const isEpisode = located?.type === 'episode';
+
+  mediaSession.publishMetadata({
+    title: isEpisode
+      ? (located.episode?.title || `Episode ${located.episode?.episode_number ?? ''}`)
+      : (located?.item?.title || 'MediaWatcher'),
+    subtitle: isEpisode
+      ? `${located.item?.title || ''}${episodeTag(located.season, located.episode?.episode_number) ? ` · ${episodeTag(located.season, located.episode?.episode_number)}` : ''}`
+      : (located?.item?.year ? String(located.item.year) : ''),
+    poster: located?.item?.poster || null
+  });
+
+  mediaSession.publishHandlers({
+    play: () => { ctx?.video.play().catch(() => {}); },
+    pause: () => { ctx?.video.pause(); },
+    seekbackward: () => skip(-SKIP_SECONDS),
+    seekforward: () => skip(SKIP_SECONDS),
+    seekto: (details) => {
+      if (Number.isFinite(details?.seekTime)) seekTo(details.seekTime);
+    },
+    previoustrack: isEpisode ? () => playPrevious() : null,
+    nexttrack: isEpisode ? () => playNextEpisode() : null
+  });
+}
+
+/** Show or hide the keyboard shortcut list. */
+export function toggleShortcuts() {
+  const card = el('shortcuts-card');
+  if (!card) return;
+  card.hidden = !card.hidden;
+  if (!card.hidden) markIdle();
 }
 
 /** Show or hide the stats panel. */
@@ -1291,11 +1377,32 @@ function attach() {
 
   video.addEventListener('timeupdate', tick);
   video.addEventListener('durationchange', tick);
-  video.addEventListener('play', () => { tick(); markIdle(); });
-  video.addEventListener('pause', () => { tick(); node.classList.remove('is-idle'); });
+  video.addEventListener('play', () => {
+    tick();
+    markIdle();
+    mediaSession.publishPlaybackState('playing');
+  });
+  video.addEventListener('pause', () => {
+    tick();
+    node.classList.remove('is-idle');
+    mediaSession.publishPlaybackState('paused');
+  });
+  // The lock-screen scrubber drifts unless it is told where we are.
+  video.addEventListener('timeupdate', () => {
+    mediaSession.publishPosition({
+      duration: duration(),
+      position: position(),
+      playbackRate: video.playbackRate
+    });
+  });
   video.addEventListener('volumechange', setVolumeUi);
   video.addEventListener('waiting', () => node.classList.add('is-buffering'));
-  video.addEventListener('playing', () => node.classList.remove('is-buffering'));
+  video.addEventListener('playing', () => {
+    node.classList.remove('is-buffering');
+    // Playing again means the last failure is behind us; give a later one its
+    // own full budget rather than counting them across a whole sitting.
+    if (ctx) ctx.recoveryAttempts = 0;
+  });
   video.addEventListener('canplay', () => node.classList.remove('is-buffering'));
   video.addEventListener('ended', onEnded);
   video.addEventListener('error', onError);
@@ -1499,6 +1606,20 @@ function attach() {
   // Stats are a once-a-second job; nothing else needs this cadence.
   ctx.statsTimer = setInterval(renderStats, 1000);
 
+  publishNowPlaying();
+
+  /*
+   * The AirPlay button only appears once the platform says a receiver is
+   * actually reachable. Showing it unconditionally would offer an action that
+   * silently does nothing on every non-Safari browser.
+   */
+  if (typeof video.webkitShowPlaybackTargetPicker === 'function') {
+    video.addEventListener('webkitplaybacktargetavailabilitychanged', (event) => {
+      const button = el('airplay-btn');
+      if (button) button.hidden = event.availability !== 'available';
+    });
+  }
+
   ctx.hlsTimer = setInterval(() => {
     if (ctx?.info?.hls_session) api.touchHlsSession(ctx.info.hls_session).catch(() => {});
   }, 20000);
@@ -1530,8 +1651,32 @@ const MEDIA_ERROR_DETAIL = {
   4: 'This device refused the stream format.'
 };
 
+/**
+ * How many times a stream may be rebuilt before the error is shown.
+ *
+ * A transient decode or segment failure is common on a stream produced live by
+ * an encoder that may have just restarted; surfacing that as a dead player is
+ * wrong. A file that is genuinely broken fails the same way every time, so the
+ * attempts are bounded and the error still arrives.
+ */
+const MAX_RECOVERY_ATTEMPTS = 2;
+
 function onError() {
   if (!ctx) return;
+
+  const recoverable = ctx.video?.error?.code === 2 || ctx.video?.error?.code === 3;
+  if (recoverable && (ctx.recoveryAttempts || 0) < MAX_RECOVERY_ATTEMPTS) {
+    ctx.recoveryAttempts = (ctx.recoveryAttempts || 0) + 1;
+    const at = position();
+    const wasPlaying = !ctx.video.paused;
+
+    toast('info', 'Reconnecting', 'The stream dropped; picking it back up.');
+    detachHls();
+    ctx.video.removeAttribute('src');
+    load(at, { autoplay: wasPlaying });
+    return;
+  }
+
   const code = ctx.video?.error?.code ?? 0;
   const mode = ctx.info?.mode || 'direct';
   const quality = api.getQuality();
@@ -1628,13 +1773,16 @@ function onKeyDown(event) {
       toggleFullscreen(); break;
     case 'i': case 'I':
       event.preventDefault(); toggleStats(); break;
+    case '?':
+      event.preventDefault(); toggleShortcuts(); break;
     case 'n': case 'N':
       if (ctx.located?.type === 'episode') playNextImmediate(); break;
     case 'Escape':
       // Peel one layer at a time: sidebar, then popovers, then fullscreen,
       // then the player itself. Closing everything at once would make Escape
       // unusable for dismissing a panel you opened by mistake.
-      if (!el('ep-panel')?.hidden) closeEpisodes();
+      if (!el('shortcuts-card')?.hidden) toggleShortcuts();
+      else if (!el('ep-panel')?.hidden) closeEpisodes();
       else if (POPOVERS.some((name) => el(`popover-${name}`) && !el(`popover-${name}`).hidden)) closePopovers();
       else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       else close({ save: true });
@@ -1665,6 +1813,7 @@ function playNextImmediate() {
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
   skip, setSubtitle, setSpeed, setQuality, setAudioTrack, toggleStats,
+  answerResume, toggleShortcuts, showAirplayPicker,
   togglePopover, closePopovers, setPicture,
   playNext, cancelNext
 };

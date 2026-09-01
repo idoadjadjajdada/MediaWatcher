@@ -51,6 +51,8 @@ const ICONS = {
   warning: '<path d="M12 4 2 20h20z"/><path d="M12 10v4M12 17h.01"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   trash: '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/>',
+  // A screen with an upward arrow: sending this picture somewhere else.
+  airplay: '<path d="M5 17H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1"/><path d="M12 15l5 6H7l5-6z" fill="currentColor" stroke="none"/>',
   inbox: '<path d="M3 12h5l2 3h4l2-3h5"/><path d="M5 5h14l2 7v7H3v-7z"/>'
 };
 
@@ -687,7 +689,12 @@ function renderSeason(show, season, open) {
 export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
   return `
     <div class="player" id="player" tabindex="-1">
-      <video class="player__video" id="player-video" playsinline></video>
+      <!--
+        x-webkit-airplay lets Safari offer the stream to an Apple TV. It only
+        works because everything that needs ffmpeg is HLS now; AirPlay will not
+        take an arbitrary progressive stream.
+      -->
+      <video class="player__video" id="player-video" playsinline x-webkit-airplay="allow"></video>
 
       <div class="player__touch" id="player-touch" aria-hidden="true">
         <div class="player__ripple player__ripple--l" id="ripple-l"><span>-10s</span></div>
@@ -695,6 +702,35 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
       </div>
 
       <div class="player__spinner"><div class="spinner spinner--lg"></div></div>
+
+      <!-- Shown instead of silently jumping to a saved position. -->
+      <div class="player__resume" id="resume-card" hidden>
+        <div class="player__resume-label">You were watching this</div>
+        <div class="player__resume-time t-num" id="resume-time">0:00</div>
+        <div class="player__resume-actions">
+          <button class="btn btn--primary" data-action="resume-play" id="resume-btn">Resume</button>
+          <button class="btn btn--ghost" data-action="resume-restart">Start over</button>
+        </div>
+      </div>
+
+      <div class="player__shortcuts" id="shortcuts-card" hidden>
+        <div class="player__shortcuts-head">
+          <strong>Keyboard shortcuts</strong>
+          <button class="player__btn" data-action="toggle-shortcuts" aria-label="Close">${icon('close', 'icon')}</button>
+        </div>
+        <dl class="player__shortcuts-list">
+          <dt>Space / K</dt><dd>Play or pause</dd>
+          <dt>&larr; &rarr;</dt><dd>Skip 10 seconds</dd>
+          <dt>&uarr; &darr;</dt><dd>Volume</dd>
+          <dt>M</dt><dd>Mute</dd>
+          <dt>F</dt><dd>Fullscreen</dd>
+          <dt>N</dt><dd>Next episode</dd>
+          <dt>[ ]</dt><dd>Audio delay</dd>
+          <dt>I</dt><dd>Playback stats</dd>
+          <dt>?</dt><dd>This list</dd>
+          <dt>Esc</dt><dd>Back out one layer</dd>
+        </dl>
+      </div>
 
       <div class="player__top">
         <button class="player__btn" data-action="close-player" aria-label="Back">${icon('back', 'icon-lg')}</button>
@@ -780,6 +816,8 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
                 aria-label="Picture" title="Brightness and contrast">${icon('brightness', 'icon')}</button>
               <div class="player__pop-panel" id="popover-picture" hidden></div>
             </div>
+            <button class="player__btn" data-action="airplay" id="airplay-btn"
+              aria-label="AirPlay" title="AirPlay" hidden>${icon('airplay', 'icon')}</button>
             <button class="player__btn" data-action="toggle-fullscreen" aria-label="Fullscreen">${icon('fullscreen', 'icon')}</button>
           </div>
         </div>
