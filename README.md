@@ -316,6 +316,47 @@ A learned marker always beats a detected one: someone actually skipping is
 better evidence than two episodes sounding alike. `DELETE /api/intro` forgets a
 season if it ever gets it wrong.
 
+### Subtitles
+
+The player lists whatever a file already has: `.srt`, `.vtt` and `.ass` sidecars
+beside it first, then the text tracks inside the container. Image-based
+subtitles (PGS, VobSub) are not listed at all — they are pictures, and a browser
+cannot draw them without OCR or burning them into the video.
+
+**ASS and SSA** are parsed and drawn into an overlay rather than converted to
+WebVTT, because converting throws away the positioning: signs and translation
+notes end up stacked at the bottom in the dialogue font. Styles, per-event
+margins, alignment, `\pos`, and the usual inline tags are honoured. Karaoke,
+animated transforms, vector drawings and clipping are ignored — a half-drawn
+transform looks broken, where the line without it just looks plain.
+
+**Appearance** lives in the subtitles menu: size, background opacity, height off
+the bottom edge, and a colour. Global rather than per-file, like brightness —
+how big subtitles need to be is a property of the screen you are sitting in
+front of. Height cannot go through CSS (`::cue` has no say over where a cue
+sits), so it is applied to each cue directly.
+
+**Downloading** needs an OpenSubtitles account. Set all three of
+`OPENSUBTITLES_API_KEY`, `OPENSUBTITLES_USERNAME` and `OPENSUBTITLES_PASSWORD`:
+the key alone can search, but the download endpoint also wants a token that only
+a login can mint, so with a key and no account the feature stays hidden. Once
+configured, the player menu fetches one for what is playing, and each season in
+a show's detail page gets a **Subtitles** button that fetches one per episode.
+
+Matching prefers a subtitle cut for the same release over a more popular one for
+a different rip — a subtitle for the wrong rip is out of sync from the first
+line. Machine and AI translations are pushed down rather than filtered out.
+Downloads land as `<video name>.<lang>.srt` next to the file, which is the same
+shape the sidecar discovery above already looks for, so nothing else changes.
+Episodes that already have a subtitle are skipped, so re-running a season costs
+none of the account's daily allowance.
+
+**Your audio and subtitle choice is remembered per show.** Pick the track once
+and the rest of the season opens that way, including a deliberate "off". What is
+stored is the language and where the track came from, never a stream index:
+numbering belongs to the file, so one release muxing the commentary second and
+the next muxing it fifth would otherwise start episode two on the commentary.
+
 ### Resuming
 
 A saved position is offered, not taken: opening something you were part way

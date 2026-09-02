@@ -13,13 +13,14 @@ Effort: **S** an afternoon, **M** a day, **L** its own spec and plan.
 
 **Removals** — sleep timer out; chapters reduced to Skip Intro only.
 
-**Player** — Skip Intro (learned) · Subtitle appearance · Subtitle download ·
-Remember audio + subtitle choice per show · Resume prompt · Shortcut overlay
+**Player** — ~~Skip Intro (learned)~~ · ~~Subtitle appearance~~ ·
+~~Subtitle download~~ · ~~Remember audio + subtitle choice per show~~ ·
+~~Resume prompt~~ · ~~Shortcut overlay~~  ← all built
 
 **Mobile** — Lock-screen controls · Install to home screen (PWA) · AirPlay ·
 Save for offline
 
-**Library** — Missing episodes · Storage view · Bulk subtitle fetch
+**Library** — Missing episodes · Storage view · ~~Bulk subtitle fetch~~
 
 **Launcher** — Tailscale panel · Cache management · Run as a Windows service
 (replaces "Start with Windows") · Auto-restart on crash · Download
@@ -73,8 +74,8 @@ and every download is still manual, one title at a time.
 - [ ] **Burn in image subtitles** — your MKVs carry PGS subtitles, which are
       pictures, not text. A browser cannot display them at all, so they are
       currently invisible; burning them into the video is the only way. **M**
-- [x] **Styled ASS/SSA rendering** — positioned and styled subtitles rendered
-      properly instead of flattened to plain text. **M**
+- [x] ~~**Styled ASS/SSA rendering**~~ — built. Positioned and styled subtitles
+      are drawn in an overlay instead of flattened to plain text. **M**
 - [ ] **Forced subtitles automatically** — the ones for foreign dialogue in an
       otherwise English film. The probe already flags them. **S**
 - [ ] **Subtitle text search** — search the dialogue and jump to the line.
