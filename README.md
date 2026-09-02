@@ -386,6 +386,51 @@ stored is the language and where the track came from, never a stream index:
 numbering belongs to the file, so one release muxing the commentary second and
 the next muxing it fifth would otherwise start episode two on the commentary.
 
+### Ahead-of-time conversion
+
+Playing an MKV that no browser can decode means tone-mapping and encoding it
+first, which is what makes the opening seconds slow. Anything downloaded from
+now on is converted and thumbnailed automatically when it lands — on background
+ffmpeg slots, one file at a time, always yielding to whatever is playing.
+
+A library that already exists never went through that, so **Settings →
+Performance → Convert library ahead of time** is the catch-up. It is safe to
+start and walk away from.
+
+**HDR is passed through** to displays that can show it. Tone mapping is right
+for an ordinary screen — a browser renders a PQ stream as if the curve were
+plain gamma, so it looks washed out and too bright — but on an HDR display it
+throws away the range the file was made for and charges a full re-encode. The
+client reports its display range; anything that cannot say is treated as SDR.
+Passthrough also needs the client to decode the codec, since HDR is almost
+always HEVC and a re-encode cannot preserve it.
+
+**Quality steps down** when the connection cannot keep up, and back up when it
+settles. Not a multi-rendition ladder: every stream here is encoded on demand,
+so three renditions would mean three encoders per viewer. Picking a level by
+hand turns it off.
+
+### Downloads queue
+
+Jobs run in an order you control. Reorder with the arrows, pause one without
+cancelling it, retry one that failed. Pausing an active transfer aborts it and
+discards the partial file — AllDebrid issues a fresh link each time, so there
+is no resume-from-offset and a resumed download restarts — but the job keeps
+its place in the queue.
+
+### The launcher
+
+Beyond starting and stopping the server:
+
+- **Restart if it crashes**, backing off each time and giving up after five
+  failures in a row, so the error that caused them stays readable.
+- **Throughput** while downloads run, derived from progress rather than from
+  the socket — the launcher polls an API for a percentage and never sees bytes.
+- **Notifications** when a download finishes or fails, whichever tab is open.
+- **System tab**: Tailscale status with a start/stop toggle and a QR code to
+  point a phone at, cache sizes with sweep and clear, and installing the server
+  as a Windows service. Installing needs administrator rights.
+
 ### Resuming
 
 A saved position is offered, not taken: opening something you were part way
