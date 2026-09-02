@@ -457,6 +457,39 @@ const ACTIONS = {
 };
 
 /**
+ * Work out what a show is missing, once per show per session.
+ *
+ * Only for shows that are actually in the library — a discovery result has no
+ * seasons to compare against — and only once, because the answer costs a TMDB
+ * season lookup per season and does not change while you are looking at it.
+ * A failure is silent: the season list is perfectly usable without it.
+ */
+async function loadMissingFor(item) {
+  const tmdbId = item?.tmdb_id;
+  if (!tmdbId || !Array.isArray(item.seasons) || item.seasons.length === 0) return;
+  if (state.missing[tmdbId]) return;
+
+  try {
+    const report = await api.getMissingEpisodes(tmdbId);
+    const show = (report.shows || [])[0];
+    if (!show) return;
+
+    setState({ missing: { ...state.missing, [tmdbId]: show } });
+
+    /*
+     * The modal is drawn once, when currentItem changes, and this answer
+     * arrives seconds later — so setState alone repaints the page behind the
+     * modal and leaves the modal itself showing the season list without its
+     * gaps. It has to be told, and only if it is still showing this title:
+     * the report can land after someone has closed it or opened another.
+     */
+    if (state.currentItem?.tmdb_id === tmdbId) views.renderDetailModal(state.currentItem);
+  } catch {
+    // The gaps are an extra; the episode list above them still works.
+  }
+}
+
+/**
  * Download one subtitle per episode of a season.
  *
  * The request is sequential on the server and can take a minute over a long
@@ -718,6 +751,7 @@ function onStateChange() {
   if (state.currentItem !== previousItem) {
     previousItem = state.currentItem;
     views.renderDetailModal(state.currentItem);
+    loadMissingFor(state.currentItem);
   }
 
   if (state.currentPage !== previousPage) {

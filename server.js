@@ -20,6 +20,7 @@ import hlsRouter from './routes/hls.js';
 import introRouter from './routes/intro.js';
 import trackPrefsRouter from './routes/trackPrefs.js';
 import diagnosticsRouter from './routes/diagnostics.js';
+import libraryRouter from './routes/library.js';
 import mediaRouter from './routes/media.js';
 import discoverRouter from './routes/discover.js';
 import torrentsRouter from './routes/torrents.js';
@@ -162,6 +163,7 @@ app.use('/api/hls', hlsRouter);
 app.use('/api/intro', introRouter);
 app.use('/api/track-prefs', trackPrefsRouter);
 app.use('/api/diagnostics', diagnosticsRouter);
+app.use('/api/library', libraryRouter);
 
 /* --------------------------------------------------------------------------
  * Fallbacks

@@ -211,6 +211,47 @@ function renderLogins() {
     </section>`;
 }
 
+/**
+ * Where the space went, biggest first.
+ *
+ * By title rather than by folder: the organiser decides the folder layout, so
+ * a per-directory breakdown answers a question about the organiser, while what
+ * you actually want to know is what to delete. Shows also carry a per-episode
+ * figure, because the total only tells you a show is long.
+ */
+function renderStorage() {
+  const storage = state.settings?.storage;
+  if (!storage) return '<section class="settings__group"><h2 class="settings__heading">Storage</h2><div class="settings__loading">Loading…</div></section>';
+
+  const widest = storage.titles[0]?.bytes || 1;
+
+  return `
+    <section class="settings__group">
+      <h2 class="settings__heading">Storage</h2>
+      <div class="facts">
+        <div class="fact"><dt>Everything</dt><dd class="t-num">${esc(formatBytes(storage.totalBytes))}</dd></div>
+        <div class="fact"><dt>Movies</dt><dd class="t-num">${esc(formatBytes(storage.movieBytes))}</dd></div>
+        <div class="fact"><dt>Shows</dt><dd class="t-num">${esc(formatBytes(storage.showBytes))}</dd></div>
+      </div>
+      ${storage.titles.length === 0 ? '<div class="settings__empty">Nothing scanned yet.</div>' : `
+      <div class="bars">
+        ${storage.titles.slice(0, 20).map((title) => `
+          <div class="bar">
+            <div class="bar__head">
+              <span class="bar__title">${esc(title.title)}</span>
+              <span class="bar__size t-num">${esc(formatBytes(title.bytes))}</span>
+            </div>
+            <div class="bar__track"><span class="bar__fill" style="width:${Math.max(1, (title.bytes / widest) * 100).toFixed(1)}%"></span></div>
+            <div class="bar__meta">
+              ${title.type === 'show'
+    ? `${title.episodes} episodes across ${title.seasons} season${title.seasons === 1 ? '' : 's'} · ${esc(formatBytes(title.bytesPerEpisode))} each`
+    : `${title.files} file${title.files === 1 ? '' : 's'}${title.year ? ` · ${title.year}` : ''}`}
+            </div>
+          </div>`).join('')}
+      </div>`}
+    </section>`;
+}
+
 function renderDiagnostics() {
   const d = state.settings?.diagnostics;
   if (!d) return '<section class="settings__group"><h2 class="settings__heading">Diagnostics</h2><div class="settings__loading">Loading…</div></section>';
@@ -272,6 +313,7 @@ export function renderSettings() {
       </header>
       ${renderPlayback(prefs)}
       ${renderAppearance(subtitle, picture)}
+      ${renderStorage()}
       ${renderDevices()}
       ${renderLogins()}
       ${renderDiagnostics()}
@@ -286,12 +328,13 @@ export function renderSettings() {
  * their own data arrives rather than blocking the whole page.
  */
 export async function loadSettings() {
-  const [devices, logins, diagnostics] = await Promise.all([
+  const [devices, logins, diagnostics, storage] = await Promise.all([
     api.getDevices().catch(() => []),
     api.getLoginHistory().catch(() => []),
-    api.getDiagnostics().catch(() => null)
+    api.getDiagnostics().catch(() => null),
+    api.getStorage().catch(() => null)
   ]);
-  setState({ settings: { devices, logins, diagnostics } });
+  setState({ settings: { devices, logins, diagnostics, storage } });
 }
 
 /* --------------------------------------------------------------------------

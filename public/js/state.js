@@ -43,7 +43,10 @@ export const state = {
   subtitles: null,
   // Devices, login history and diagnostics for the settings page. Each part
   // arrives independently, so null means "not asked yet" rather than "empty".
-  settings: { devices: null, logins: null, diagnostics: null },
+  settings: { devices: null, logins: null, diagnostics: null, storage: null },
+  // Gaps per show, keyed by tmdb id. Fetched when a show's detail modal opens,
+  // because working it out costs a TMDB season lookup per season.
+  missing: {},
 
   // UI bookkeeping
   loading: true,

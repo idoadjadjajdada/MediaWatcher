@@ -43,6 +43,7 @@ const SUITES = [
   { file: 'ass.test.mjs' },
   { file: 'track-prefs.test.mjs' },
   { file: 'settings.test.mjs' },
+  { file: 'missing.test.mjs' },
   { file: 'hls-playlist.test.mjs' },
   { file: 'hls-session.test.mjs' },
   { file: 'discover.test.mjs' },

@@ -655,6 +655,42 @@ export function renderDetailModal(item) {
     </div>`;
 }
 
+/**
+ * The gaps in a season, drawn under its episode list.
+ *
+ * Missing and unaired are kept visually apart because they are different
+ * facts: one is something to go and get, the other is something that does not
+ * exist yet. Collapsing them would make every currently-airing show look
+ * permanently incomplete, which is the fastest way to get the whole feature
+ * ignored.
+ */
+function renderMissing(show, season) {
+  const report = state.missing[show.tmdb_id];
+  if (!report) return '';
+
+  const entry = (report.seasons || []).find((s) => s.season === season.number);
+  if (!entry || (entry.missing.length === 0 && entry.unaired.length === 0)) return '';
+
+  const list = (episodes, className) => episodes.map((episode) => `
+    <li class="gap ${className}">
+      <span class="gap__num t-num">${episode.episode_number}</span>
+      <span class="gap__title">${esc(episode.title || 'Untitled')}</span>
+      ${episode.air_date ? `<span class="gap__date t-num">${esc(episode.air_date)}</span>` : ''}
+    </li>`).join('');
+
+  return `
+    <div class="gaps">
+      ${entry.missing.length > 0 ? `
+        <div class="gaps__label gaps__label--missing">
+          ${entry.missing.length} missing
+        </div>
+        <ul class="gaps__list">${list(entry.missing, 'gap--missing')}</ul>` : ''}
+      ${entry.unaired.length > 0 ? `
+        <div class="gaps__label">${entry.unaired.length} not aired yet</div>
+        <ul class="gaps__list">${list(entry.unaired, 'gap--unaired')}</ul>` : ''}
+    </div>`;
+}
+
 function renderSeason(show, season, open) {
   // The bulk fetch sits beside the toggle rather than inside it: a button
   // nested in a button is invalid, and clicking it would also collapse the
@@ -674,6 +710,7 @@ function renderSeason(show, season, open) {
           data-show="${show.tmdb_id}" data-season="${season.number}"
           title="Download subtitles for every episode of this season">Subtitles</button>` : ''}
       </div>
+      ${renderMissing(show, season)}
       <div class="season__episodes">
         ${season.episodes.map((episode) => {
     const file = (episode.files || [])[0];

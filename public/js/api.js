@@ -255,6 +255,22 @@ export const getLoginHistory = (limit = 100) => get(`/api/diagnostics/logins?${q
 /** Whether this install is actually healthy, and what it is using. */
 export const getDiagnostics = () => get('/api/diagnostics');
 
+/* --------------------------------------------------------------------------
+ * Library gaps and storage
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Episodes TMDB knows about that are not on disk.
+ *
+ * Costs a TMDB season lookup per season the first time; they are cached after
+ * that, so it is asked for per show on demand rather than for the whole
+ * library at boot.
+ */
+export const getMissingEpisodes = (show) => get(`/api/library/missing?${q({ show })}`);
+
+/** Where the space went, by title rather than by folder. */
+export const getStorage = () => get('/api/library/storage');
+
 export const thumbMetaUrl = (filePath) => `/api/thumbs/meta?${q({ path: filePath })}`;
 export const thumbUrl = (filePath, index) => `/api/thumbs?${q({ path: filePath, i: index })}`;
 
@@ -270,5 +286,6 @@ export default {
   thumbMetaUrl, thumbUrl, touchHlsSession, endHlsSession,
   getIntro, reportSkip, forgetIntro,
   getTrackPrefs, saveTrackPrefs, forgetTrackPrefs,
-  getDevices, revokeDevice, getLoginHistory, getDiagnostics
+  getDevices, revokeDevice, getLoginHistory, getDiagnostics,
+  getMissingEpisodes, getStorage
 };

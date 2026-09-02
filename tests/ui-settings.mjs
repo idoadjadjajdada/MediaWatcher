@@ -168,6 +168,65 @@ try {
   check('but leaves playback settings alone',
     (await page.evaluate(() => JSON.parse(localStorage.getItem('mw.device') || '{}').seekSeconds)) === 15);
 
+  console.log('\nstorage');
+  const bars = await page.$$eval('.bar__title', (nodes) => nodes.map((n) => n.textContent.trim()));
+  check('titles are listed by size', bars.length > 0, bars.slice(0, 3));
+  const sizes = await page.$$eval('.bar__size', (nodes) => nodes.map((n) => n.textContent.trim()));
+  check('each carries a size', sizes.length === bars.length && sizes.every((s) => /\d/.test(s)));
+  // Biggest first is the whole point — an unsorted list answers nothing.
+  const widths = await page.$$eval('.bar__fill', (nodes) => nodes.map((n) => parseFloat(n.style.width)));
+  check('the widest bar is first', widths.length > 1 ? widths[0] >= widths[1] : true, widths.slice(0, 3));
+  check('the largest bar fills the track', widths[0] === 100, widths[0]);
+  const everything = await page.$$eval('.fact', (nodes) => {
+    const row = nodes.find((n) => n.querySelector('dt')?.textContent.trim() === 'Everything');
+    return row?.querySelector('dd')?.textContent.trim() || '';
+  });
+  check('a library total is shown', /\d/.test(everything) && !everything.startsWith('0 B'), everything);
+
+  console.log('\nmissing episodes');
+  await page.goto(`${BASE}/#shows`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.card', { timeout: 20000 });
+  // Open shows until one with a gap turns up. Working the gaps out costs a
+  // TMDB season lookup per season on the first open, hence the long wait.
+  let foundGaps = false;
+  // Re-queried by index each pass rather than held: opening and closing the
+  // modal re-renders the page, which detaches any handle taken beforehand.
+  const cardCount = await page.$$eval('.card', (nodes) => nodes.length);
+  for (let i = 0; i < cardCount; i += 1) {
+    await page.waitForSelector('.card', { timeout: 10000 });
+    const card = (await page.$$('.card'))[i];
+    if (!card) break;
+    await card.click();
+    await page.waitForSelector('.modal', { timeout: 10000 });
+    await page.waitForSelector('.gaps__label--missing', { timeout: 15000 })
+      .then(() => { foundGaps = true; })
+      .catch(() => {});
+    if (foundGaps) break;
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+  }
+  check('a show with gaps reports them', foundGaps);
+
+  if (foundGaps) {
+    // A collapsed season must not spill its gap list out under the header.
+    const closedDisplay = await page.evaluate(() => {
+      const closed = Array.from(document.querySelectorAll('.season'))
+        .find((s) => !s.classList.contains('is-open') && s.querySelector('.gaps'));
+      return closed ? getComputedStyle(closed.querySelector('.gaps')).display : null;
+    });
+    check('a collapsed season hides its gaps', closedDisplay === null || closedDisplay === 'none', closedDisplay);
+
+    const gapText = await page.$eval('.gaps__label--missing', (n) => n.textContent.trim());
+    check('the count reads as missing', /\d+ missing/.test(gapText), gapText);
+    const numbers = await page.$$eval('.gap--missing .gap__num', (nodes) => nodes.map((n) => Number(n.textContent)));
+    check('each missing episode is listed by number', numbers.length > 0 && numbers.every(Number.isInteger), numbers);
+    check('and they are in order', numbers.every((n, i) => i === 0 || numbers[i - 1] < n), numbers);
+    // Unaired must never be folded into the missing count.
+    const unairedInMissing = await page.$$eval('.gap--missing', (nodes) => nodes.length);
+    check('unaired episodes are not counted as missing',
+      unairedInMissing === Number(gapText.match(/(\d+)/)[1]), { unairedInMissing, gapText });
+  }
+
   console.log('\nlayout');
   const overflow = await page.evaluate(() =>
     document.documentElement.scrollWidth - document.documentElement.clientWidth);

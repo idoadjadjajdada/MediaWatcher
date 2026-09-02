@@ -321,3 +321,27 @@
 @media (max-width: 767px) {
   .episode__art { width: 88px; }
 }
+
+/* ---- season gaps ----
+   Drawn under a season's episodes. Missing and unaired are deliberately
+   different weights: one is a task, the other is just information. */
+/* Collapsed with the rest of the season: the gaps belong to the episode list,
+   not to the header above it. */
+.gaps { display: none; padding: 0 0 var(--space-3) var(--space-2); }
+.season.is-open .gaps { display: block; }
+.gaps__label {
+  font-size: 10px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase;
+  color: var(--fg-3); margin: var(--space-2) 0;
+}
+.gaps__label--missing { color: #d98b4a; }
+.gaps__list { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.gap {
+  display: flex; align-items: baseline; gap: var(--space-3);
+  font-size: 12px; color: var(--fg-3); padding: 2px 0;
+}
+.gap__num { min-width: 20px; text-align: right; opacity: .7; }
+.gap__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gap__date { opacity: .6; font-size: 11px; }
+.gap--missing .gap__title { color: var(--fg-2, var(--fg)); }
+/* Unaired is dimmer still: nothing to act on. */
+.gap--unaired { opacity: .55; }
