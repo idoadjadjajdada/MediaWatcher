@@ -101,7 +101,10 @@ function resolveRequestPath(req, res) {
 /** Client decoder capabilities, passed by the player as ?hevc=1&ac3=1. */
 const capsFrom = (req) => ({
   hevc: req.query.hevc === '1' || req.query.hevc === 'true',
-  ac3: req.query.ac3 === '1' || req.query.ac3 === 'true'
+  ac3: req.query.ac3 === '1' || req.query.ac3 === 'true',
+  // Whether the display can actually show HDR. Absent means no, which keeps
+  // the old tone-mapping behaviour for every client that has not been updated.
+  hdr: req.query.hdr === '1' || req.query.hdr === 'true'
 });
 
 /** The cap this request plays under, from ?q= and where the request came from. */
@@ -160,6 +163,9 @@ router.get('/info', async (req, res, next) => {
       seekable: true,
       tonemapped: Boolean(decision.tonemapped),
       tonemap_height: decision.tonemapHeight ?? null,
+      // HDR that reached the client intact, so the badge can say "HDR" rather
+      // than the bare mode - which would look like nothing special happened.
+      hdr_passthrough: Boolean(decision.hdrPassthrough),
       // What the cap actually did, not merely what was asked for: a request for
       // Low on a file already below it reports original, because nothing was
       // taken away.
@@ -194,6 +200,7 @@ router.get('/info', async (req, res, next) => {
           q: String(req.query.q || 'auto'),
           hevc: caps.hevc ? '1' : '',
           ac3: caps.ac3 ? '1' : '',
+          hdr: caps.hdr ? '1' : '',
           audio: String(req.query.audio || 0),
           audioOffset: String(audioOffset || 0)
         })}`,

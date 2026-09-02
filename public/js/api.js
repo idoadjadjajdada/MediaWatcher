@@ -111,8 +111,33 @@ export function decoderCapabilities() {
   return {
     hevc: canPlay('video/mp4; codecs="hvc1.1.6.L93.B0"')
       || supportedByMse('video/mp4; codecs="hev1.1.6.L93.B0"'),
-    ac3: canPlay('audio/mp4; codecs="ac-3"') || canPlay('audio/mp4; codecs="ec-3"')
+    ac3: canPlay('audio/mp4; codecs="ac-3"') || canPlay('audio/mp4; codecs="ec-3"'),
+    hdr: displayIsHdr()
   };
+}
+
+/**
+ * Can this screen actually show HDR?
+ *
+ * `video-dynamic-range` is the precise question - it asks about the video
+ * plane specifically - but it is newer, so `dynamic-range` is the fallback.
+ * Anything that answers neither is treated as SDR, which keeps tone mapping on
+ * for every client that cannot tell us, and that is the safe direction: a
+ * tone-mapped stream on an HDR screen looks slightly flat, while a PQ stream
+ * on an SDR screen looks washed out and far too bright.
+ *
+ * This has to be read at request time rather than cached, because a laptop
+ * moved onto an HDR monitor changes the answer without a reload.
+ */
+function displayIsHdr() {
+  try {
+    if (typeof window.matchMedia !== 'function') return false;
+    if (window.matchMedia('(video-dynamic-range: high)').matches) return true;
+    return window.matchMedia('(dynamic-range: high)').matches;
+  } catch {
+    // Some embedded webviews throw on an unrecognised media feature.
+    return false;
+  }
 }
 
 /*
@@ -153,6 +178,7 @@ export const getStreamInfo = (filePath, { audioOffset = 0, audio = 0 } = {}) => 
     path: filePath,
     hevc: caps.hevc ? 1 : '',
     ac3: caps.ac3 ? 1 : '',
+    hdr: caps.hdr ? 1 : '',
     q: getQuality(),
     audioOffset: audioOffset || '',
     audio: audio || ''
@@ -168,6 +194,7 @@ export function streamUrl(filePath, { start = 0, audio, audioOffset = 0 } = {}) 
     audioOffset: audioOffset || '',
     hevc: caps.hevc ? 1 : '',
     ac3: caps.ac3 ? 1 : '',
+    hdr: caps.hdr ? 1 : '',
     q: getQuality()
   })}`;
 }

@@ -273,6 +273,7 @@ async function openInner(filePath) {
   const modeLabel = !info || info.mode === 'direct' ? null
     : info.mode === 'cached-copy' ? 'Cached · lossless'
     : info.mode === 'cached-h264' ? 'Cached · 1080p'
+    : info.hdr_passthrough ? 'HDR'
     : info.tonemapped ? `HDR → SDR${info.tonemap_height ? ` · ${info.tonemap_height}p` : ''}`
     : `${info.mode === 'remux' ? 'Remux' : info.mode === 'remux-audio' ? 'Audio remux' : 'Transcode'}${info.lossless ? ' · lossless' : ''}`;
 

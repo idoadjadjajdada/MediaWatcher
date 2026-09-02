@@ -318,9 +318,25 @@ export function decide(info, caps = {}, options = {}) {
   // stream happily and then render it as if it were ordinary gamma, which comes
   // out washed out and far too bright.
   const hdr = isHdr(info.video);
-  if (hdr && mode !== 'transcode') {
+
+  /*
+   * Passthrough is only possible on a path that copies the video stream, so it
+   * needs the client to be able to decode the codec as well as display the
+   * range - and HDR is almost always HEVC, which means caps.hevc is doing the
+   * real work here. When both hold, the PQ stream is handed over untouched and
+   * the display does what it is for.
+   *
+   * When the video is being re-encoded anyway (`!videoOk`), tone mapping stays:
+   * preserving HDR through a re-encode means emitting HEVC HDR, which is
+   * exactly the thing this client just said it cannot decode.
+   */
+  const hdrPassthrough = hdr && Boolean(caps.hdr) && videoOk;
+
+  if (hdr && !hdrPassthrough && mode !== 'transcode') {
     mode = 'transcode';
     reasons.push('HDR video is tone mapped to SDR for the browser');
+  } else if (hdrPassthrough) {
+    reasons.push('HDR passed through — this display can show it');
   }
 
   // direct streams raw bytes with no ffmpeg in the path, so it cannot carry an
@@ -374,13 +390,16 @@ export function decide(info, caps = {}, options = {}) {
     duration: info.duration,
     lossless: mode !== 'transcode',
     hdr,
+    // Whether the stream stayed HDR, so the badge can say so.
+    hdrPassthrough,
     // Told to the client so the badge can say "HDR → SDR" rather than the bare
     // "Transcode", which would look like an unexplained quality loss.
-    tonemapped: hdr,
+    tonemapped: hdr && !hdrPassthrough,
     // The active cap wins over the default tone map ceiling: both are height
     // limits, and the tighter one is the one that has to apply.
     tonemapHeight: targetHeight
-      ?? (hdr && Number.isFinite(info.video?.height) && info.video.height > TONEMAP_MAX_HEIGHT
+      ?? (hdr && !hdrPassthrough
+        && Number.isFinite(info.video?.height) && info.video.height > TONEMAP_MAX_HEIGHT
         ? TONEMAP_MAX_HEIGHT
         : (info.video?.height ?? null)),
     targetHeight,
