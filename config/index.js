@@ -333,7 +333,9 @@ const config = {
   cacheSweepIntervalMs: int('CACHE_SWEEP_INTERVAL_MS', 30 * 60 * 1000),
 
   hls: {
-    dir: path.join(ROOT_DIR, 'cache', 'hls'),
+    // Overridable so the pool can be exercised against a scratch directory
+    // rather than the live cache.
+    dir: resolvePath(str('HLS_CACHE_DIR'), path.join(ROOT_DIR, 'cache', 'hls')),
     // How long a session survives without a keepalive before it is reaped.
     // Long enough to cover a pause and a phone locking its screen.
     idleTimeoutMs: int('HLS_IDLE_TIMEOUT_MS', 60000),
@@ -360,7 +362,27 @@ const config = {
      * player buffers, so the bound is invisible during playback, and running
      * out simply starts the next run where the last one stopped.
      */
-    encodeAheadSeconds: int('HLS_ENCODE_AHEAD_SECONDS', 300)
+    encodeAheadSeconds: int('HLS_ENCODE_AHEAD_SECONDS', 300),
+    /*
+     * What the *first* run produces, before anyone has proved they are
+     * watching.
+     *
+     * The bound above is now a ceiling rather than a fixed size. Opening a
+     * title to see what it is used to cost five minutes of encoding for the
+     * thirty seconds actually watched; a run that ends by exhausting its
+     * budget doubles the next one, so a viewer watching straight through
+     * reaches the ceiling within a couple of runs and a browser never does.
+     */
+    encodeAheadMinSeconds: int('HLS_ENCODE_AHEAD_MIN_SECONDS', 120),
+    /*
+     * Budget for segments pooled across sessions.
+     *
+     * Small beside the MP4 cache because these are capped-bitrate segments and
+     * they are only worth keeping while someone might still ask for them: a
+     * second viewer, a seek back, the same episode reopened. Least recently
+     * used goes first.
+     */
+    sharedMaxBytes: Math.round(Number(str('HLS_SHARED_CACHE_MAX_GB', '4')) * 1024 ** 3)
   },
 
   ffmpeg: {

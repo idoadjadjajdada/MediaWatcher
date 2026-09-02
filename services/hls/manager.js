@@ -10,9 +10,13 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import config, { createLogger } from '../../config/index.js';
 import { segmentCount, SEGMENT_SECONDS } from './playlist.js';
-import { sessionKey, nextAction, completedThrough, segmentsToPrune } from './session.js';
+import {
+  sessionKey, contentKey, nextRunSeconds, nextAction, completedThrough, segmentsToPrune
+} from './session.js';
 import { buildSegmentArgs, hardwareEncoder } from '../transcoder.js';
 import * as ffmpegPool from '../ffmpegPool.js';
+import { createProgressReader } from '../ffmpegProgress.js';
+import * as segmentStore from './segmentStore.js';
 
 const log = createLogger('hls');
 
@@ -70,6 +74,20 @@ async function startEncoder(session, startSegment) {
   // Belongs to the run that is starting, not the one that just ended.
   session.exitCode = null;
 
+  /*
+   * How much this run produces, which is no longer a constant.
+   *
+   * Held on the session because the end-of-source test reads it: that test
+   * asks whether a run stopped short of its own budget, and comparing against
+   * the configured ceiling instead would read every short first run as the end
+   * of the file and refuse the rest of the episode.
+   */
+  session.runSeconds = nextRunSeconds(
+    session.completedRuns,
+    config.hls.encodeAheadMinSeconds,
+    config.hls.encodeAheadSeconds
+  );
+
   const encoder = await hardwareEncoder();
   const args = buildSegmentArgs(session.filePath, {
     startSegment,
@@ -81,12 +99,26 @@ async function startEncoder(session, startSegment) {
     maxHeight: session.maxHeight,
     maxrate: session.maxrate,
     encoder,
-    durationSeconds: config.hls.encodeAheadSeconds
+    durationSeconds: session.runSeconds
   });
 
-  log.info(`session ${session.id}: encoding from segment ${startSegment}`);
+  log.info(`session ${session.id}: encoding from segment ${startSegment} `
+    + `for ${session.runSeconds}s (run ${session.completedRuns + 1})`);
   const proc = spawn(config.ffmpeg.ffmpegPath, args, { windowsHide: true });
   session.proc = proc;
+
+  /*
+   * On the register for as long as it runs, so the encoder page can name it.
+   * The entry removes itself on close, and killing it there is the same as any
+   * other end of a run: the next request restarts wherever the viewer is.
+   */
+  const tracked = ffmpegPool.register({
+    kind: 'hls',
+    label: `session ${session.id.slice(0, 8)}`,
+    filePath: session.filePath,
+    detail: `from ${startSegment * SEGMENT_SECONDS}s`,
+    proc
+  });
 
   /*
    * Taken, never waited for. Someone is watching this one, so it counts against
@@ -97,8 +129,21 @@ async function startEncoder(session, startSegment) {
   proc.once('close', releaseSlot);
   proc.once('error', releaseSlot);
 
-  // Nothing reads stdout, and an unread pipe that fills would block ffmpeg.
-  proc.stdout?.resume();
+  /*
+   * stdout carries `-progress` output now. It still must be read either way —
+   * an unread pipe that fills would block ffmpeg — but reading it is what tells
+   * the encoder page how fast this run is going and how far it has reached.
+   */
+  const readProgress = createProgressReader(({ speed, outSeconds }) => {
+    tracked.progress({
+      speed,
+      // On the file's own timeline, not the run's: -ss rewinds ffmpeg's output
+      // clock to zero, so a run starting an hour in would otherwise report
+      // itself as being at the opening titles.
+      outSeconds: outSeconds === null ? null : outSeconds + (startSegment * SEGMENT_SECONDS)
+    });
+  });
+  proc.stdout?.on('data', readProgress);
 
   // Kept so a failure can say why. An encoder that dies on startup otherwise
   // shows up only as segments that never arrive.
@@ -160,6 +205,12 @@ export async function openSession(spec) {
   const session = {
     id,
     dir,
+    /*
+     * The same identity without the viewer. Segments are pooled under this, so
+     * a second device on the same episode and a seek back into a stretch
+     * already encoded both find finished files instead of restarting ffmpeg.
+     */
+    contentKey: contentKey(spec),
     // Who opened it. The touch and delete routes check this: a session id is
     // visible in the player's diagnostics panel, and without an owner any
     // signed-in device could end any other viewer's stream.
@@ -180,6 +231,14 @@ export async function openSession(spec) {
     exitCode: null,
     started: false,
     restartsWithoutProgress: 0,
+    /*
+     * Consecutive runs that ended by exhausting their budget rather than by a
+     * seek — the viewer watching straight through. Each one earns the next run
+     * a longer budget; a seek resets it, because a seek is proof the last
+     * run's remaining output was encoded for nobody.
+     */
+    completedRuns: 0,
+    runSeconds: config.hls.encodeAheadMinSeconds,
     /*
      * The last segment that actually exists, once the encoder has told us.
      *
@@ -244,11 +303,16 @@ function prune(session, current) {
  * budget?
  *
  * Only a run that was expected to reach the end of the playlist can answer
- * that. One run is capped at `encodeAheadSeconds`, so a run starting in the
- * middle of a long film always stops early and says nothing about where the
- * file ends — and treating that as the end would refuse the whole rest of the
- * episode. A run that had the budget to finish the playlist and did not is the
- * only one whose short output is evidence.
+ * that. A run is bounded by its own budget, so a run starting in the middle of
+ * a long film always stops early and says nothing about where the file ends —
+ * and treating that as the end would refuse the whole rest of the episode. A
+ * run that had the budget to finish the playlist and did not is the only one
+ * whose short output is evidence.
+ *
+ * The budget is the one *this run* was given, not the configured ceiling. Runs
+ * grow as a viewer keeps watching, so reading the ceiling here would judge a
+ * short early run against a length it was never asked to produce and call the
+ * middle of an episode the end of the file.
  *
  * The evidence itself is a segment count, which is why the question is asked in
  * this narrow form: the segmenter is entitled to fold a short tail into the
@@ -256,7 +320,8 @@ function prune(session, current) {
  * somewhere around here", not an exact frame.
  */
 export function isEndOfSource(session, producedThrough) {
-  const budget = Math.ceil(config.hls.encodeAheadSeconds / SEGMENT_SECONDS);
+  const runSeconds = session.runSeconds || config.hls.encodeAheadSeconds;
+  const budget = Math.ceil(runSeconds / SEGMENT_SECONDS);
   if (session.startSegment + budget < session.count) return false;
   return producedThrough < session.count - 1;
 }
@@ -268,16 +333,37 @@ export function isEndOfSource(session, producedThrough) {
  * process in turn and neither would ever produce anything — a livelock that
  * looks exactly like a slow encoder.
  */
-async function restartTo(session, index) {
+async function restartTo(session, index, { continuation = false } = {}) {
   while (session.restarting) await session.restarting;
 
   // The winner of that wait may have already moved the encoder somewhere that
   // serves us, in which case moving it again would undo their work.
   if (session.startSegment === index && session.proc) return;
 
+  /*
+   * A run that ended because it hit its own budget is evidence the viewer is
+   * still there; anything else is a seek, and a seek says the last run's
+   * remaining output was wasted. That distinction is the whole input to how
+   * long the next run is.
+   */
+  session.completedRuns = continuation ? session.completedRuns + 1 : 0;
+
   session.restarting = startEncoder(session, index)
     .finally(() => { session.restarting = null; });
   await session.restarting;
+}
+
+/**
+ * Serve a segment from the pool, if some earlier run left one there.
+ *
+ * Checked before anything else, so a second viewer on an episode someone has
+ * already watched, or a seek back into a stretch this session encoded an hour
+ * ago, costs a hard link rather than an encoder restart.
+ */
+function serveFromPool(session, index) {
+  const file = segmentPath(session, index);
+  if (!segmentStore.borrow(session.contentKey, index, file)) return null;
+  return file;
 }
 
 /**
@@ -301,6 +387,19 @@ export async function requestSegment(id, index, signal, viewer) {
 
   for (;;) {
     if (signal?.aborted) return null;
+
+    /*
+     * The pool first, always. A finished segment is a finished segment whoever
+     * encoded it, and every path below this costs either a wait or a process.
+     * A session that finds everything it needs here never spawns an encoder at
+     * all, which is the case where two devices watch the same episode.
+     */
+    const pooled = serveFromPool(session, index);
+    if (pooled) {
+      session.restartsWithoutProgress = 0;
+      prune(session, index);
+      return pooled;
+    }
 
     // A session that has never encoded anything has nothing to wait for.
     if (!session.started) {
@@ -337,6 +436,12 @@ export async function requestSegment(id, index, signal, viewer) {
       }
       // Real progress: the next stall gets a full set of attempts again.
       session.restartsWithoutProgress = 0;
+      /*
+       * Into the pool on the way out. `completedThrough` has already
+       * established that this segment is finished rather than the one ffmpeg
+       * is still writing, which is the only thing that makes it safe to share.
+       */
+      segmentStore.publish(session.contentKey, index, file);
       prune(session, index);
       return file;
     }
@@ -388,7 +493,12 @@ export async function requestSegment(id, index, signal, viewer) {
         return null;
       }
       session.restartsWithoutProgress += 1;
-      await restartTo(session, index);
+      /*
+       * A clean exit here means the run spent its budget rather than failed,
+       * and the viewer is still asking for what comes next — so the next run
+       * gets a longer one. A run that died is not evidence of anything.
+       */
+      await restartTo(session, index, { continuation: session.exitCode === 0 });
       continue;
     }
     await new Promise((resolve) => setTimeout(resolve, 200));

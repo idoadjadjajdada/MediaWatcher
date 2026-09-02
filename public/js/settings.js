@@ -316,6 +316,85 @@ function renderPerformance() {
     </section>`;
 }
 
+/* --------------------------------------------------------------------------
+ * Encoders
+ *
+ * The one panel on this page that is alive rather than a snapshot. Everything
+ * else answers a question about how the install is configured; this answers
+ * "why is this machine busy right now", and a two-second-old answer to that is
+ * a different answer.
+ * ----------------------------------------------------------------------- */
+
+/** A file path as the part anyone recognises. */
+const baseName = (filePath) => String(filePath || '').split(/[\\/]/).pop() || '';
+
+const KIND_LABELS = {
+  hls: 'Streaming',
+  convert: 'Converting',
+  thumbnail: 'Thumbnails',
+  intro: 'Intro detection'
+};
+
+/**
+ * One row per running process.
+ *
+ * The realtime factor is the number worth reading: below 1.0 the encoder is
+ * producing video more slowly than it is watched, which is a stall in the
+ * making rather than a stall that has happened yet.
+ */
+function encoderRows(encoders) {
+  if (!encoders) return '<div class="settings__loading">Loading…</div>';
+  if (encoders.running.length === 0) {
+    return '<div class="settings__empty">Nothing is encoding.</div>';
+  }
+
+  return `<div class="encoders">${encoders.running.map((proc) => {
+    const slow = Number.isFinite(proc.speed) && proc.speed < 1;
+    return `
+      <div class="encoder">
+        <div class="encoder__main">
+          <div class="encoder__title">
+            <span class="encoder__kind encoder__kind--${esc(proc.kind)}">${esc(KIND_LABELS[proc.kind] || proc.kind)}</span>
+            ${esc(baseName(proc.filePath) || proc.label)}
+          </div>
+          <div class="encoder__meta t-num">
+            ${esc(proc.label)}${proc.detail ? ` · ${esc(proc.detail)}` : ''}
+            · running ${esc(formatUptime(proc.elapsedSeconds))}
+            ${proc.outSeconds === null ? '' : ` · reached ${esc(formatUptime(proc.outSeconds))}`}
+          </div>
+        </div>
+        <div class="encoder__speed t-num${slow ? ' is-slow' : ''}">
+          ${proc.speed === null ? '—' : `${proc.speed.toFixed(2)}×`}
+        </div>
+        <button class="btn btn--ghost" data-action="settings-kill-encoder" data-id="${esc(proc.id)}">Stop</button>
+      </div>`;
+  }).join('')}</div>`;
+}
+
+function renderEncoders() {
+  const encoders = state.settings?.encoders;
+  const pool = state.settings?.diagnostics?.caches?.hlsPool;
+
+  return `
+    <section class="settings__group">
+      <h2 class="settings__heading">Encoders</h2>
+      <p class="settings__note">
+        Every ffmpeg process this server is running. Playback takes a slot
+        immediately; conversions, thumbnails and intro detection wait for what
+        playback leaves. A realtime factor below 1× means that encoder is
+        producing video more slowly than it is being watched.
+      </p>
+      ${encoders ? `
+        <div class="facts">
+          <div class="fact"><dt>Running</dt><dd class="t-num">${encoders.running.length}</dd></div>
+          <div class="fact"><dt>Budget</dt><dd class="t-num">${encoders.interactive} playing · ${encoders.background} background of ${encoders.ceiling}</dd></div>
+          <div class="fact"><dt>Waiting for a slot</dt><dd class="t-num">${encoders.waiting}</dd></div>
+          ${pool ? `<div class="fact"><dt>Pooled segments</dt><dd class="t-num">${esc(formatBytes(pool.bytes))} · ${pool.files} files</dd></div>` : ''}
+        </div>` : ''}
+      <div id="encoder-list">${encoderRows(encoders)}</div>
+    </section>`;
+}
+
 function renderStorage() {
   const storage = state.settings?.storage;
   if (!storage) return '<section class="settings__group"><h2 class="settings__heading">Storage</h2><div class="settings__loading">Loading…</div></section>';
@@ -411,6 +490,7 @@ export function renderSettings() {
       ${renderPlayback(prefs)}
       ${renderAppearance(subtitle, picture)}
       ${renderPerformance()}
+      ${renderEncoders()}
       ${renderOffline()}
       ${renderStorage()}
       ${renderDevices()}
@@ -427,16 +507,70 @@ export function renderSettings() {
  * their own data arrives rather than blocking the whole page.
  */
 export async function loadSettings() {
-  const [devices, logins, diagnostics, storage, saved, quota, warm] = await Promise.all([
+  const [devices, logins, diagnostics, storage, saved, quota, warm, encoders] = await Promise.all([
     api.getDevices().catch(() => []),
     api.getLoginHistory().catch(() => []),
     api.getDiagnostics().catch(() => null),
     api.getStorage().catch(() => null),
     offline.listSaved().catch(() => []),
     offline.quota().catch(() => null),
-    api.getWarmStatus().catch(() => null)
+    api.getWarmStatus().catch(() => null),
+    api.getEncoders().catch(() => null)
   ]);
-  setState({ settings: { devices, logins, diagnostics, storage, offline: saved, quota, warm } });
+  setState({
+    settings: { devices, logins, diagnostics, storage, offline: saved, quota, warm, encoders }
+  });
+}
+
+/* --------------------------------------------------------------------------
+ * Live encoders
+ *
+ * This is the one place on the page that updates itself, and the only one that
+ * patches the DOM rather than re-rendering. A full re-render every couple of
+ * seconds would be correct and unusable: it would blow away focus, scroll
+ * position and any half-typed value elsewhere on the page. So the poll
+ * replaces the contents of one element and touches nothing else.
+ * ----------------------------------------------------------------------- */
+
+const ENCODER_POLL_MS = 2000;
+let encoderTimer = null;
+
+async function pollEncoders() {
+  const host = document.getElementById('encoder-list');
+  // Navigated away, or the page re-rendered without this section. Either way
+  // there is nothing to update and no reason to keep asking.
+  if (!host) return stopEncoderWatch();
+
+  const encoders = await api.getEncoders().catch(() => null);
+  if (!encoders) return undefined;
+
+  // Kept on state so the next full render of the page starts from what is
+  // actually running rather than from whatever was there when it loaded.
+  state.settings.encoders = encoders;
+  host.innerHTML = encoderRows(encoders);
+  return undefined;
+}
+
+/** Start the poll. Idempotent — navigating back to the page must not stack them. */
+export function startEncoderWatch() {
+  if (encoderTimer) return;
+  encoderTimer = setInterval(() => { pollEncoders(); }, ENCODER_POLL_MS);
+}
+
+export function stopEncoderWatch() {
+  if (!encoderTimer) return;
+  clearInterval(encoderTimer);
+  encoderTimer = null;
+}
+
+/** Stop one encoder, then show the result immediately rather than on the next tick. */
+export async function killEncoder(id) {
+  try {
+    await api.killEncoder(id);
+    await pollEncoders();
+  } catch (error) {
+    toast('error', 'Could not stop that encoder', error.message);
+  }
 }
 
 /* --------------------------------------------------------------------------

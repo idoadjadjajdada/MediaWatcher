@@ -119,6 +119,16 @@ async function grabFrame(filePath, seconds, outPath) {
       '-y', outPath
     ], { windowsHide: true });
 
+    // On the register for the second or two it runs. Short, but a stalled
+    // thumbnail job holding a slot is exactly the thing that is otherwise
+    // invisible.
+    ffmpegPool.register({
+      kind: 'thumbnail',
+      label: `frame at ${Math.round(seconds)}s`,
+      filePath,
+      proc: child
+    });
+
     child.on('error', () => resolve(false));
     child.on('close', (code) => resolve(code === 0 && fs.existsSync(outPath)));
   });

@@ -33,6 +33,8 @@ const SUITES = [
   { file: 'tonemap.test.mjs' },
   { file: 'thumbnails.test.mjs' },
   { file: 'mp4cache.test.mjs' },
+  { file: 'encoder-registry.test.mjs' },
+  { file: 'hls-pool.test.mjs' },
   { file: 'cache-limits.test.mjs' },
   { file: 'scanner-titles.test.mjs' },
   { file: 'downloads.test.mjs' },

@@ -478,6 +478,7 @@ const ACTIONS = {
   'settings-reset-appearance': () => settings.resetAppearance(),
   'settings-revoke': (el) => settings.revokeDevice(el.dataset.id),
   'settings-refresh': () => settings.refreshDiagnostics(),
+  'settings-kill-encoder': (el) => settings.killEncoder(el.dataset.id),
   'settings-install': () => settings.install(),
   'settings-warm': () => settings.warmLibrary(),
   'settings-unsave': (el) => settings.unsave(el.dataset.path),
@@ -855,6 +856,15 @@ function onStateChange() {
     // so asking for it at boot would cost every session a directory scan
     // nobody looked at.
     if (state.currentPage === 'settings') settings.loadSettings();
+
+    /*
+     * The encoder panel polls while it is on screen and stops the moment it is
+     * not. Left running it would keep asking the server what is encoding from
+     * a page nobody is looking at, which is exactly the kind of background
+     * traffic that makes a phone's battery the app's problem.
+     */
+    if (state.currentPage === 'settings') settings.startEncoderWatch();
+    else settings.stopEncoderWatch();
   }
 
   // Progress only loaded at boot, so Continue Watching and the watched marks
@@ -920,7 +930,10 @@ async function boot() {
    * straight onto a deep link — or reloading while already there — has to
    * trigger the same load by hand, or the page sits on "Loading…" forever.
    */
-  if (state.currentPage === 'settings') settings.loadSettings();
+  if (state.currentPage === 'settings') {
+    settings.loadSettings();
+    settings.startEncoderWatch();
+  }
 
   await loadLibrary();
   await loadJobs();

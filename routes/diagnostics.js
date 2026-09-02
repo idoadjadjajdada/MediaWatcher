@@ -24,6 +24,8 @@ import { listLogins, failuresSince } from '../db/loginEvents.js';
 import { listDevices } from '../db/devices.js';
 import * as cacheSweeper from '../services/cacheSweeper.js';
 import * as warmup from '../services/warmup.js';
+import * as ffmpegPool from '../services/ffmpegPool.js';
+import * as segmentStore from '../services/hls/segmentStore.js';
 import { encode as qrEncode, toSvg as qrSvg } from '../services/qr.js';
 
 const log = createLogger('api:diagnostics');
@@ -161,8 +163,12 @@ router.get('/', async (_req, res, next) => {
       },
       caches: {
         mp4: { path: CACHE_DIRS.mp4, ...mp4Cache },
-        thumbs: { path: CACHE_DIRS.thumbs, ...thumbCache }
+        thumbs: { path: CACHE_DIRS.thumbs, ...thumbCache },
+        // Pooled segments. Read from the store rather than walked here: it is
+        // a flat two-level tree and it knows its own shape.
+        hlsPool: { path: segmentStore.storeDir(), ...segmentStore.size() }
       },
+      encoders: ffmpegPool.stats(),
       integrations: {
         tmdb: Boolean(config.tmdb.apiKey),
         alldebrid: Boolean(config.alldebrid.apiKey),
@@ -235,6 +241,35 @@ router.delete('/cache/:which', async (req, res, next) => {
   } catch (error) {
     return next(error);
   }
+});
+
+/**
+ * GET /api/diagnostics/encoders — every ffmpeg process running right now.
+ *
+ * The budget counters alone say four processes are busy and nothing about
+ * which files, on whose behalf, or how fast — so a conversion working
+ * perfectly and an encoder stalled at 0.02x look identical from outside. This
+ * is the answer to "why is this machine busy", and the realtime factor is what
+ * separates "slow" from "stuck".
+ */
+router.get('/encoders', (_req, res) => {
+  res.json({ ...ffmpegPool.stats(), running: ffmpegPool.listRunning() });
+});
+
+/**
+ * DELETE /api/diagnostics/encoders/:id — stop one.
+ *
+ * Safe by construction: every process on that list is restartable. An HLS
+ * encoder is restarted by the next segment request, a conversion is retried on
+ * the next play, a thumbnail job on the next hover. Killing one costs the work
+ * it had done and nothing else, which is why this needs no confirmation beyond
+ * the button.
+ */
+router.delete('/encoders/:id', (req, res) => {
+  const killed = ffmpegPool.killRunning(req.params.id);
+  // A process that has finished on its own between the page rendering and the
+  // click is the same outcome as one this killed, so it is not an error.
+  res.json({ killed });
 });
 
 /** GET /api/diagnostics/warm — what the ahead-of-time conversion is doing. */

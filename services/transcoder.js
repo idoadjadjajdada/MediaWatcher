@@ -609,6 +609,16 @@ export function buildSegmentArgs(filePath, {
     args.push('-t', String(durationSeconds));
   }
 
+  /*
+   * Machine-readable progress on stdout, which segment output leaves free.
+   *
+   * This is where the realtime factor on the encoder page comes from. The
+   * alternative is parsing the status line ffmpeg writes to stderr, which is
+   * formatted for a terminal, changes between builds, and shares the stream
+   * with the errors that actually matter.
+   */
+  args.push('-progress', 'pipe:1');
+
   args.push(
     '-f', 'segment',
     '-segment_time', String(SEGMENT_SECONDS),

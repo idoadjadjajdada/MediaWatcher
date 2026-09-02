@@ -107,4 +107,99 @@ export const stats = () => ({
   waiting: waiting.length
 });
 
-export default { reserveInteractive, acquire, withSlot, stats };
+/* --------------------------------------------------------------------------
+ * The register of what is actually running
+ *
+ * The counters above are enough to enforce the budget and useless for
+ * answering "why is this machine busy". Four counts of anonymous work do not
+ * say which file, on whose behalf, or how fast — so a conversion pinning the
+ * CPU and a stalled encoder producing nothing look identical from outside.
+ *
+ * Registration is separate from acquire() because the process does not exist
+ * until after a slot is taken, and a slot that is never spawned against is
+ * still a slot.
+ * ----------------------------------------------------------------------- */
+
+/** Everything ffmpeg is running right now, by id. */
+const running = new Map();
+let nextId = 1;
+
+/**
+ * Record a spawned process, and stop recording it when it ends.
+ *
+ * Returns a handle: `progress` folds in whatever the caller learns as it goes
+ * (a realtime factor, how far into the file it has reached), and `done` drops
+ * the entry for a caller that has something to say about the ending. Closing
+ * is wired up here too, so a caller that forgets cannot leak a phantom.
+ */
+export function register({ kind, label, filePath = null, detail = null, proc = null }) {
+  const id = String(nextId);
+  nextId += 1;
+
+  const entry = {
+    id,
+    kind,
+    label,
+    filePath,
+    detail,
+    startedAt: Date.now(),
+    // Filled in by whoever is reading the encoder's progress, if anyone is.
+    speed: null,
+    outSeconds: null,
+    proc
+  };
+  running.set(id, entry);
+
+  const done = () => { running.delete(id); };
+  proc?.once('close', done);
+  proc?.once('error', done);
+
+  return {
+    id,
+    progress: (fields) => Object.assign(entry, fields),
+    detail: (value) => { entry.detail = value; },
+    done
+  };
+}
+
+/**
+ * What is running, oldest first, without the process handles.
+ *
+ * The handle is deliberately not in the payload: this is serialised straight
+ * into an API response, and a ChildProcess is neither JSON nor anyone's
+ * business outside this module.
+ */
+export function listRunning(now = Date.now()) {
+  return Array.from(running.values())
+    .sort((a, b) => a.startedAt - b.startedAt)
+    .map(({ proc, ...entry }) => ({
+      ...entry,
+      pid: proc?.pid ?? null,
+      elapsedSeconds: Math.max(0, (now - entry.startedAt) / 1000)
+    }));
+}
+
+/**
+ * Stop one process by id. True if there was one to stop.
+ *
+ * SIGKILL rather than a polite signal: every one of these is restartable by
+ * design — an HLS session re-encodes from wherever the viewer is, a conversion
+ * is retried on the next play — so there is nothing to flush and nothing that
+ * benefits from being asked twice.
+ */
+export function killRunning(id) {
+  const entry = running.get(String(id));
+  if (!entry) return false;
+  try { entry.proc?.kill('SIGKILL'); } catch { /* already gone */ }
+  running.delete(String(id));
+  log.info(`killed ${entry.kind} ${entry.label} on request`);
+  return true;
+}
+
+/** Drop every entry. Tests only — the real register empties itself. */
+export const resetRegister = () => running.clear();
+
+export default {
+  reserveInteractive, acquire, withSlot, stats,
+  register, listRunning, killRunning, resetRegister
+};

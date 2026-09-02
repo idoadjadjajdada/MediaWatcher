@@ -295,6 +295,12 @@ export const getLoginHistory = (limit = 100) => get(`/api/diagnostics/logins?${q
 /** Whether this install is actually healthy, and what it is using. */
 export const getDiagnostics = () => get('/api/diagnostics');
 
+/** Every ffmpeg process running right now, with the budget it sits in. */
+export const getEncoders = () => get('/api/diagnostics/encoders');
+
+/** Stop one encoder. Everything on that list is restartable by design. */
+export const killEncoder = (id) => del(`/api/diagnostics/encoders/${encodeURIComponent(id)}`);
+
 /* --------------------------------------------------------------------------
  * Library gaps and storage
  * ----------------------------------------------------------------------- */
@@ -356,7 +362,7 @@ export default {
   thumbMetaUrl, thumbUrl, touchHlsSession, endHlsSession,
   getIntro, reportSkip, forgetIntro,
   getTrackPrefs, saveTrackPrefs, forgetTrackPrefs,
-  getDevices, revokeDevice, getLoginHistory, getDiagnostics,
+  getDevices, revokeDevice, getLoginHistory, getDiagnostics, getEncoders, killEncoder,
   getMissingEpisodes, getStorage, warmLibrary, getWarmStatus,
   getOfflineInfo, offlineFileUrl
 };

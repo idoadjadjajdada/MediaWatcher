@@ -25,6 +25,7 @@ import config, { createLogger } from '../config/index.js';
 import { probe, isAvailable, hardwareEncoder, isHdr, tonemapChain } from './transcoder.js';
 import { cacheKey } from './thumbnails.js';
 import * as ffmpegPool from './ffmpegPool.js';
+import { createProgressReader } from './ffmpegProgress.js';
 import * as cacheSweeper from './cacheSweeper.js';
 import { hasRoomFor, formatBytes } from './diskspace.js';
 
@@ -103,6 +104,10 @@ export function variantArgs(input, output, variant, { video, audioIndex = 0, enc
   // Always AAC. EAC3 and TrueHD are neither browser-decodable nor legal in MP4,
   // so even the "lossless" variant is lossless in picture only.
   args.push('-c:a', 'aac', '-ac', String(config.ffmpeg.audioChannels), '-b:a', config.ffmpeg.audioBitrate);
+  // Progress on stdout, which a file output leaves free. This is a background
+  // conversion of a whole film; without it the only sign of how it is going is
+  // that the file has not appeared yet.
+  args.push('-progress', 'pipe:1');
   // -f mp4 is required, not decorative: conversions write to a .part file
   // first, and ffmpeg cannot infer a muxer from that extension. Without it the
   // run dies with "Error opening output files: Invalid argument".
@@ -216,6 +221,19 @@ async function convert(filePath, target, variant) {
     return await new Promise((resolve) => {
       const started = Date.now();
       const child = spawn(config.ffmpeg.ffmpegPath, args, { windowsHide: true });
+
+      const tracked = ffmpegPool.register({
+        kind: 'convert',
+        label: variant,
+        filePath,
+        proc: child
+      });
+      // stdout carries -progress and must be read either way: an unread pipe
+      // that fills would block the conversion.
+      child.stdout?.on('data', createProgressReader(({ speed, outSeconds }) => {
+        tracked.progress({ speed, outSeconds });
+      }));
+
       let stderr = '';
       child.stderr?.on('data', (chunk) => {
         stderr += chunk;

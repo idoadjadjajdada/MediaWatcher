@@ -200,6 +200,13 @@ async function envelopeFor(filePath) {
       'pipe:1'
     ], { windowsHide: true });
 
+    ffmpegPool.register({
+      kind: 'intro',
+      label: 'decoding the opening',
+      filePath,
+      proc: child
+    });
+
     const chunks = [];
     child.stdout.on('data', (chunk) => chunks.push(chunk));
     child.stderr?.resume();

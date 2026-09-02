@@ -23,6 +23,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import config, { createLogger } from '../config/index.js';
 import { formatBytes } from './diskspace.js';
+import * as segmentStore from './hls/segmentStore.js';
 
 const log = createLogger('cache');
 
@@ -181,7 +182,14 @@ export async function sweep() {
     maxBytes: config.thumbCache.maxBytes,
     ttlMs: config.thumbCache.ttlMs
   });
-  return { mp4, thumbs };
+  /*
+   * The pooled HLS segments are swept by their own module rather than through
+   * sweepRoot: they are individual files under a key directory rather than
+   * whole directories to drop, and they are chosen by access time rather than
+   * by age. Kept on the same schedule because it is the same question.
+   */
+  const hls = segmentStore.sweep();
+  return { mp4, thumbs, hls };
 }
 
 let timer = null;
