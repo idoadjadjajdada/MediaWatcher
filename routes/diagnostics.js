@@ -22,6 +22,9 @@ import config, { createLogger } from '../config/index.js';
 import * as scanner from '../services/scanner.js';
 import { listLogins, failuresSince } from '../db/loginEvents.js';
 import { listDevices } from '../db/devices.js';
+import * as cacheSweeper from '../services/cacheSweeper.js';
+import * as warmup from '../services/warmup.js';
+import { encode as qrEncode, toSvg as qrSvg } from '../services/qr.js';
 
 const log = createLogger('api:diagnostics');
 const router = express.Router();
@@ -187,6 +190,82 @@ router.get('/', async (_req, res, next) => {
 router.get('/logins', (req, res) => {
   const limit = Number.parseInt(req.query.limit, 10);
   res.json(listLogins(Number.isInteger(limit) ? limit : 100));
+});
+
+/**
+ * POST /api/diagnostics/cache/sweep — evict now, rather than on the timer.
+ *
+ * The sweeper already runs periodically. This is for the case where the disk
+ * is full right now and waiting half an hour for the next pass is not an
+ * answer.
+ */
+router.post('/cache/sweep', async (_req, res, next) => {
+  try {
+    const result = await cacheSweeper.sweep();
+    log.info(`manual sweep: ${JSON.stringify(result)}`);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * DELETE /api/diagnostics/cache/:which — throw a whole cache away.
+ *
+ * Both are rebuildable by definition: mp4 holds converted copies of files that
+ * still exist, thumbs holds frames grabbed from them. Deleting either costs
+ * time to regenerate and nothing else, which is why this needs no confirmation
+ * beyond the button that calls it.
+ */
+router.delete('/cache/:which', async (req, res, next) => {
+  const { which } = req.params;
+  if (!Object.prototype.hasOwnProperty.call(CACHE_DIRS, which)) {
+    return res.status(400).json({ error: 'cache must be mp4 or thumbs' });
+  }
+
+  try {
+    const before = await directorySize(CACHE_DIRS[which]);
+    await fsp.rm(CACHE_DIRS[which], { recursive: true, force: true });
+    // Recreated empty: the writers assume the directory exists and would
+    // otherwise fail on the next conversion rather than simply rebuilding.
+    await fsp.mkdir(CACHE_DIRS[which], { recursive: true });
+
+    log.info(`cleared the ${which} cache: ${before.files} files, ${before.bytes} bytes`);
+    return res.json({ cleared: which, files: before.files, bytes: before.bytes });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/** GET /api/diagnostics/warm — what the ahead-of-time conversion is doing. */
+router.get('/warm', (_req, res) => {
+  res.json(warmup.getStats());
+});
+
+/**
+ * GET /api/diagnostics/qr?text=…&format=svg|json
+ *
+ * For pointing a phone at the launcher. SVG for anything that can render it;
+ * JSON — a matrix of 0/1 — for the WPF launcher, which cannot render SVG and
+ * would otherwise need an image decoder to draw a grid of squares.
+ */
+router.get('/qr', (req, res) => {
+  const text = String(req.query.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'text is required' });
+  // Version 10 at level M is the ceiling; a URL that long is not a URL.
+  if (text.length > 400) return res.status(400).json({ error: 'text is too long to encode' });
+
+  if (req.query.format === 'json') {
+    const encoded = qrEncode(text);
+    if (!encoded) return res.status(400).json({ error: 'text is too long to encode' });
+    return res.json({ size: encoded.size, version: encoded.version, matrix: encoded.matrix });
+  }
+
+  const svg = qrSvg(text);
+  if (!svg) return res.status(400).json({ error: 'text is too long to encode' });
+  res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  return res.send(svg);
 });
 
 export default router;

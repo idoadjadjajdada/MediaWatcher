@@ -377,6 +377,13 @@
           <ComboBoxItem Content="error"/>
         </ComboBox>
         <TextBlock Text="applies on next start" Foreground="#666666" FontSize="9" Margin="2,5,0,0"/>
+
+        <TextBlock Text="SUPERVISION" Style="{StaticResource SectionLabel}" Margin="2,18,0,6"/>
+        <CheckBox x:Name="ChkAutoRestart" Content="Restart if it crashes" IsChecked="True"
+                  Foreground="#cccccc" FontSize="11"
+                  ToolTip="Brings the server back after an unexpected exit, backing off each time and giving up after five failures in a row"/>
+        <TextBlock x:Name="TxtSupervisor" Text="" Foreground="#666666" FontSize="9"
+                   TextWrapping="Wrap" Margin="2,5,0,0"/>
       </StackPanel>
 
       <Grid Grid.Column="2">
@@ -405,6 +412,7 @@
               </StackPanel>
             </Button>
             <Button x:Name="TabDevices" Style="{StaticResource TabButton}" Content="Devices"/>
+            <Button x:Name="TabSystem" Style="{StaticResource TabButton}" Content="System"/>
           </StackPanel>
 
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
@@ -451,10 +459,33 @@
                 Background="{StaticResource Panel}" BorderBrush="{StaticResource Border}"
                 BorderThickness="1" Visibility="Collapsed">
           <Grid>
-            <TextBlock x:Name="DownloadsEmpty" Text="No active downloads"
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Throughput. Drawn as a polyline on a Canvas rather than with a
+                 charting control: this is one series of at most sixty points,
+                 and a dependency for that would be absurd. -->
+            <Border x:Name="ThroughputPanel" Grid.Row="0" Margin="14,12,14,0" Padding="10,8"
+                    CornerRadius="6" Background="#14141a" BorderBrush="{StaticResource Border}"
+                    BorderThickness="1" Visibility="Collapsed">
+              <StackPanel>
+                <Grid>
+                  <TextBlock Text="THROUGHPUT" Foreground="#666666" FontSize="9"
+                             FontWeight="Bold" HorizontalAlignment="Left"/>
+                  <TextBlock x:Name="TxtThroughput" Text="&#8212;" Foreground="#cccccc"
+                             FontSize="11" HorizontalAlignment="Right"/>
+                </Grid>
+                <Canvas x:Name="ThroughputCanvas" Height="46" Margin="0,6,0,0"
+                        Background="Transparent" ClipToBounds="True"/>
+              </StackPanel>
+            </Border>
+
+            <TextBlock x:Name="DownloadsEmpty" Grid.Row="1" Text="No active downloads"
                        Foreground="#888888" FontSize="12"
                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="14,12">
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="14,12">
               <StackPanel x:Name="DownloadItems"/>
             </ScrollViewer>
           </Grid>
@@ -478,6 +509,68 @@
                       Content="Refresh" HorizontalAlignment="Left" Padding="16,6"/>
             </Border>
           </Grid>
+        </Border>
+
+        <!-- System: the three things you would otherwise leave the launcher to do. -->
+        <Border x:Name="PaneSystem" Grid.Row="1" Margin="0,12,0,0" CornerRadius="8"
+                Background="{StaticResource Panel}" BorderBrush="{StaticResource Border}"
+                BorderThickness="1" Visibility="Collapsed">
+          <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,14">
+            <StackPanel>
+
+              <TextBlock Text="REMOTE ACCESS" Style="{StaticResource SectionLabel}" Margin="0,0,0,8"/>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                  <TextBlock x:Name="TxtTailscaleState" Text="Checking&#8230;" Foreground="#cccccc" FontSize="12"/>
+                  <TextBlock x:Name="TxtTailnetUrl" Text="" Foreground="#888888" FontSize="11"
+                             TextWrapping="Wrap" Margin="0,4,0,0"/>
+                  <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                    <Button x:Name="BtnTailscaleServe" Style="{StaticResource SecondaryButton}"
+                            Content="Start sharing" Width="120"
+                            ToolTip="Runs tailscale serve so the app is reachable on your tailnet"/>
+                    <Button x:Name="BtnCopyTailnet" Style="{StaticResource SecondaryButton}"
+                            Content="Copy link" Width="90" Margin="8,0,0,0"/>
+                  </StackPanel>
+                </StackPanel>
+                <!-- Drawn as rectangles on a canvas: the server sends the module
+                     matrix, because WPF cannot render SVG without a dependency. -->
+                <Border Grid.Column="1" Background="White" CornerRadius="4" Padding="6"
+                        VerticalAlignment="Top">
+                  <Canvas x:Name="QrCanvas" Width="132" Height="132" Background="White"/>
+                </Border>
+              </Grid>
+
+              <TextBlock Text="CACHES" Style="{StaticResource SectionLabel}" Margin="0,22,0,8"/>
+              <TextBlock x:Name="TxtCacheSizes" Text="&#8212;" Foreground="#cccccc" FontSize="12"/>
+              <TextBlock Text="Both are rebuilt on demand, so clearing either costs time and nothing else."
+                         Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0"/>
+              <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <Button x:Name="BtnSweepCache" Style="{StaticResource SecondaryButton}"
+                        Content="Sweep now" Width="100"
+                        ToolTip="Evict what is over the limit, instead of waiting for the timer"/>
+                <Button x:Name="BtnClearMp4" Style="{StaticResource SecondaryButton}"
+                        Content="Clear video" Width="100" Margin="8,0,0,0"/>
+                <Button x:Name="BtnClearThumbs" Style="{StaticResource SecondaryButton}"
+                        Content="Clear thumbs" Width="105" Margin="8,0,0,0"/>
+              </StackPanel>
+
+              <TextBlock Text="RUN AS A SERVICE" Style="{StaticResource SectionLabel}" Margin="0,22,0,8"/>
+              <TextBlock x:Name="TxtServiceState" Text="Checking&#8230;" Foreground="#cccccc" FontSize="12"/>
+              <TextBlock Text="A service starts with Windows and keeps running with nobody logged in. Installing needs administrator rights."
+                         Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0"/>
+              <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <Button x:Name="BtnInstallService" Style="{StaticResource SecondaryButton}"
+                        Content="Install service" Width="120"/>
+                <Button x:Name="BtnRemoveService" Style="{StaticResource DangerButton}"
+                        Content="Remove" Width="90" Margin="8,0,0,0"/>
+              </StackPanel>
+
+            </StackPanel>
+          </ScrollViewer>
         </Border>
       </Grid>
     </Grid>

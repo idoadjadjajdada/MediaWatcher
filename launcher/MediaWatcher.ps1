@@ -20,6 +20,8 @@ $ProjectRoot = Split-Path -Parent $LauncherRoot
 . (Join-Path $LauncherRoot 'lib\ServerProcess.ps1')
 . (Join-Path $LauncherRoot 'lib\Preflight.ps1')
 . (Join-Path $LauncherRoot 'lib\ApiClient.ps1')
+. (Join-Path $LauncherRoot 'lib\Supervisor.ps1')
+. (Join-Path $LauncherRoot 'lib\System.ps1')
 
 # --- load the window -------------------------------------------------------
 $xamlPath = Join-Path $LauncherRoot 'MainWindow.xaml'
@@ -51,6 +53,9 @@ $script:OutputQueue = New-MwQueue
 $script:ResultQueue = New-MwQueue
 $script:ServerHandle = $null
 $script:PollerHandle = $null
+# Auto-restart. Held here rather than inside the supervisor so the timer loop,
+# the buttons and the checkbox all read and write one object.
+$script:Supervisor = New-MwSupervisorState
 $script:FixHandles = @()
 $script:LastStatus = ''
 $script:ActiveJobCount = 0
@@ -385,11 +390,103 @@ function New-DownloadRow {
   return @{ Element = $stack; Fill = $fill; Track = $track; Percent = $Job.Percent }
 }
 
+<#
+  Throughput, sampled from progress rather than from the socket.
+
+  The launcher never sees the bytes - it polls the API for a percentage - so
+  the rate is derived: total progress across active jobs, differenced against
+  the previous sample and divided by the elapsed time. That makes it an
+  estimate of aggregate completion rather than a byte counter, which is
+  honest about what it can actually know and is still the number you want
+  when the question is "is this moving?".
+#>
+$script:ThroughputSamples = New-Object System.Collections.Generic.List[double]
+$script:ThroughputLast = $null
+$script:ThroughputMax = 60
+
+function Add-ThroughputSample {
+  param($Jobs)
+
+  $now = Get-Date
+  $active = @($Jobs | Where-Object { $_.Status -eq 'downloading' })
+
+  # Nothing running means a genuine zero, not a gap - a flat line while idle
+  # is the correct picture and keeps the graph's scale stable.
+  $completion = 0.0
+  foreach ($job in $active) { $completion += ([double]$job.Percent) }
+
+  if ($null -ne $script:ThroughputLast) {
+    $elapsed = ($now - $script:ThroughputLast.At).TotalSeconds
+    if ($elapsed -gt 0.25) {
+      $delta = $completion - $script:ThroughputLast.Completion
+      # Only forward movement. A finished job leaves the active set and drops
+      # the total, which would otherwise read as a large negative rate.
+      if ($delta -lt 0) { $delta = 0 }
+      $rate = $delta / $elapsed
+      $script:ThroughputSamples.Add($rate)
+      while ($script:ThroughputSamples.Count -gt $script:ThroughputMax) {
+        $script:ThroughputSamples.RemoveAt(0)
+      }
+      $script:ThroughputLast = @{ At = $now; Completion = $completion }
+    }
+  } else {
+    $script:ThroughputLast = @{ At = $now; Completion = $completion }
+  }
+
+  return $active.Count
+}
+
+function Draw-Throughput {
+  $canvas = $ThroughputCanvas
+  $canvas.Children.Clear()
+
+  $count = $script:ThroughputSamples.Count
+  if ($count -lt 2) { return }
+
+  $width = $canvas.ActualWidth
+  if ($width -le 0) { $width = 320 }
+  $height = $canvas.ActualHeight
+  if ($height -le 0) { $height = 46 }
+
+  # Scaled to the tallest sample in view, with a floor so a nearly-flat line
+  # does not get amplified into noise.
+  $peak = 0.0
+  foreach ($sample in $script:ThroughputSamples) { if ($sample -gt $peak) { $peak = $sample } }
+  if ($peak -lt 0.5) { $peak = 0.5 }
+
+  $points = New-Object System.Windows.Media.PointCollection
+  for ($i = 0; $i -lt $count; $i++) {
+    $x = ($i / [double]($count - 1)) * $width
+    $y = $height - (($script:ThroughputSamples[$i] / $peak) * ($height - 4)) - 2
+    [void]$points.Add((New-Object System.Windows.Point $x, $y))
+  }
+
+  $line = New-Object System.Windows.Shapes.Polyline
+  $line.Points = $points
+  $line.Stroke = $script:LogBrushes['plain']
+  $line.StrokeThickness = 1.6
+  $line.StrokeLineJoin = 'Round'
+  [void]$canvas.Children.Add($line)
+
+  $latest = $script:ThroughputSamples[$count - 1]
+  $TxtThroughput.Text = '{0:0.0}%/s' -f $latest
+}
+
 function Refresh-Downloads {
   param($Jobs)
 
   $DownloadItems.Children.Clear()
   $list = @($Jobs)
+
+  $activeCount = Add-ThroughputSample -Jobs $list
+  # The graph appears only while something is transferring; a flat line over an
+  # empty queue is a chart of nothing.
+  if ($activeCount -gt 0) {
+    $ThroughputPanel.Visibility = 'Visible'
+    Draw-Throughput
+  } else {
+    $ThroughputPanel.Visibility = 'Collapsed'
+  }
 
   if ($list.Count -eq 0) {
     $DownloadsEmpty.Visibility = 'Visible'
@@ -401,6 +498,68 @@ function Refresh-Downloads {
     $row = New-DownloadRow -Job $job
     [void]$DownloadItems.Children.Add($row.Element)
     Start-ProgressFill -Fill $row.Fill -Track $row.Track -Percent $row.Percent
+  }
+
+  Send-DownloadNotifications -Jobs $list
+}
+
+<#
+  Tell you when something finishes, whichever tab you are on.
+
+  Tracked by id against the previous poll rather than by listening for an
+  event: the launcher only ever sees job snapshots, so a transition is
+  something it has to notice by comparing. Only completions and failures are
+  announced - a queue that merely started is not news.
+#>
+$script:LastJobStatus = @{}
+
+function Send-DownloadNotifications {
+  param($Jobs)
+
+  foreach ($job in @($Jobs)) {
+    $id = [string]$job.Id
+    $status = [string]$job.Status
+    $previous = $null
+    if ($script:LastJobStatus.ContainsKey($id)) { $previous = $script:LastJobStatus[$id] }
+
+    # A first sighting is not a transition. Without this every job in the
+    # database announces itself the moment the launcher opens.
+    if ($null -ne $previous -and $previous -ne $status) {
+      if ($status -eq 'complete') {
+        Write-MwQueueNotice $script:OutputQueue "finished: $($job.Title)"
+        Show-MwToast -Title 'Download finished' -Text $job.Title
+      } elseif ($status -eq 'error') {
+        Write-MwQueueNotice $script:OutputQueue "failed: $($job.Title)"
+        Show-MwToast -Title 'Download failed' -Text $job.Title
+      }
+    }
+    $script:LastJobStatus[$id] = $status
+  }
+}
+
+<#
+  A balloon from the tray icon.
+
+  Deliberately the old NotifyIcon rather than a modern toast: a real Windows
+  toast needs a registered AppUserModelID and a Start Menu shortcut, which is
+  an installer's job, and this application is a script someone runs from a
+  folder. A balloon works with neither.
+#>
+function Show-MwToast {
+  param([string]$Title, [string]$Text)
+
+  try {
+    if ($null -eq $script:TrayIcon) {
+      Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+      $script:TrayIcon = New-Object System.Windows.Forms.NotifyIcon
+      $script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Information
+      $script:TrayIcon.Visible = $true
+    }
+    $script:TrayIcon.BalloonTipTitle = $Title
+    $script:TrayIcon.BalloonTipText = $Text
+    $script:TrayIcon.ShowBalloonTip(4000)
+  } catch {
+    # No tray, no notification. The log line above already said it.
   }
 }
 
@@ -449,6 +608,11 @@ function Start-Server {
   if ($null -ne $script:ServerHandle) { return }
   $level = [string]$CmbLogLevel.SelectedItem.Content
 
+  # Starting by hand clears both a pending restart and the "you asked for this"
+  # flag, so the supervisor treats what follows as a fresh run.
+  $script:Supervisor.UserStopped = $false
+  $script:Supervisor.RestartAt = $null
+
   # Clear the port before binding it. A server spawned by a previous launcher
   # outlives the window that started it, so the usual failure is "already in
   # use" against an orphan of our own making rather than a real conflict.
@@ -456,6 +620,7 @@ function Start-Server {
 
   Set-ServerStatus 'starting'
   $script:ServerHandle = Start-MwServer -Config $script:Config -LogLevel $level -Queue $script:OutputQueue
+  $script:Supervisor.StartedAt = Get-Date
   if ($null -eq $script:PollerHandle) {
     $script:PollerHandle = Start-ApiPoller -Config $script:Config -ResultQueue $script:ResultQueue
   }
@@ -485,6 +650,10 @@ function Clear-Port {
 
 function Stop-Server {
   if ($null -eq $script:ServerHandle) { return }
+  # Recorded before the process dies, because the exit is noticed on the next
+  # timer tick and by then there is nothing left to say who asked for it.
+  $script:Supervisor.UserStopped = $true
+  $script:Supervisor.RestartAt = $null
   Write-MwQueueNotice $script:OutputQueue 'stopping server'
   Stop-MwHandle $script:ServerHandle
   $script:ServerHandle = $null
@@ -635,6 +804,7 @@ function Select-Tab {
   $PanePreflight.Visibility = 'Collapsed'
   $PaneDownloads.Visibility = 'Collapsed'
   $PaneDevices.Visibility = 'Collapsed'
+  $PaneSystem.Visibility = 'Collapsed'
 
   $dim = $script:LogBrushes['debug']
   $bright = $script:LogBrushes['plain']
@@ -642,6 +812,7 @@ function Select-Tab {
   $TabPreflight.Foreground = $dim
   $TabDownloads.Foreground = $dim
   $TabDevices.Foreground = $dim
+  $TabSystem.Foreground = $dim
 
   # The underline jumps rather than slides - the slide animation was cut by design.
   switch ($Name) {
@@ -666,6 +837,14 @@ function Select-Tab {
       $TabUnderline.Margin = New-Object System.Windows.Thickness ($TabLog.ActualWidth + $TabPreflight.ActualWidth + $TabDownloads.ActualWidth), 0, 0, 0
       Start-PaneEntrance $PaneDevices
       Update-DeviceList
+    }
+    'system' {
+      $PaneSystem.Visibility = 'Visible'
+      $TabSystem.Foreground = $bright
+      $TabUnderline.Width = $TabSystem.ActualWidth
+      $TabUnderline.Margin = New-Object System.Windows.Thickness ($TabLog.ActualWidth + $TabPreflight.ActualWidth + $TabDownloads.ActualWidth + $TabDevices.ActualWidth), 0, 0, 0
+      Start-PaneEntrance $PaneSystem
+      Update-SystemPane
     }
     default {
       $PaneLog.Visibility = 'Visible'
@@ -693,7 +872,251 @@ $TabLog.Add_Click({ Select-Tab 'log' })
 $TabPreflight.Add_Click({ Select-Tab 'preflight' })
 $TabDownloads.Add_Click({ Select-Tab 'downloads' })
 $TabDevices.Add_Click({ Select-Tab 'devices' })
+$TabSystem.Add_Click({ Select-Tab 'system' })
 $BtnRefreshDevices.Add_Click({ Update-DeviceList })
+
+$ChkAutoRestart.Add_Click({
+  $script:Supervisor.Enabled = [bool]$ChkAutoRestart.IsChecked
+  if (-not $script:Supervisor.Enabled) {
+    # Cancel a restart already counting down, or unticking the box would be
+    # ignored for as long as the backoff had left to run.
+    $script:Supervisor.RestartAt = $null
+  }
+  Update-SupervisorLabel
+})
+
+<#
+  What the supervisor is doing, under the checkbox.
+
+  Says something only when there is something to say: a healthy server needs
+  no commentary, but a pending restart or an exhausted retry budget does.
+#>
+function Update-SupervisorLabel {
+  if (-not $script:Supervisor.Enabled) {
+    $TxtSupervisor.Text = 'off - a crash will leave it stopped'
+    return
+  }
+  if ($null -ne $script:Supervisor.RestartAt) {
+    $left = [int][Math]::Max(0, ($script:Supervisor.RestartAt - (Get-Date)).TotalSeconds)
+    $TxtSupervisor.Text = "restarting in ${left}s"
+    return
+  }
+  if ($script:Supervisor.Failures -gt 0) {
+    $TxtSupervisor.Text = "$($script:Supervisor.Failures) restart(s) so far"
+    return
+  }
+  $TxtSupervisor.Text = ''
+}
+
+
+# --- system pane -----------------------------------------------------------
+#
+# Everything here shells out to a tool that already exists - tailscale.exe,
+# sc.exe, the server's own diagnostics API. The parsing lives in lib\System.ps1
+# where it can be tested; this file is the wiring.
+
+$script:TailnetUrl = ''
+
+function Invoke-MwTool {
+  param([string]$FilePath, [string[]]$ToolArgs)
+  try {
+    return (& $FilePath @ToolArgs 2>&1 | Out-String)
+  } catch {
+    return ''
+  }
+}
+
+function Invoke-MwApi {
+  param([string]$Path, [string]$Method = 'GET')
+
+  if ($null -eq $script:ServerHandle) { return $null }
+  try {
+    $key = Get-MwAdminKey $script:Config.Root
+    return Invoke-RestMethod -Method $Method -TimeoutSec 20 `
+      -Uri "http://localhost:$($script:Config.Port)$Path" `
+      -Headers @{ 'x-mediawatcher-key' = $key }
+  } catch {
+    return $null
+  }
+}
+
+function Format-MwBytes {
+  param([double]$Bytes)
+  if ($Bytes -le 0) { return '0 B' }
+  $units = @('B', 'KB', 'MB', 'GB', 'TB')
+  $index = 0
+  while ($Bytes -ge 1024 -and $index -lt ($units.Count - 1)) { $Bytes = $Bytes / 1024; $index = $index + 1 }
+  return ('{0:0.#} {1}' -f $Bytes, $units[$index])
+}
+
+# The server encodes the QR; this draws the matrix it sends back. WPF has no
+# SVG renderer, and one rectangle per dark module is a handful of lines.
+function Update-QrCode {
+  param([string]$Text)
+
+  $QrCanvas.Children.Clear()
+  if ([string]::IsNullOrWhiteSpace($Text)) { return }
+
+  $encoded = [uri]::EscapeDataString($Text)
+  $response = Invoke-MwApi "/api/diagnostics/qr?format=json&text=$encoded"
+  if ($null -eq $response) { return }
+
+  $size = [int]$response.size
+  if ($size -le 0) { return }
+  $module = [Math]::Floor($QrCanvas.Width / $size)
+  if ($module -lt 1) { $module = 1 }
+
+  $black = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Colors]::Black)
+  for ($r = 0; $r -lt $size; $r = $r + 1) {
+    for ($c = 0; $c -lt $size; $c = $c + 1) {
+      if ($response.matrix[$r][$c] -ne 1) { continue }
+      $rect = New-Object System.Windows.Shapes.Rectangle
+      $rect.Width = $module
+      $rect.Height = $module
+      $rect.Fill = $black
+      [System.Windows.Controls.Canvas]::SetLeft($rect, $c * $module)
+      [System.Windows.Controls.Canvas]::SetTop($rect, $r * $module)
+      [void]$QrCanvas.Children.Add($rect)
+    }
+  }
+}
+
+function Update-TailscalePane {
+  $exe = Get-MwTailscalePath
+  if ($null -eq $exe) {
+    $TxtTailscaleState.Text = 'Tailscale is not installed'
+    $TxtTailnetUrl.Text = 'Install it from tailscale.com to reach this server from anywhere.'
+    $BtnTailscaleServe.IsEnabled = $false
+    $BtnCopyTailnet.IsEnabled = $false
+    $QrCanvas.Children.Clear()
+    return
+  }
+
+  $status = ConvertTo-MwTailscaleStatus (Invoke-MwTool $exe @('status', '--json'))
+  $TxtTailscaleState.Text = $status.Label
+  $script:TailnetUrl = Get-MwTailnetUrl $status.DnsName
+
+  if ((-not $status.Running) -or (-not $script:TailnetUrl)) {
+    $TxtTailnetUrl.Text = 'Connect Tailscale to get a shareable address.'
+    $BtnTailscaleServe.IsEnabled = $false
+    $BtnCopyTailnet.IsEnabled = $false
+    $QrCanvas.Children.Clear()
+    return
+  }
+
+  $BtnCopyTailnet.IsEnabled = $true
+  $BtnTailscaleServe.IsEnabled = $true
+
+  $serveJson = Invoke-MwTool $exe @('serve', 'status', '--json')
+  if (Test-MwServePublished -Json $serveJson -Port $script:Config.Port) {
+    $TxtTailnetUrl.Text = $script:TailnetUrl
+    $BtnTailscaleServe.Content = 'Stop sharing'
+    Update-QrCode $script:TailnetUrl
+  } else {
+    $TxtTailnetUrl.Text = "$($script:TailnetUrl)  (not shared yet)"
+    $BtnTailscaleServe.Content = 'Start sharing'
+    $QrCanvas.Children.Clear()
+  }
+}
+
+function Update-CachePane {
+  $diagnostics = Invoke-MwApi '/api/diagnostics'
+  if ($null -eq $diagnostics) {
+    $TxtCacheSizes.Text = 'Start the server to see cache sizes'
+    $BtnSweepCache.IsEnabled = $false
+    $BtnClearMp4.IsEnabled = $false
+    $BtnClearThumbs.IsEnabled = $false
+    return
+  }
+
+  $BtnSweepCache.IsEnabled = $true
+  $BtnClearMp4.IsEnabled = $true
+  $BtnClearThumbs.IsEnabled = $true
+  $TxtCacheSizes.Text = ('Video {0} in {1} files     Thumbnails {2} in {3} files' -f `
+    (Format-MwBytes $diagnostics.caches.mp4.bytes), $diagnostics.caches.mp4.files, `
+    (Format-MwBytes $diagnostics.caches.thumbs.bytes), $diagnostics.caches.thumbs.files)
+}
+
+function Update-ServicePane {
+  $status = ConvertTo-MwServiceStatus (Invoke-MwTool 'sc.exe' @('query', 'MediaWatcher'))
+  $elevated = Test-MwElevated
+
+  $TxtServiceState.Text = $status.Label
+  if (-not $elevated) {
+    $TxtServiceState.Text = "$($status.Label)  -  run the launcher as administrator to change this"
+  }
+
+  $BtnInstallService.IsEnabled = ((-not $status.Installed) -and $elevated)
+  $BtnRemoveService.IsEnabled = ($status.Installed -and $elevated)
+}
+
+function Update-SystemPane {
+  Update-TailscalePane
+  Update-CachePane
+  Update-ServicePane
+}
+
+$BtnCopyTailnet.Add_Click({
+  if ($script:TailnetUrl) {
+    Set-Clipboard -Value $script:TailnetUrl
+    Write-MwQueueNotice $script:OutputQueue "copied $($script:TailnetUrl)"
+  }
+})
+
+$BtnTailscaleServe.Add_Click({
+  $exe = Get-MwTailscalePath
+  if ($null -eq $exe) { return }
+
+  if ($BtnTailscaleServe.Content -eq 'Stop sharing') {
+    Write-MwQueueNotice $script:OutputQueue 'stopping tailscale serve'
+    Invoke-MwTool $exe @('serve', '--https=443', 'off') | Out-Null
+  } else {
+    Write-MwQueueNotice $script:OutputQueue "publishing port $($script:Config.Port) over tailscale"
+    Invoke-MwTool $exe @('serve', '--bg', [string]$script:Config.Port) | Out-Null
+  }
+  Update-TailscalePane
+})
+
+$BtnSweepCache.Add_Click({
+  $result = Invoke-MwApi '/api/diagnostics/cache/sweep' 'POST'
+  if ($null -ne $result) { Write-MwQueueNotice $script:OutputQueue 'cache swept' }
+  Update-CachePane
+})
+
+$BtnClearMp4.Add_Click({
+  $result = Invoke-MwApi '/api/diagnostics/cache/mp4' 'DELETE'
+  if ($null -ne $result) {
+    Write-MwQueueNotice $script:OutputQueue "cleared the video cache ($($result.files) files)"
+  }
+  Update-CachePane
+})
+
+$BtnClearThumbs.Add_Click({
+  $result = Invoke-MwApi '/api/diagnostics/cache/thumbs' 'DELETE'
+  if ($null -ne $result) {
+    Write-MwQueueNotice $script:OutputQueue "cleared the thumbnail cache ($($result.files) files)"
+  }
+  Update-CachePane
+})
+
+$BtnInstallService.Add_Click({
+  $node = (Get-Command node -ErrorAction SilentlyContinue).Source
+  if (-not $node) {
+    Write-MwQueueNotice $script:OutputQueue 'cannot install: node is not on PATH'
+    return
+  }
+  $installArgs = Get-MwServiceInstallArgs -NodePath $node -Root $script:Config.Root -Port $script:Config.Port
+  $output = Invoke-MwTool 'sc.exe' $installArgs
+  Write-MwQueueNotice $script:OutputQueue ('sc create: ' + $output.Trim())
+  Update-ServicePane
+})
+
+$BtnRemoveService.Add_Click({
+  Invoke-MwTool 'sc.exe' @('stop', 'MediaWatcher') | Out-Null
+  $output = Invoke-MwTool 'sc.exe' @('delete', 'MediaWatcher')
+  Write-MwQueueNotice $script:OutputQueue ('sc delete: ' + $output.Trim())
+  Update-ServicePane
+})
 
 # --- pre-flight ------------------------------------------------------------
 function New-PreflightRow {
@@ -824,6 +1247,16 @@ $timer.Add_Tick({
     Receive-ApiResult $script:ResultQueue.Dequeue()
   }
 
+  # A restart whose backoff has elapsed. Checked before the exit branch so the
+  # window between "it died" and "it is back" is a single tick.
+  if ($null -eq $script:ServerHandle -and (Test-MwRestartDue -State $script:Supervisor)) {
+    $script:Supervisor.RestartAt = $null
+    Write-MwQueueNotice $script:OutputQueue 'restarting now'
+    Start-Server
+  }
+
+  Update-SupervisorLabel
+
   $running = Update-ButtonStates
   if (-not $running -and $null -ne $script:ServerHandle) {
     $code = $script:ServerHandle.Process.ExitCode
@@ -834,8 +1267,26 @@ $timer.Add_Tick({
       Stop-ApiPoller $script:PollerHandle
       $script:PollerHandle = $null
     }
-    Set-ServerStatus 'stopped'
-    Clear-StatusTiles
+
+    $decision = Get-MwRestartDecision -State $script:Supervisor -ExitCode $code
+    $script:Supervisor.Failures = $decision.Failures
+    $script:Supervisor.LastExitAt = Get-Date
+
+    if ($decision.Restart) {
+      $script:Supervisor.RestartAt = (Get-Date).AddSeconds($decision.DelaySeconds)
+      Write-MwQueueNotice $script:OutputQueue $decision.Reason
+      Set-ServerStatus 'starting'
+      $StatusText.Text = "Restarting in $($decision.DelaySeconds)s"
+    } else {
+      $script:Supervisor.RestartAt = $null
+      # Only worth saying when a decision was actually made against restarting;
+      # an ordinary Stop does not need explaining back to the person who pressed it.
+      if (-not $script:Supervisor.UserStopped) {
+        Write-MwQueueNotice $script:OutputQueue $decision.Reason
+      }
+      Set-ServerStatus 'stopped'
+      Clear-StatusTiles
+    }
   } elseif ($running) {
     # Promote starting -> running. Set-ServerStatus is guarded on $LastStatus,
     # so this is a no-op after the first tick; without it the pill stays amber
@@ -849,6 +1300,14 @@ $timer.Add_Tick({
 })
 
 # --- boot ------------------------------------------------------------------
+$window.Add_Closed({
+  if ($null -ne $script:TrayIcon) {
+    $script:TrayIcon.Visible = $false
+    $script:TrayIcon.Dispose()
+    $script:TrayIcon = $null
+  }
+})
+
 $window.Add_Loaded({
   Write-MwQueueNotice $script:OutputQueue 'launcher ready - press Start server'
   Set-ServerStatus 'stopped'

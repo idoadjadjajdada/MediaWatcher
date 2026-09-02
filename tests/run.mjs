@@ -53,6 +53,7 @@ const SUITES = [
   { file: 'offline.test.mjs' },
   { file: 'warmup.test.mjs' },
   { file: 'queue-order.test.mjs' },
+  { file: 'qr.test.mjs' },
   { file: 'hls-playlist.test.mjs' },
   { file: 'hls-session.test.mjs' },
   { file: 'hls-ownership.test.mjs' },
