@@ -23,6 +23,14 @@ import { previewFraction, cardLeft, frameIndex } from './preview.js';
 import { attachHls } from './hls-player.js';
 import * as mediaSession from './media-session.js';
 import { introKey, shouldOfferSkip } from './intro.js';
+import {
+  loadSubtitleStyle, saveSubtitleStyle, normaliseStyle, cueCss, applyCuePosition,
+  COLOURS, SIZE_MIN, SIZE_MAX, OPACITY_MIN, OPACITY_MAX, POSITION_MIN, POSITION_MAX
+} from './subtitle-style.js';
+import { parseAss, renderAssText, eventsAt, alignmentToAnchor } from './ass.js';
+import {
+  prefsKey, matchAudio, matchSubtitle, describeAudio, describeSubtitle
+} from './track-prefs.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -223,15 +231,19 @@ async function openInner(filePath) {
     ? `${episodeTag(located.season, located.episode.episode_number)}${located.episode.title ? ` · ${located.episode.title}` : ''}`
     : (located?.item?.year ? String(located.item.year) : '');
 
+  // The remembered audio and subtitle choice for this title, if there is one.
+  const trackKey = prefsKey(located);
+
   // Probe, saved position and subtitle list in parallel — none depend on each other.
-  const [info, saved, tracks, intro] = await Promise.all([
+  const [info, saved, tracks, intro, prefs] = await Promise.all([
     api.getStreamInfo(filePath).catch(() => null),
     api.getProgressFor(filePath).catch(() => null),
     api.listSubtitles(filePath).catch(() => []),
     // Only shows have a repeating intro to have learned anything about.
     located?.type === 'episode' && located.item?.tmdb_id
       ? api.getIntro(located.item.tmdb_id, located.season).then((r) => r.marker).catch(() => null)
-      : Promise.resolve(null)
+      : Promise.resolve(null),
+    trackKey ? api.getTrackPrefs(trackKey).then((r) => r.prefs).catch(() => null) : Promise.resolve(null)
   ]);
 
   const seekable = info ? info.seekable !== false : true;
@@ -268,8 +280,11 @@ async function openInner(filePath) {
     duration: totalDuration,
     tracks: Array.isArray(tracks) ? tracks : [],
     // Subtitles load automatically when the file has any: external sidecars are
-    // listed before embedded tracks, so [0] is the best available.
-    activeTrack: (Array.isArray(tracks) && tracks[0]) || null,
+    // listed before embedded tracks, so [0] is the best available. A remembered
+    // choice for this show overrides that, including a remembered "off".
+    activeTrack: rememberedTrack(prefs, Array.isArray(tracks) ? tracks : []),
+    trackKey,
+    prefs,
     speed: 1,
     audioOffset: (saved && Number(saved.audio_offset)) || 0,
     // Which audio stream of the file to decode. The server re-encodes the
@@ -280,6 +295,13 @@ async function openInner(filePath) {
     intro,
     // Global, not per-file: brightness tracks the room, not the master.
     picture: loadPicture(),
+    // Same reasoning: how big subtitles need to be is a property of the screen
+    // you are sitting in front of, not of the episode.
+    subtitleStyle: loadSubtitleStyle(),
+    // The parsed ASS document and its animation-frame handle, when the active
+    // track is one the overlay renderer owns rather than a <track> element.
+    ass: null,
+    assFrame: null,
     // Set by the touch handlers; read by markIdle to choose its timing and by
     // the click guard to ignore the synthetic click that follows a tap.
     lastTouchAt: 0,
@@ -292,6 +314,10 @@ async function openInner(filePath) {
   };
 
   setState({ player: { open: true, src: filePath, subs: ctx.tracks, resumeAt } });
+
+  // The rule lives on document.head, which survives the player being torn
+  // down and rebuilt, so it is written on every open rather than once.
+  writeCueStyle(ctx.subtitleStyle);
 
   // "Added Some.Release.Name" from the previous episode would otherwise still
   // be sitting under the button on this one.
@@ -332,12 +358,25 @@ async function openInner(filePath) {
   if (resumeAt > RESUME_MIN) showResumedPill(resumeAt);
 
   /*
+   * The remembered audio track can only be resolved now: matching it needs the
+   * file's own track list, which is what the probe just returned. Assigned
+   * rather than applied through setAudioTrack so it rides the one reload below
+   * instead of triggering a second encoder restart of its own.
+   */
+  const rememberedAudio = matchAudio(ctx.prefs, ctx.info?.audio_tracks || []);
+  if (rememberedAudio !== null) ctx.audioIndex = rememberedAudio;
+
+  /*
    * The stream URL is fetched in parallel with the saved progress, so it cannot
    * carry a delay that is only known once that progress arrives. Rather than
    * serialise two round trips on every open — the common case has no delay —
-   * the rare file that does have one re-opens its stream once.
+   * the rare file that does have one re-opens its stream once. A remembered
+   * non-default audio track is the same situation and takes the same reload.
    */
-  if (ctx.audioOffset !== 0) reloadStream(resumeAt).catch(() => {});
+  if (ctx.audioOffset !== 0 || ctx.audioIndex !== 0) {
+    reloadStream(resumeAt).catch(() => {});
+    buildMenu();
+  }
 
   ctx.node.focus();
   document.addEventListener('keydown', onKeyDown);
@@ -363,6 +402,9 @@ export async function close({ save = true, keepPage = false } = {}) {
   clearTimeout(ctx.resumedTimer);
   clearTimeout(ctx.idleTimer);
   clearTimeout(ctx.thumbRetry);
+  // An animation-frame loop is not a timer and survives everything above it,
+  // so it has to be cancelled by name or it keeps running against a dead ctx.
+  stopAssRendering();
 
   /*
    * Dropping the src stopped the old pipe's ffmpeg because the response closed.
@@ -727,6 +769,7 @@ function buildSubsPopover() {
       </button>`).join('')}
     ${ctx.tracks.length === 0 ? '<div class="player__menu-label">None found</div>' : ''}
     ${buildFetchSection()}
+    ${ctx.tracks.length > 0 ? buildStyleSection() : ''}
     ${buildAudioTrackSection()}`;
 }
 
@@ -1130,8 +1173,19 @@ function applyTrack(track) {
   if (!ctx) return;
 
   for (const node of Array.from(ctx.video.querySelectorAll('track'))) node.remove();
+  // Whichever mechanism was in use, tear it down before installing the other:
+  // switching from an ASS track to a WebVTT one has to stop the overlay loop,
+  // or both would draw at once.
+  stopAssRendering();
   ctx.activeTrack = track || null;
   if (!track) return;
+
+  // ASS carries positioning a <track> cannot express, so it goes to the
+  // overlay renderer instead of the element.
+  if (track.styled) {
+    attachAssTrack(track);
+    return;
+  }
 
   const node = document.createElement('track');
   node.kind = 'subtitles';
@@ -1144,14 +1198,349 @@ function applyTrack(track) {
   // The text track only exists once the element is attached.
   requestAnimationFrame(() => {
     const textTracks = ctx.video.textTracks;
-    if (textTracks.length > 0) textTracks[textTracks.length - 1].mode = 'showing';
+    if (textTracks.length === 0) return;
+
+    const textTrack = textTracks[textTracks.length - 1];
+    textTrack.mode = 'showing';
+
+    // Position lives on each cue, not in CSS, so it has to be re-applied as
+    // cues arrive rather than set once here - a track is parsed incrementally
+    // and the cue list is usually still empty at this point.
+    applyCuePosition(textTrack, ctx.subtitleStyle);
+    textTrack.addEventListener('cuechange', () => {
+      if (ctx) applyCuePosition(textTrack, ctx.subtitleStyle);
+    });
   });
 }
 
 export function setSubtitle(value) {
   if (!ctx) return;
-  applyTrack(value === 'off' ? null : ctx.tracks[Number(value)]);
+  const track = value === 'off' ? null : ctx.tracks[Number(value)];
+  applyTrack(track);
+  rememberTracks({ ...describeSubtitle(track) });
   buildMenu();
+}
+
+/* --------------------------------------------------------------------------
+ * Remembering the audio and subtitle choice per title
+ *
+ * Stored as language and source rather than as an index, because an index
+ * belongs to the file: one release muxes the commentary second, the next muxes
+ * it fifth. track-prefs.js matches the stored description back to whatever the
+ * episode being opened actually carries.
+ * ----------------------------------------------------------------------- */
+
+/**
+ * The subtitle track to open with, given what was remembered.
+ *
+ * Three cases, and the middle one is why matchSubtitle does not just return an
+ * index: -1 means someone turned subtitles off and wants them to stay off,
+ * null means nothing was ever chosen and the usual default applies.
+ */
+function rememberedTrack(prefs, tracks) {
+  const match = matchSubtitle(prefs, tracks);
+  if (match === -1) return null;
+  if (match === null) return tracks[0] || null;
+  return tracks[match] || null;
+}
+
+/** Persist a change. Failing to remember must never interrupt playback. */
+function rememberTracks(patch) {
+  if (!ctx?.trackKey) return;
+
+  ctx.prefs = { ...(ctx.prefs || {}), ...patch };
+  api.saveTrackPrefs({ key: ctx.trackKey, ...ctx.prefs })
+    .catch((error) => console.warn('could not save track preferences:', error.message));
+}
+
+/* --------------------------------------------------------------------------
+ * ASS rendering
+ *
+ * A <track> element speaks WebVTT and nothing else, so an ASS subtitle can
+ * only reach it by being flattened - which throws away the positioning that
+ * makes signs and translation notes readable. These are parsed instead and
+ * drawn into an overlay.
+ *
+ * Coordinates are the fiddly part. ASS positions are expressed in the script's
+ * own play resolution, and the video is object-fit: contain, so the picture is
+ * letterboxed inside its element. Mapping through the element's box instead of
+ * the video's puts every positioned sign in the wrong place on any file whose
+ * aspect ratio differs from the window's.
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Where the picture actually is inside the video element.
+ *
+ * With object-fit: contain the video keeps its aspect ratio and is centred, so
+ * the drawn area is narrower or shorter than the element and offset by the
+ * bars. Before metadata arrives there are no intrinsic dimensions to scale by,
+ * and the element's own box is the best available guess.
+ */
+export function videoRect(video) {
+  const width = video.clientWidth;
+  const height = video.clientHeight;
+  const intrinsicW = video.videoWidth;
+  const intrinsicH = video.videoHeight;
+
+  if (!intrinsicW || !intrinsicH || !width || !height) {
+    return { left: 0, top: 0, width, height };
+  }
+
+  const scale = Math.min(width / intrinsicW, height / intrinsicH);
+  const drawnW = intrinsicW * scale;
+  const drawnH = intrinsicH * scale;
+  return {
+    left: (width - drawnW) / 2,
+    top: (height - drawnH) / 2,
+    width: drawnW,
+    height: drawnH
+  };
+}
+
+/** An ASS outline drawn as a ring of shadows, since text-stroke is one-sided. */
+function outlineShadow(width, colour) {
+  if (!(width > 0)) return '';
+  const w = Math.max(1, Math.round(width));
+  const offsets = [];
+  for (let x = -w; x <= w; x += 1) {
+    for (let y = -w; y <= w; y += 1) {
+      if (x !== 0 || y !== 0) offsets.push(`${x}px ${y}px 0 ${colour}`);
+    }
+  }
+  return offsets.join(', ');
+}
+
+/**
+ * Draw the events playing at `time` into the overlay.
+ *
+ * The whole overlay is rebuilt each pass rather than diffed: a frame carries a
+ * handful of cues at most, and tracking which of them changed costs more than
+ * re-writing the markup.
+ */
+function renderAssFrame(time) {
+  const overlay = el('player-ass');
+  if (!overlay || !ctx?.ass) return;
+
+  const active = eventsAt(ctx.ass.events, time);
+  if (active.length === 0) {
+    if (overlay.innerHTML !== '') overlay.innerHTML = '';
+    return;
+  }
+
+  const rect = videoRect(ctx.video);
+  const scale = rect.height / ctx.ass.playResY;
+  // The viewer's size preference multiplies the script's own sizes rather than
+  // replacing them, so the relative sizing a typesetter chose is preserved.
+  const sizeFactor = (ctx.subtitleStyle?.size ?? 100) / 100;
+
+  const html = active.map((event) => {
+    const style = ctx.ass.styles.get(event.style)
+      || ctx.ass.styles.values().next().value
+      || null;
+
+    const rendered = renderAssText(event.text, style);
+    const alignment = rendered.alignment ?? style?.alignment ?? 2;
+    const anchor = alignmentToAnchor(alignment);
+
+    const fontSize = (style?.size ?? 48) * scale * sizeFactor;
+    const outline = outlineShadow((style?.outline ?? 0) * scale, style?.outlineColour ?? 'rgba(0,0,0,1)');
+
+    const css = [
+      `font-family:${JSON.stringify(style?.font || 'sans-serif')}, sans-serif`,
+      `font-size:${fontSize.toFixed(1)}px`,
+      `color:${style?.primary || '#fff'}`,
+      style?.bold ? 'font-weight:700' : '',
+      style?.italic ? 'font-style:italic' : '',
+      outline ? `text-shadow:${outline}` : ''
+    ].filter(Boolean);
+
+    if (rendered.position) {
+      // \pos anchors the box at that point, so the transform depends on which
+      // corner the alignment nominates.
+      const x = rect.left + (rendered.position.x / ctx.ass.playResX) * rect.width;
+      const y = rect.top + (rendered.position.y / ctx.ass.playResY) * rect.height;
+      const shiftX = anchor.horizontal === 'center' ? '-50%' : anchor.horizontal === 'right' ? '-100%' : '0';
+      const shiftY = anchor.vertical === 'middle' ? '-50%' : anchor.vertical === 'bottom' ? '-100%' : '0';
+      css.push(`left:${x.toFixed(1)}px`, `top:${y.toFixed(1)}px`, `transform:translate(${shiftX}, ${shiftY})`);
+      if (anchor.horizontal === 'center') css.push('text-align:center');
+    } else {
+      // Margins are in script units too. The event's own margin wins over the
+      // style's when it is non-zero, which is what ASS specifies.
+      const marginL = (event.marginL || style?.marginL || 0) * scale;
+      const marginR = (event.marginR || style?.marginR || 0) * scale;
+      const marginV = (event.marginV || style?.marginV || 0) * scale;
+
+      css.push(`left:${(rect.left + marginL).toFixed(1)}px`);
+      css.push(`width:${Math.max(0, rect.width - marginL - marginR).toFixed(1)}px`);
+      css.push(`text-align:${anchor.horizontal}`);
+
+      if (anchor.vertical === 'bottom') {
+        // The viewer's height preference lifts dialogue off the bottom edge,
+        // the same setting that moves WebVTT cues.
+        const lift = ((ctx.subtitleStyle?.position ?? 0) / 100) * rect.height;
+        css.push(`bottom:${(ctx.video.clientHeight - rect.top - rect.height + marginV + lift).toFixed(1)}px`);
+      } else if (anchor.vertical === 'top') {
+        css.push(`top:${(rect.top + marginV).toFixed(1)}px`);
+      } else {
+        css.push(`top:${(rect.top + rect.height / 2).toFixed(1)}px`, 'transform:translateY(-50%)');
+      }
+    }
+
+    return `<div class="ass-cue" style="${esc(css.join(';'))}">${rendered.html}</div>`;
+  }).join('');
+
+  overlay.innerHTML = html;
+}
+
+/**
+ * Drive the overlay off the animation frame rather than `timeupdate`.
+ *
+ * `timeupdate` fires about four times a second, which is visibly late for a
+ * cue that should appear on a cut. The loop stops itself as soon as the ASS
+ * track goes away, so it costs nothing on the common WebVTT path.
+ */
+function startAssLoop() {
+  if (ctx.assFrame) return;
+
+  const tick = () => {
+    if (!ctx || !ctx.ass) {
+      if (ctx) ctx.assFrame = null;
+      return;
+    }
+    renderAssFrame(ctx.video.currentTime);
+    ctx.assFrame = requestAnimationFrame(tick);
+  };
+  ctx.assFrame = requestAnimationFrame(tick);
+}
+
+function stopAssRendering() {
+  if (!ctx) return;
+  if (ctx.assFrame) cancelAnimationFrame(ctx.assFrame);
+  ctx.assFrame = null;
+  ctx.ass = null;
+  const overlay = el('player-ass');
+  if (overlay) overlay.innerHTML = '';
+}
+
+/**
+ * Fetch and parse an ASS track, then start drawing it.
+ *
+ * Guarded against the viewer switching tracks mid-fetch: the track is checked
+ * against the active one before anything is installed, so a slow response for
+ * a track that has since been turned off cannot resurrect it.
+ */
+async function attachAssTrack(track) {
+  const url = api.subsUrl(ctx.filePath, track, { raw: true });
+  const forFile = ctx.filePath;
+
+  let text;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`subtitle request failed (${response.status})`);
+    text = await response.text();
+  } catch (error) {
+    console.error('could not load ASS subtitle:', error);
+    toast('error', 'Subtitle could not be loaded', error.message);
+    return;
+  }
+
+  if (!ctx || ctx.filePath !== forFile || ctx.activeTrack !== track) return;
+
+  const parsed = parseAss(text);
+  if (parsed.events.length === 0) {
+    toast('error', 'Subtitle was empty', 'Nothing to show for this track');
+    return;
+  }
+
+  ctx.ass = parsed;
+  startAssLoop();
+}
+
+/* --------------------------------------------------------------------------
+ * Subtitle appearance
+ *
+ * Colour, size and background go through a stylesheet the player owns, in one
+ * `::cue` rule that is rewritten in place. Position cannot go the same way -
+ * `::cue` has no say over where a cue sits - so it is pushed onto the cues
+ * themselves in applyTrack, and onto the overlay in renderAssFrame.
+ * ----------------------------------------------------------------------- */
+
+const STYLE_ELEMENT_ID = 'subtitle-cue-style';
+
+function writeCueStyle(style) {
+  let node = document.getElementById(STYLE_ELEMENT_ID);
+  if (!node) {
+    node = document.createElement('style');
+    node.id = STYLE_ELEMENT_ID;
+    document.head.appendChild(node);
+  }
+  node.textContent = cueCss(style);
+}
+
+/**
+ * Change the appearance and apply it everywhere it shows.
+ *
+ * Both halves run every time even when only one changed: rewriting the rule is
+ * a single assignment and repositioning is a walk over at most a few hundred
+ * cues, so telling them apart would cost more than doing both.
+ */
+export function setSubtitleStyle(patch) {
+  if (!ctx) return;
+
+  ctx.subtitleStyle = normaliseStyle({ ...ctx.subtitleStyle, ...patch });
+  saveSubtitleStyle(ctx.subtitleStyle);
+  writeCueStyle(ctx.subtitleStyle);
+
+  const textTracks = ctx.video?.textTracks;
+  if (textTracks) {
+    for (const textTrack of Array.from(textTracks)) {
+      if (textTrack.mode === 'showing') applyCuePosition(textTrack, ctx.subtitleStyle);
+    }
+  }
+
+  buildSubsPopover();
+}
+
+/** Nudge a numeric field by a step, clamped by normaliseStyle. */
+export function nudgeSubtitleStyle(field, delta) {
+  if (!ctx) return;
+  setSubtitleStyle({ [field]: (ctx.subtitleStyle[field] ?? 0) + Number(delta) });
+}
+
+export function setSubtitleColour(colour) {
+  setSubtitleStyle({ colour });
+}
+
+export function resetSubtitleStyle() {
+  setSubtitleStyle(normaliseStyle({}));
+}
+
+/** The appearance controls, appended to the subtitles menu. */
+function buildStyleSection() {
+  const style = ctx.subtitleStyle;
+
+  const row = (label, field, value, suffix, min, max, step) => `
+    <div class="substyle__row">
+      <span class="substyle__label">${label}</span>
+      <button class="substyle__step" data-action="subtitle-nudge" data-field="${field}" data-delta="${-step}"
+        ${value <= min ? 'disabled' : ''} aria-label="Decrease ${label}">&minus;</button>
+      <span class="substyle__value t-num">${value}${suffix}</span>
+      <button class="substyle__step" data-action="subtitle-nudge" data-field="${field}" data-delta="${step}"
+        ${value >= max ? 'disabled' : ''} aria-label="Increase ${label}">+</button>
+    </div>`;
+
+  return `
+    <div class="player__menu-label">Appearance</div>
+    ${row('Size', 'size', style.size, '%', SIZE_MIN, SIZE_MAX, 10)}
+    ${row('Background', 'opacity', style.opacity, '%', OPACITY_MIN, OPACITY_MAX, 10)}
+    ${row('Height', 'position', style.position, '%', POSITION_MIN, POSITION_MAX, 2)}
+    <div class="substyle__colours">
+      ${Object.entries(COLOURS).map(([name, hex]) => `
+        <button class="substyle__colour${style.colour === name ? ' is-active' : ''}"
+          data-action="subtitle-colour" data-colour="${name}"
+          style="background:${hex}" aria-label="${name}" title="${name}"></button>`).join('')}
+      <button class="substyle__reset" data-action="subtitle-reset">Reset</button>
+    </div>`;
 }
 
 /**
@@ -1260,6 +1649,7 @@ export async function setAudioTrack(index) {
   const wanted = Number(index);
   if (!ctx || !Number.isFinite(wanted) || wanted === ctx.audioIndex) return;
   ctx.audioIndex = wanted;
+  rememberTracks(describeAudio(ctx.info?.audio_tracks || [], wanted));
   buildMenu();
   await reloadStream();
 }

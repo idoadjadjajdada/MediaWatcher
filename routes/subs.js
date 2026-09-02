@@ -10,6 +10,7 @@
  *   /api/subs?path=…&list=1       every track, as JSON, for the player menu
  *   /api/subs?path=…&lang=en      a specific language
  *   /api/subs?path=…&embedded=0   a specific embedded stream index
+ *   /api/subs?path=…&embedded=0&raw=1   that stream as ASS rather than WebVTT
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,11 +25,15 @@ import { fetchForFile, fetchForFiles } from '../services/subtitleFetch.js';
 const log = createLogger('api:subs');
 const router = express.Router();
 
-// Browsers render WebVTT only; SRT is converted, ASS is served as plain text
-// for download rather than pretended to be a usable track.
+// A <track> element renders WebVTT only, so SRT is converted to it. ASS is
+// served as-is instead: the player parses and draws it itself, because
+// flattening it to WebVTT discards the positioning and styling that is the
+// whole reason a release shipped ASS.
 const PREFERRED_ORDER = ['.vtt', '.srt', '.ass'];
 // Image-based subtitle formats cannot become VTT at all.
 const BITMAP_CODECS = new Set(['dvd_subtitle', 'hdmv_pgs_subtitle', 'dvb_subtitle', 'xsub']);
+// Text formats that carry styling and positioning a <track> element cannot express.
+const STYLED_CODECS = new Set(['ass', 'ssa']);
 
 /**
  * Subtitle files beside `videoPath` whose stem matches, with or without a
@@ -89,6 +94,9 @@ export function srtToVtt(input) {
   return `WEBVTT\n\n${body}\n`;
 }
 
+/** Did the caller ask for ASS rather than the WebVTT a <track> would want? */
+const assRequested = (req) => req.query.raw === '1' || req.query.raw === 'true';
+
 router.get('/', async (req, res, next) => {
   try {
     const requested = req.query.path;
@@ -115,6 +123,7 @@ router.get('/', async (req, res, next) => {
           lang: entry.lang,
           ext: entry.ext,
           label: entry.lang ? entry.lang.toUpperCase() : 'External',
+          styled: entry.ext === '.ass',
           path: entry.file
         })),
         ...embedded.map((track) => ({
@@ -123,6 +132,9 @@ router.get('/', async (req, res, next) => {
           lang: track.language,
           codec: track.codec,
           forced: track.forced,
+          // The client renders these itself; converting them to WebVTT would
+          // drop exactly the styling and positioning that makes them ASS.
+          styled: STYLED_CODECS.has(track.codec),
           label: track.title
             || `${(track.language || 'Embedded').toUpperCase()}${track.forced ? ' (forced)' : ''}`
         }))
@@ -135,7 +147,7 @@ router.get('/', async (req, res, next) => {
       if (!Number.isInteger(index) || !embedded.some((track) => track.index === index)) {
         return res.status(404).json({ error: `no embedded subtitle stream ${req.query.embedded}` });
       }
-      return pipeEmbedded(res, videoPath, index);
+      return pipeEmbedded(res, videoPath, index, assRequested(req) ? 'ass' : 'webvtt');
     }
 
     /* ---- pick the best track ---- */
@@ -158,8 +170,9 @@ router.get('/', async (req, res, next) => {
       res.setHeader('X-Subtitle-Source', 'external');
 
       if (externalChoice.ext === '.ass') {
-        // No native ASS renderer exists in the <track> element.
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        // Sent as ASS, not flattened: public/js/ass.js parses it and draws the
+        // cues into an overlay, which is the only way to keep the positioning.
+        res.setHeader('Content-Type', 'text/x-ssa; charset=utf-8');
         return res.send(text);
       }
 
@@ -182,13 +195,14 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-/** Stream one embedded track through ffmpeg's WebVTT muxer. */
-function pipeEmbedded(res, videoPath, index) {
-  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+/** Stream one embedded track out of the container, as WebVTT or as ASS. */
+function pipeEmbedded(res, videoPath, index, format = 'webvtt') {
+  const ass = format === 'ass';
+  res.setHeader('Content-Type', ass ? 'text/x-ssa; charset=utf-8' : 'text/vtt; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('X-Subtitle-Source', 'embedded');
 
-  const { stream, kill } = transcoder.extractSubtitle(videoPath, index);
+  const { stream, kill } = transcoder.extractSubtitle(videoPath, index, format);
 
   stream.on('error', (error) => {
     log.warn(`embedded subtitle extraction failed: ${error.message}`);

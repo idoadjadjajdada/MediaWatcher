@@ -707,6 +707,14 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
       -->
       <video class="player__video" id="player-video" playsinline x-webkit-airplay="allow"></video>
 
+      <!--
+        ASS subtitles are drawn here rather than through a <track>, which
+        cannot express their positioning. Sits above the video and below the
+        controls, and ignores pointer events so it never eats a tap meant for
+        the video underneath.
+      -->
+      <div class="player__ass" id="player-ass" aria-hidden="true"></div>
+
       <div class="player__touch" id="player-touch" aria-hidden="true">
         <div class="player__ripple player__ripple--l" id="ripple-l"><span>-10s</span></div>
         <div class="player__ripple player__ripple--r" id="ripple-r"><span>+10s</span></div>

@@ -52,6 +52,7 @@ async function request(method, url, body) {
 
 export const get = (url) => request('GET', url);
 export const post = (url, body) => request('POST', url, body);
+export const put = (url, body) => request('PUT', url, body);
 export const del = (url) => request('DELETE', url);
 
 /* --------------------------------------------------------------------------
@@ -171,10 +172,16 @@ export function streamUrl(filePath, { start = 0, audio, audioOffset = 0 } = {}) 
   })}`;
 }
 
-export const subsUrl = (filePath, track) => {
+/*
+ * `raw` asks for ASS rather than the WebVTT a <track> element wants. Only the
+ * overlay renderer passes it; everything else takes the converted form.
+ */
+export const subsUrl = (filePath, track, { raw = false } = {}) => {
   if (track && track.source === 'embedded') {
-    return `/api/subs?${q({ path: filePath, embedded: track.index })}`;
+    return `/api/subs?${q({ path: filePath, embedded: track.index, raw: raw ? 1 : '' })}`;
   }
+  // An external sidecar is served in whatever format it already is, so `raw`
+  // has nothing to change there.
   return `/api/subs?${q({ path: filePath, lang: track?.lang })}`;
 };
 
@@ -218,11 +225,25 @@ export const reportSkip = (payload) => post('/api/intro/skip', payload);
 /** Forget what was learned, when the offer turns out to be wrong. */
 export const forgetIntro = (show, season) => del(`/api/intro?${q({ show, season })}`);
 
+/* --------------------------------------------------------------------------
+ * Remembered track choices
+ *
+ * Storage only. Which track a given file should open with depends on that
+ * file's own track list, so the matching lives in track-prefs.js on this side.
+ * ----------------------------------------------------------------------- */
+
+/** Answers { key, prefs }, with prefs null when nothing was ever chosen. */
+export const getTrackPrefs = (key) => get(`/api/track-prefs?${q({ key })}`);
+
+export const saveTrackPrefs = (payload) => put('/api/track-prefs', payload);
+
+export const forgetTrackPrefs = (key) => del(`/api/track-prefs?${q({ key })}`);
+
 export const thumbMetaUrl = (filePath) => `/api/thumbs/meta?${q({ path: filePath })}`;
 export const thumbUrl = (filePath, index) => `/api/thumbs?${q({ path: filePath, i: index })}`;
 
 export default {
-  get, post, del, ApiError,
+  get, post, put, del, ApiError,
   health, getLibrary, rescan, refreshItem, getDiscover, getDiscoverDetail,
   searchTorrents, getSources, suggest,
   getJobs, startDownload, cancelJob,
@@ -231,5 +252,6 @@ export default {
   subtitleCapabilities, searchSubtitles, fetchSubtitle, fetchSeasonSubtitles,
   getQuality, setQuality, QUALITY_LEVELS,
   thumbMetaUrl, thumbUrl, touchHlsSession, endHlsSession,
-  getIntro, reportSkip, forgetIntro
+  getIntro, reportSkip, forgetIntro,
+  getTrackPrefs, saveTrackPrefs, forgetTrackPrefs
 };

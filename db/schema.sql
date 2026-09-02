@@ -98,3 +98,21 @@ CREATE TABLE IF NOT EXISTS intro_markers (
   observations INTEGER NOT NULL DEFAULT 1,
   updated_at   INTEGER NOT NULL
 );
+
+-- The audio and subtitle track someone chose, remembered per title so the next
+-- episode opens the way the last one was left.
+--
+-- Neither choice is stored as an index. Embedded stream numbering differs
+-- between files in the same season - one release muxes a commentary track
+-- second, the next muxes it fifth - so an index carried across episodes points
+-- at whatever happens to sit there. What is stored is enough to recognise the
+-- same track again: its source and language.
+CREATE TABLE IF NOT EXISTS track_prefs (
+  key           TEXT PRIMARY KEY,   -- show:<tmdb_id> | movie:<tmdb_id>
+  audio_lang    TEXT,               -- language of the chosen audio track
+  audio_index   INTEGER,            -- fallback when no language matches
+  subtitle_off  INTEGER NOT NULL DEFAULT 0,  -- 1 means deliberately none
+  subtitle_lang TEXT,
+  subtitle_src  TEXT,               -- 'external' | 'embedded'
+  updated_at    INTEGER NOT NULL
+);

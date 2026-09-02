@@ -18,6 +18,7 @@ import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
 import hlsRouter from './routes/hls.js';
 import introRouter from './routes/intro.js';
+import trackPrefsRouter from './routes/trackPrefs.js';
 import mediaRouter from './routes/media.js';
 import discoverRouter from './routes/discover.js';
 import torrentsRouter from './routes/torrents.js';
@@ -158,6 +159,7 @@ app.use('/api/subs', subsRouter);
 app.use('/api/thumbs', thumbsRouter);
 app.use('/api/hls', hlsRouter);
 app.use('/api/intro', introRouter);
+app.use('/api/track-prefs', trackPrefsRouter);
 
 /* --------------------------------------------------------------------------
  * Fallbacks

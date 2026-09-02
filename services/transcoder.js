@@ -636,12 +636,18 @@ export function openStream(filePath, options) {
  * Extract an embedded subtitle track as WebVTT.
  * MKV releases usually carry their subtitles inside the file rather than beside it.
  */
-export function extractSubtitle(filePath, streamIndex) {
+export function extractSubtitle(filePath, streamIndex, format = 'webvtt') {
+  // WebVTT for anything a <track> element will consume; 'ass' to keep the
+  // styling and positioning that converting to WebVTT throws away, for the
+  // client-side renderer. ffmpeg will happily convert srt to ass too, which
+  // yields a valid file with only default styling - correct, just pointless.
+  const container = format === 'ass' ? 'ass' : 'webvtt';
+
   const args = [
     '-hide_banner', '-loglevel', 'error',
     '-i', filePath,
     '-map', `0:s:${streamIndex}`,
-    '-f', 'webvtt',
+    '-f', container,
     'pipe:1'
   ];
 

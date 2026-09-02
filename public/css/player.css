@@ -286,6 +286,51 @@ html.is-player-open body { overflow: hidden; }
   font-size: 11px; line-height: 1.4; color: var(--fg-3); overflow-wrap: anywhere;
 }
 
+/* ---- ASS overlay ----
+   Every cue inside is absolutely positioned in pixels computed from the real
+   video box, so the container must not introduce a coordinate system of its
+   own beyond filling the player. */
+.player__ass {
+  position: absolute; inset: 0; z-index: 2;
+  pointer-events: none; overflow: hidden;
+}
+.player__ass:empty { display: none; }
+.ass-cue {
+  position: absolute; white-space: pre-wrap; line-height: 1.2;
+  /* --ass-outline is set per-span by an inline \3c override; the fallback is
+     what the style's own outline colour resolved to. */
+  paint-order: stroke fill;
+}
+
+/* ---- subtitle appearance ---- */
+.substyle__row {
+  display: grid; grid-template-columns: 1fr auto auto auto;
+  align-items: center; gap: var(--space-2); padding: 0 var(--space-3); min-height: 34px;
+}
+.substyle__label { font-size: 12px; }
+/* Fixed width so stepping through values does not shuffle the buttons. */
+.substyle__value { font-size: 12px; color: var(--fg-3); min-width: 42px; text-align: right; }
+.substyle__step {
+  width: 26px; height: 26px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line); font-size: 13px; line-height: 1;
+}
+.substyle__step:hover:not([disabled]) { background: var(--surface-2); }
+.substyle__step[disabled] { opacity: .35; pointer-events: none; }
+.substyle__colours {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) 0;
+}
+.substyle__colour {
+  width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent;
+}
+/* The ring is offset so it reads against both the swatch and the menu behind it. */
+.substyle__colour.is-active { border-color: var(--fg); box-shadow: 0 0 0 2px var(--surface); }
+.substyle__reset {
+  margin-left: auto; font-size: 11px; color: var(--fg-3);
+  min-height: 26px; padding: 0 var(--space-2); border-radius: var(--radius-sm);
+}
+.substyle__reset:hover { color: var(--fg); background: var(--surface-2); }
+
 .next-up {
   position: absolute; right: var(--space-5); bottom: 132px; z-index: 4; width: 300px;
   padding: var(--space-4); background: var(--surface); border: 1px solid var(--line);
