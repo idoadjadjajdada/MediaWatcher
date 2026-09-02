@@ -29,8 +29,34 @@ const syncNameState = () => { nameEl.disabled = !rememberEl.checked; };
 rememberEl.addEventListener('change', syncNameState);
 syncNameState();
 
-form.addEventListener('submit', async (event) => {
-  event.preventDefault();
+/*
+ * An enrolment code carried in the URL, from a QR shown on a device that is
+ * already signed in. It stands in for the password — which is the point, since
+ * this page is most often reached on a television where typing one is
+ * miserable.
+ *
+ * Read once and removed from the address bar immediately: it is single use and
+ * about to be spent, and leaving it in the URL puts a credential in the
+ * history, in a shared screen, and in anything that syncs tabs between
+ * devices.
+ */
+const enrolCode = (() => {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('enrol');
+  if (!code) return null;
+  window.history.replaceState({}, '', window.location.pathname);
+  return code;
+})();
+
+if (enrolCode) {
+  // The password field is not the way in on this visit, so it should not be
+  // the thing asking to be filled.
+  document.getElementById('password').required = false;
+  document.getElementById('password').placeholder = 'Not needed — you scanned a code';
+  submit.textContent = 'Add this device';
+}
+
+async function attempt() {
   errorEl.textContent = '';
   submit.disabled = true;
   submit.textContent = 'Checking…';
@@ -42,7 +68,8 @@ form.addEventListener('submit', async (event) => {
       body: JSON.stringify({
         password: document.getElementById('password').value,
         deviceName: nameEl.value,
-        remember: rememberEl.checked
+        remember: rememberEl.checked,
+        enrol: enrolCode || undefined
       })
     });
 
@@ -60,6 +87,25 @@ form.addEventListener('submit', async (event) => {
     errorEl.textContent = 'Cannot reach MediaWatcher.';
   } finally {
     submit.disabled = false;
-    submit.textContent = 'Unlock';
+    submit.textContent = enrolCode ? 'Add this device' : 'Unlock';
   }
+}
+
+form.addEventListener('submit', (event) => {
+  event.preventDefault();
+  attempt();
 });
+
+/*
+ * A scanned code signs the device in without anyone pressing anything.
+ *
+ * Not automatic when it is not remembered, though: an unremembered session
+ * dies with the browser, and the whole reason for scanning a code onto a
+ * television is not wanting to do it again. So the code arrives, the device
+ * names itself from its user agent, and the tick is already on.
+ */
+if (enrolCode) {
+  rememberEl.checked = true;
+  syncNameState();
+  if (nameEl.value) attempt();
+}

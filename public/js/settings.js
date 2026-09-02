@@ -177,7 +177,48 @@ function renderDevices() {
           </tbody>
         </table>
       </div>`}
+      ${renderEnrolment()}
     </section>`;
+}
+
+/**
+ * Adding a device that cannot comfortably type.
+ *
+ * The password gate is right and it is miserable on a television: twelve
+ * characters entered with a D-pad, usually while someone waits. This mints a
+ * code, draws it as a QR, and the device that scans it is signed in. Single
+ * use and five minutes, so the photograph someone takes of the screen is worth
+ * nothing afterwards.
+ */
+function renderEnrolment() {
+  const enrolment = state.settings?.enrolment;
+
+  return `
+    <div class="settings__sub">
+      <h3 class="settings__subheading">Add a device</h3>
+      <p class="settings__note">
+        Point a phone or a television at this code and it signs in without the
+        password. Good once, and for five minutes.
+      </p>
+      ${enrolment ? `
+        <div class="enrol">
+          <img class="enrol__qr" alt="Enrolment code" src="${esc(api.qrUrl(enrolment.url))}">
+          <div class="enrol__detail">
+            <div class="enrol__url">${esc(enrolment.url.replace(/\?enrol=.*$/, ''))}</div>
+            <div class="settings__note">
+              Expires ${esc(formatWhen(enrolment.expiresAt))}. The code itself is in
+              the QR and nowhere else on this page — reading it off the screen is
+              the only way to use it.
+            </div>
+          </div>
+        </div>` : ''}
+      <div class="settings__actions">
+        <button class="btn btn--secondary" data-action="settings-enrol">
+          ${enrolment ? 'Show another' : 'Show a code'}
+        </button>
+        ${enrolment ? '<button class="btn btn--ghost" data-action="settings-enrol-cancel">Cancel it</button>' : ''}
+      </div>
+    </div>`;
 }
 
 function renderLogins() {
@@ -962,6 +1003,39 @@ export async function restartServer() {
   };
   // Long enough that the poll does not catch the server it is about to leave.
   setTimeout(poll, 2500);
+}
+
+/**
+ * Mint an enrolment code.
+ *
+ * Needs the password for the same reason saving settings does: a code is a way
+ * into the server, so handing one out has to be at least as hard as signing in.
+ */
+export async function createEnrolment() {
+  const password = passwordField()?.value || '';
+  if (!password) {
+    toast('error', 'Password needed', 'Enter your password in the Server section below.');
+    return;
+  }
+
+  try {
+    state.settings.enrolment = await api.createEnrolment(password);
+    setState({});
+  } catch (error) {
+    toast('error', 'Could not make a code', error.message);
+  }
+}
+
+export async function cancelEnrolment() {
+  const password = passwordField()?.value || '';
+  try {
+    await api.cancelEnrolments(password);
+    state.settings.enrolment = null;
+    setState({});
+    toast('success', 'Cancelled');
+  } catch (error) {
+    toast('error', 'Could not cancel it', error.message);
+  }
 }
 
 /** Forget the source history — for a source that has just been fixed. */

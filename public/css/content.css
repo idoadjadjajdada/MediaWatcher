@@ -388,3 +388,16 @@
 /* Anything that is not video: still listed, because a torrent that is all
    subtitles is worth seeing, but not what the eye should land on. */
 .filelist__row.is-other .filelist__name { color: var(--fg-3); }
+
+/* ---- what changed since you last looked ----
+   Above the rails on Home, and quiet: it is information, not an alert, so it
+   borrows the surface colour rather than an accent. */
+.changes {
+  display: flex; align-items: center; gap: var(--space-4);
+  padding: var(--space-3) var(--space-4); margin-bottom: var(--space-5);
+  border-radius: 10px; background: var(--surface-2);
+}
+.changes__main { flex: 1; min-width: 0; }
+.changes__head { display: flex; align-items: baseline; gap: var(--space-3); }
+.changes__names { font-size: 12px; color: var(--fg-3); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

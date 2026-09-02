@@ -208,3 +208,12 @@
 /* Shared with the encoder panel: below realtime is the one number that means
    something is wrong. */
 .fact dd.is-slow { color: #e5544b; }
+
+/* ---- adding a device by code ----
+   The QR is the feature, so it gets real size: a code scanned from across a
+   room by a television camera has to survive that distance. */
+.enrol { display: flex; gap: var(--space-5); align-items: center; margin-top: var(--space-4); }
+.enrol__qr { width: 180px; height: 180px; background: #fff; border-radius: 8px; padding: var(--space-3); }
+.enrol__detail { flex: 1; min-width: 0; }
+.enrol__url { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; }

@@ -15,6 +15,11 @@ export const state = {
   jobs: [],
   currentPage: 'home',
   currentItem: null,          // item behind the detail modal
+  // What the library gained, lost or replaced since this device last caught
+  // up. Null until asked for; a device that has never looked gets nothing
+  // rather than a wall of "new" on its first visit.
+  changes: null,
+
   search: {
     query: '',
     type: 'movie',

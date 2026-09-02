@@ -8,6 +8,7 @@
 import express from 'express';
 import { createLogger } from '../config/index.js';
 import * as scanner from '../services/scanner.js';
+import * as changes from '../services/changes.js';
 import * as tmdb from '../services/tmdb.js';
 import { compareSeason, isRealSeason, summariseShow } from '../services/missing.js';
 import * as warmup from '../services/warmup.js';
@@ -158,6 +159,30 @@ router.get('/storage', (_req, res, next) => {
  * background ffmpeg slots, one file at a time, and yields to anyone watching —
  * so this is safe to start and walk away from.
  */
+/**
+ * GET /api/library/changes — what this device has not seen yet.
+ *
+ * Per device, because "since you last looked" is a fact about a person at a
+ * screen: the television catching up after a fortnight and the phone used an
+ * hour ago have different answers, and one shared marker would give them both
+ * the phone's.
+ */
+router.get('/changes', (req, res) => {
+  res.json(changes.changesFor(req.device?.id || null, scanner.getLibrary()));
+});
+
+/**
+ * POST /api/library/changes/seen — caught up.
+ *
+ * Separate from reading them, and deliberately so: the snapshot moves when the
+ * list has actually been shown, not when something fetched it in the
+ * background. Marking on read would mean a poll that ran while the tab was
+ * closed silently consumed the answer.
+ */
+router.post('/changes/seen', (req, res) => {
+  res.json({ at: changes.markSeen(req.device?.id || null, scanner.getLibrary()) });
+});
+
 router.post('/warm', (req, res, next) => {
   try {
     const library = scanner.getLibrary();

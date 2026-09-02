@@ -336,6 +336,64 @@ export function updateShell() {
  * Pages
  * ----------------------------------------------------------------------- */
 
+/**
+ * What the library gained, lost or replaced since this device last looked.
+ *
+ * On Home, above everything, because it is the question you actually have on
+ * opening the app after a few days — and one that a list of what exists cannot
+ * answer. Dismissing it is what marks it seen: a banner that cleared itself on
+ * being fetched would be consumed by a background poll while the tab was shut.
+ */
+/**
+ * How long ago, in the coarsest unit that is still true.
+ *
+ * Relative rather than a date, because the question this answers is "have I
+ * been away long enough for this to matter" — and "3 days ago" answers that
+ * where "12 Aug, 21:04" makes you work it out.
+ */
+export function formatSince(ms) {
+  const elapsed = Date.now() - Number(ms || 0);
+  if (!Number.isFinite(elapsed) || elapsed < 0) return 'just now';
+
+  const minutes = Math.floor(elapsed / 60000);
+  if (minutes < 2) return 'just now';
+  if (minutes < 60) return `${minutes} minutes ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+
+  const days = Math.floor(hours / 24);
+  if (days < 14) return `${days} day${days === 1 ? '' : 's'} ago`;
+  return `${Math.floor(days / 7)} weeks ago`;
+}
+
+export function renderChanges() {
+  const changes = state.changes;
+  if (!changes || changes.first || changes.total === 0) return '';
+
+  const { counts } = changes;
+  const parts = [];
+  if (counts.added > 0) parts.push(`${counts.added} added`);
+  if (counts.upgraded > 0) parts.push(`${counts.upgraded} replaced`);
+  if (counts.removed > 0) parts.push(`${counts.removed} gone`);
+
+  const names = [...changes.added, ...changes.upgraded].slice(0, 6).map((entry) => entry.name);
+
+  return `
+    <section class="changes">
+      <div class="changes__main">
+        <div class="changes__head">
+          <strong>${esc(parts.join(' · '))}</strong>
+          <span class="t-meta">since ${esc(formatSince(changes.since))}</span>
+        </div>
+        ${names.length > 0 ? `<div class="changes__names">${esc(names.join(' · '))}${
+  changes.total > names.length ? ` and ${changes.total - names.length} more` : ''
+}</div>` : ''}
+      </div>
+      <button class="btn btn--ghost" data-action="dismiss-changes">Got it</button>
+    </section>`;
+}
+
 export function renderHome() {
   const { movies, shows } = state.library;
   const all = [...movies, ...shows];
@@ -384,6 +442,7 @@ export function renderHome() {
   return `
     ${hero ? renderHero(hero) : ''}
     <div class="page">
+      ${renderChanges()}
       ${continueCards ? rail('Continue watching', continueCards) : ''}
       ${libraryRails}
       ${discoverRails}

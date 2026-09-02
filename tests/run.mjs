@@ -38,6 +38,7 @@ const SUITES = [
   { file: 'env-file.test.mjs' },
   { file: 'source-stats.test.mjs' },
   { file: 'season-pack.test.mjs' },
+  { file: 'enrol-changes.test.mjs' },
   { file: 'cache-limits.test.mjs' },
   { file: 'scanner-titles.test.mjs' },
   { file: 'downloads.test.mjs' },

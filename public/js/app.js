@@ -481,6 +481,16 @@ const ACTIONS = {
   'settings-kill-encoder': (el) => settings.killEncoder(el.dataset.id),
   'settings-benchmark': () => settings.runBenchmark(),
   'settings-reset-sources': () => settings.resetSourceStats(),
+  'settings-enrol': () => settings.createEnrolment(),
+  'settings-enrol-cancel': () => settings.cancelEnrolment(),
+  'dismiss-changes': async () => {
+    // Marked seen on dismissal rather than on load: a banner that cleared
+    // itself when fetched would be consumed by a background poll while the
+    // tab was shut.
+    setState({ changes: null });
+    await api.markChangesSeen().catch(() => { /* it will simply show again */ });
+  },
+
   'inspect-result': (el) => search.inspectResult(Number(el.dataset.index)),
   'toggle-inspect-file': (el) => search.toggleInspectFile(el.dataset.filename),
   'download-chosen': () => search.downloadChosen(),
@@ -957,6 +967,13 @@ async function boot() {
 
   await loadLibrary();
   await loadJobs();
+
+  /*
+   * After the library, because it is computed against it: asking first would
+   * compare this device's snapshot with a library that has not been scanned
+   * yet and report the whole thing as gone.
+   */
+  api.getChanges().then((changes) => setState({ changes })).catch(() => { /* not worth a toast */ });
   syncJobPolling();
 
   // Deliberately not awaited: Home renders from the library first and the

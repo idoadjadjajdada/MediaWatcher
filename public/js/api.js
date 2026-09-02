@@ -303,6 +303,20 @@ export const forgetTrackPrefs = (key) => del(`/api/track-prefs?${q({ key })}`);
 /** Remembered devices. Each row is a live credential, not a log entry. */
 export const getDevices = () => get('/api/devices');
 
+/**
+ * Mint a code that signs another device in without typing the password.
+ *
+ * Single use, five minutes. The URL comes back built from the origin this
+ * request arrived on, so a code minted over the tunnel points at the tunnel.
+ */
+export const createEnrolment = (password) => post('/api/auth/enrol', { password });
+
+/** Cancel outstanding codes — for one shown to the wrong room. */
+export const cancelEnrolments = (password) => post('/api/auth/enrol/cancel', { password });
+
+/** A QR for any text, as an SVG document. */
+export const qrUrl = (text) => `/api/diagnostics/qr?${q({ text })}`;
+
 /** Revoking locks that device out on its very next request. */
 export const revokeDevice = (id) => del(`/api/devices/${encodeURIComponent(id)}`);
 
@@ -370,6 +384,12 @@ export const getStorage = () => get('/api/library/storage');
 export const warmLibrary = (show) => post('/api/library/warm', show ? { show } : {});
 export const getWarmStatus = () => get('/api/library/warm');
 
+/** What this device has not seen in the library since it last caught up. */
+export const getChanges = () => get('/api/library/changes');
+
+/** Caught up. Called when the list has actually been shown, not when fetched. */
+export const markChangesSeen = () => post('/api/library/changes/seen', {});
+
 /* --------------------------------------------------------------------------
  * Saving for offline
  * ----------------------------------------------------------------------- */
@@ -406,9 +426,9 @@ export default {
   thumbMetaUrl, thumbUrl, touchHlsSession, endHlsSession,
   getIntro, reportSkip, forgetIntro,
   getTrackPrefs, saveTrackPrefs, forgetTrackPrefs,
-  getDevices, revokeDevice, getLoginHistory, getDiagnostics, getEncoders, killEncoder,
+  getDevices, revokeDevice, getLoginHistory, createEnrolment, cancelEnrolments, qrUrl, createEnrolment, cancelEnrolments, qrUrl, getDiagnostics, getEncoders, killEncoder,
   getServerLog, getEnv, saveEnv, restartServer, getBenchmark, runBenchmark,
   getSourceStats, resetSourceStats, getDebridAccount, inspectTorrent,
-  getMissingEpisodes, getStorage, warmLibrary, getWarmStatus,
+  getMissingEpisodes, getStorage, warmLibrary, getWarmStatus, getChanges, markChangesSeen,
   getOfflineInfo, offlineFileUrl
 };
