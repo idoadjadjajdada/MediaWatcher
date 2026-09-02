@@ -555,13 +555,32 @@ function jobRow(job) {
   const percent = Math.round((Number(job.progress) || 0) * 100);
   const active = job.status === 'downloading' || job.status === 'queued';
 
+  /*
+   * Reordering is only offered on jobs that are actually waiting. A running
+   * transfer has already started and a finished one has nowhere to go, so
+   * arrows on those would be controls that do nothing.
+   */
+  const waiting = job.status === 'queued' || job.status === 'paused';
+  const move = waiting ? `
+    <div class="job__move">
+      <button class="job__arrow" data-action="move-job" data-id="${esc(job.id)}" data-move="top" title="Move to top">&uarr;&uarr;</button>
+      <button class="job__arrow" data-action="move-job" data-id="${esc(job.id)}" data-move="up" title="Move up">&uarr;</button>
+      <button class="job__arrow" data-action="move-job" data-id="${esc(job.id)}" data-move="down" title="Move down">&darr;</button>
+    </div>` : '';
+
   const actions = job.status === 'error'
     ? `<button class="btn btn--secondary" data-action="retry-job" data-id="${esc(job.id)}">Retry</button>
        <button class="btn btn--danger" data-action="cancel-job" data-id="${esc(job.id)}">Remove</button>`
     : job.status === 'complete'
       ? `<button class="btn btn--secondary" data-action="open-folder" data-path="${esc(job.file_path || '')}">${icon('folder', 'icon-sm')}<span class="btn__label">Open Folder</span></button>
          <button class="btn btn--ghost btn--icon" data-action="cancel-job" data-id="${esc(job.id)}" aria-label="Remove">${icon('trash')}</button>`
-      : `<button class="btn btn--danger" data-action="cancel-job" data-id="${esc(job.id)}">Cancel</button>`;
+      : job.status === 'paused'
+        ? `${move}
+           <button class="btn btn--secondary" data-action="job-state" data-id="${esc(job.id)}" data-state="resume">Resume</button>
+           <button class="btn btn--danger" data-action="cancel-job" data-id="${esc(job.id)}">Cancel</button>`
+        : `${move}
+           <button class="btn btn--secondary" data-action="job-state" data-id="${esc(job.id)}" data-state="pause">Pause</button>
+           <button class="btn btn--danger" data-action="cancel-job" data-id="${esc(job.id)}">Cancel</button>`;
 
   return `
     <div class="job">
@@ -574,7 +593,7 @@ function jobRow(job) {
         <div class="job__progress">
           <div class="progress progress--lg"><div class="progress__fill" style="width:${percent}%"></div></div>
           <div class="job__stats">
-            <span>${percent}%${job.phase ? ` · ${esc(job.phase)}` : ''}${active && !job.phase ? ' · waiting' : ''}</span>
+            <span>${percent}%${job.phase ? ` · ${esc(job.phase)}` : ''}${active && !job.phase ? ' · waiting' : ''}${job.status === 'paused' ? ' · paused' : ''}</span>
             <span>${job.status === 'complete' ? 'Finished' : ''}</span>
           </div>
         </div>`}

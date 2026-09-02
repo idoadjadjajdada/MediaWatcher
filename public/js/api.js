@@ -85,6 +85,19 @@ export const getJobs = () => get('/api/torrents/jobs');
 export const startDownload = (payload) => post('/api/torrents/download', payload);
 export const cancelJob = (id) => del(`/api/torrents/jobs/${encodeURIComponent(id)}`);
 
+/**
+ * Pause, resume or retry one job.
+ *
+ * Pausing an active transfer aborts it and discards the partial file — there
+ * is no resume-from-offset — but the job keeps its place in the queue.
+ */
+export const setJobState = (id, state) =>
+  post(`/api/torrents/jobs/${encodeURIComponent(id)}/${state}`, {});
+
+/** Reorder within the queue: up, down, top or bottom. */
+export const moveJob = (id, move) =>
+  post(`/api/torrents/jobs/${encodeURIComponent(id)}/move`, { move });
+
 export const getContinueWatching = () => get('/api/progress');
 /** Every row, completed included — the detail page marks watched episodes. */
 export const getAllProgress = () => get('/api/progress?all=1');
@@ -335,7 +348,7 @@ export default {
   get, post, put, del, ApiError,
   health, getLibrary, rescan, refreshItem, getDiscover, getDiscoverDetail,
   searchTorrents, getSources, suggest,
-  getJobs, startDownload, cancelJob,
+  getJobs, startDownload, cancelJob, setJobState, moveJob,
   getContinueWatching, getAllProgress, getProgressFor, saveProgress,
   getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities,
   subtitleCapabilities, searchSubtitles, fetchSubtitle, fetchSeasonSubtitles,

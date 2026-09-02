@@ -16,9 +16,14 @@ import { EventEmitter } from 'node:events';
 import axios from 'axios';
 
 import config, { createLogger } from '../config/index.js';
-import { insertJob, updateJob, getJob, deleteJob, listJobsByStatus } from '../db/index.js';
+import {
+  insertJob, updateJob, getJob, deleteJob, listJobs, listJobsByStatus, reorderJobs
+} from '../db/index.js';
 import * as alldebrid from './alldebrid.js';
 import * as organizer from './organizer.js';
+import {
+  nextRunnable, nextPosition, moveJob as planMove, canTransition, sortQueue
+} from './queueOrder.js';
 import { hasRoomFor, formatBytes } from './diskspace.js';
 
 const log = createLogger('downloader');
@@ -344,12 +349,79 @@ async function runJob(jobId, request) {
   }
 }
 
-/** Start queued jobs while under the concurrency ceiling. */
+/**
+ * Start queued jobs while under the concurrency ceiling.
+ *
+ * The order comes from the database rather than the in-memory array, because
+ * that is where pausing and reordering write. The array is still what holds
+ * each job's request payload — the row cannot carry an AbortController or the
+ * original search result — so the two are matched by id.
+ */
 function pump() {
-  while (active.size < config.downloads.maxConcurrent && queue.length > 0) {
-    const next = queue.shift();
-    runJob(next.id, next.request);
+  while (active.size < config.downloads.maxConcurrent) {
+    const waiting = queue.map((entry) => getJob(entry.id)).filter(Boolean);
+    const next = nextRunnable(waiting);
+    if (!next) break;
+
+    const index = queue.findIndex((entry) => String(entry.id) === String(next.id));
+    // A row that says queued with nothing behind it in the array is a job
+    // whose request was lost to a restart; recover() re-queues those properly.
+    if (index === -1) break;
+
+    const [entry] = queue.splice(index, 1);
+    runJob(entry.id, entry.request);
   }
+}
+
+/* --------------------------------------------------------------------------
+ * Queue management
+ *
+ * Pausing an active transfer aborts it. There is no resume-from-byte-offset
+ * here: AllDebrid serves a fresh link each time and the partial file is
+ * discarded, so a paused download restarts. That is worth saying plainly
+ * rather than implying otherwise, and it is why pause leaves the job in the
+ * queue at its own position instead of cancelling it.
+ * ----------------------------------------------------------------------- */
+
+/** Apply one of pause / resume / retry. */
+export async function setJobState(id, action) {
+  const key = String(id);
+  const job = getJob(key);
+  const verdict = canTransition(job, action);
+  if (!verdict.ok) {
+    const error = new Error(verdict.reason);
+    error.status = job ? 409 : 404;
+    throw error;
+  }
+
+  if (action === 'pause' && job.status === 'downloading') {
+    const state = active.get(key);
+    if (state) {
+      state.controller.abort();
+      for (const temp of state.tempPaths) await removeQuietly(temp);
+    }
+  }
+
+  // A retry goes back to the end of nothing — it keeps its place, because the
+  // failure was not the fault of whatever is queued behind it.
+  const patch = { status: verdict.status };
+  if (action === 'retry') patch.error = null;
+  if (action === 'retry' || action === 'resume') patch.progress = 0;
+
+  const updated = updateJob(key, patch);
+  events.emit('state', { id: key, status: verdict.status });
+
+  // Resuming or retrying makes something runnable; pausing frees a slot.
+  pump();
+  return updated;
+}
+
+/** Move a job within the queue: up, down, top or bottom. */
+export function moveJob(id, move) {
+  const updates = planMove(listJobs(), id, move);
+  if (updates.length === 0) return { moved: false, updates: 0 };
+  reorderJobs(updates);
+  return { moved: true, updates: updates.length };
 }
 
 /* --------------------------------------------------------------------------
@@ -407,6 +479,7 @@ export async function startDownload(request) {
     magnet,
     source: request.source || 'torrentio',
     status: 'queued',
+    position: nextPosition(listJobs()),
     progress: 0
   });
 
@@ -433,6 +506,17 @@ export async function cancelJob(id) {
   const removed = deleteJob(key);
   events.emit('cancelled', { id: key });
   return removed;
+}
+
+/**
+ * Every job, in the order the queue will run them.
+ *
+ * The jobs endpoint used to return database order, which is insertion order —
+ * fine until anything could be reordered, at which point the list on screen
+ * and the order things actually run in disagree.
+ */
+export function listQueue() {
+  return sortQueue(listJobs());
 }
 
 /** Ids of jobs currently transferring. */

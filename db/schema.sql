@@ -43,7 +43,10 @@ CREATE TABLE IF NOT EXISTS download_jobs (
   episode_title TEXT,
   magnet TEXT,
   source TEXT,                  -- 'alldebrid' or 'torrentio' or 'public'
-  status TEXT NOT NULL,         -- 'queued' 'downloading' 'complete' 'error'
+  status TEXT NOT NULL,         -- 'queued' 'paused' 'downloading' 'complete' 'error'
+  -- Explicit queue order, lowest first. Rows from before this existed are
+  -- NULL and fall back to created_at, behind anything placed by hand.
+  position INTEGER,
   progress REAL DEFAULT 0,
   file_path TEXT,
   error TEXT,

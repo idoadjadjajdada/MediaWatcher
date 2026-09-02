@@ -37,7 +37,10 @@ const COLUMN_MIGRATIONS = [
   'ALTER TABLE download_jobs ADD COLUMN year INTEGER',
   'ALTER TABLE download_jobs ADD COLUMN season INTEGER',
   'ALTER TABLE download_jobs ADD COLUMN episode INTEGER',
-  'ALTER TABLE download_jobs ADD COLUMN episode_title TEXT'
+  'ALTER TABLE download_jobs ADD COLUMN episode_title TEXT',
+  // Explicit queue order. Nullable on purpose: existing rows keep falling back
+  // to created_at until something reorders them.
+  'ALTER TABLE download_jobs ADD COLUMN position INTEGER'
 ];
 
 for (const statement of COLUMN_MIGRATIONS) {
@@ -48,6 +51,18 @@ for (const statement of COLUMN_MIGRATIONS) {
     if (!/duplicate column name/i.test(error.message)) throw error;
   }
 }
+
+/*
+ * Indexes on migrated columns, created after the ALTERs above rather than in
+ * schema.sql. The schema is executed first, so an index there would reference
+ * a column that does not exist yet on an upgraded database and take the whole
+ * boot down with it.
+ */
+const POST_MIGRATION_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_jobs_position ON download_jobs(position)'
+];
+
+for (const statement of POST_MIGRATION_INDEXES) db.exec(statement);
 
 log.info(`database ready at ${config.dbPath}`);
 
@@ -134,10 +149,10 @@ const stmt = {
   jobInsert: db.prepare(`
     INSERT INTO download_jobs (
       id, type, title, tmdb_id, year, season, episode, episode_title,
-      magnet, source, status, progress, file_path, error, created_at, updated_at
+      magnet, source, status, progress, file_path, error, position, created_at, updated_at
     ) VALUES (
       @id, @type, @title, @tmdb_id, @year, @season, @episode, @episode_title,
-      @magnet, @source, @status, @progress, @file_path, @error, @created_at, @updated_at
+      @magnet, @source, @status, @progress, @file_path, @error, @position, @created_at, @updated_at
     )
     ON CONFLICT(id) DO UPDATE SET
       type = excluded.type,
@@ -153,6 +168,7 @@ const stmt = {
       updated_at = excluded.updated_at
   `),
   jobGet: db.prepare('SELECT * FROM download_jobs WHERE id = ?'),
+  jobPosition: db.prepare('UPDATE download_jobs SET position = @position, updated_at = @updated_at WHERE id = @id'),
   jobList: db.prepare('SELECT * FROM download_jobs ORDER BY created_at DESC'),
   jobByStatus: db.prepare('SELECT * FROM download_jobs WHERE status = ? ORDER BY created_at DESC'),
   jobDelete: db.prepare('DELETE FROM download_jobs WHERE id = ?')
@@ -294,7 +310,7 @@ export const deleteProgressPaths = db.transaction((paths) => {
 
 const JOB_COLUMNS = [
   'type', 'title', 'tmdb_id', 'year', 'season', 'episode', 'episode_title',
-  'magnet', 'source', 'status', 'progress', 'file_path', 'error'
+  'magnet', 'source', 'status', 'progress', 'file_path', 'error', 'position'
 ];
 const updateCache = new Map();
 
@@ -311,6 +327,9 @@ export function insertJob(job) {
     episode_title: job.episode_title ?? null,
     magnet: job.magnet ?? null,
     source: job.source ?? null,
+    // Optional: a caller that does not care about ordering gets a null, which
+    // sorts by age behind anything explicitly placed.
+    position: job.position ?? null,
     status: job.status ?? 'queued',
     progress: job.progress ?? 0,
     file_path: job.file_path ?? null,
@@ -339,6 +358,19 @@ export function updateJob(id, patch) {
   statement.run(params);
   return stmt.jobGet.get(String(id));
 }
+
+/**
+ * Write several positions at once.
+ *
+ * A reorder is a swap, so applying half of it would leave two jobs claiming
+ * the same slot. The transaction is what makes "move up" atomic.
+ */
+export const reorderJobs = db.transaction((updates) => {
+  for (const { id, position } of updates || []) {
+    stmt.jobPosition.run({ id: String(id), position, updated_at: now() });
+  }
+  return (updates || []).length;
+});
 
 export function getJob(id) {
   return stmt.jobGet.get(String(id));

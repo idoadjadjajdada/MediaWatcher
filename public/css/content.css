@@ -358,3 +358,15 @@
 /* Offered but unavailable: visibly inert rather than absent, so the feature
    can be found and the reason read from its tooltip. */
 .season__subs[data-disabled] { opacity: .45; }
+
+/* ---- queue reordering ----
+   Only rendered on jobs that are actually waiting, so these never appear on a
+   running or finished transfer where they would do nothing. */
+.job__move { display: flex; gap: 2px; margin-right: auto; }
+.job__arrow {
+  min-width: 30px; min-height: 30px; padding: 0 var(--space-2);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  color: var(--fg-3); font-size: 11px; line-height: 1;
+}
+.job__arrow:hover { color: var(--fg); background: var(--surface-2); }
+.badge--paused { color: var(--fg-3); }

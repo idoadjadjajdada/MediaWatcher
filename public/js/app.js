@@ -410,6 +410,25 @@ const ACTIONS = {
     }
   },
 
+  'job-state': async (el) => {
+    try {
+      await api.setJobState(el.dataset.id, el.dataset.state);
+      await loadJobs();
+      syncJobPolling();
+    } catch (error) {
+      views.toast('error', 'Could not change that job', error.message);
+    }
+  },
+
+  'move-job': async (el) => {
+    try {
+      await api.moveJob(el.dataset.id, el.dataset.move);
+      await loadJobs();
+    } catch (error) {
+      views.toast('error', 'Could not reorder', error.message);
+    }
+  },
+
   'retry-job': async (el) => {
     const job = state.jobs.find((entry) => String(entry.id) === el.dataset.id);
     if (!job) return;
