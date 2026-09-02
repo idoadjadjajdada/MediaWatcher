@@ -21,6 +21,7 @@ import introRouter from './routes/intro.js';
 import trackPrefsRouter from './routes/trackPrefs.js';
 import diagnosticsRouter from './routes/diagnostics.js';
 import libraryRouter from './routes/library.js';
+import offlineRouter from './routes/offline.js';
 import mediaRouter from './routes/media.js';
 import discoverRouter from './routes/discover.js';
 import torrentsRouter from './routes/torrents.js';
@@ -164,6 +165,7 @@ app.use('/api/intro', introRouter);
 app.use('/api/track-prefs', trackPrefsRouter);
 app.use('/api/diagnostics', diagnosticsRouter);
 app.use('/api/library', libraryRouter);
+app.use('/api/offline', offlineRouter);
 
 /* --------------------------------------------------------------------------
  * Fallbacks

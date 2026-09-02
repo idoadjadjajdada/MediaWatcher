@@ -13,6 +13,15 @@
   <!-- Inline so there is no favicon request to 404 on. -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23a855f7'/><stop offset='1' stop-color='%23ec4899'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M13 10.5v11l9-5.5z' fill='%23fff'/></svg>">
 
+  <!-- Installable: the manifest names it, the icons give the launcher
+       something to draw, and apple-* are what iOS reads instead. -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0a0a0b">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MediaWatcher">
+
   <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body>

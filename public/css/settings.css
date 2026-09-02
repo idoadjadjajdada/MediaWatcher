@@ -56,16 +56,24 @@
 }
 .choices__item.is-active { background: var(--fg); color: #000; font-weight: 700; }
 
-.switch {
-  width: 42px; height: 24px; border-radius: 999px; background: var(--surface-2);
-  border: 1px solid var(--line); position: relative; transition: background var(--state);
+/*
+ * Not `.switch` — content.css already uses that name for the labelled
+ * checkbox row in search, and its `min-height: 44px` turned this 42x24 pill
+ * into a 42x44 oval that read as a circle.
+ */
+.toggle {
+  flex: none; width: 44px; height: 26px; border-radius: 13px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  position: relative; transition: background var(--state), border-color var(--state);
 }
-.switch.is-on { background: var(--accent, var(--fg)); border-color: transparent; }
-.switch__dot {
-  position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
-  border-radius: 50%; background: var(--fg); transition: transform var(--state);
+.toggle.is-on { background: #4ac97e; border-color: transparent; }
+.toggle__dot {
+  position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
+  border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .4);
+  transition: transform var(--state);
 }
-.switch.is-on .switch__dot { transform: translateX(18px); background: #000; }
+.toggle.is-on .toggle__dot { transform: translateX(18px); }
 
 .swatches { display: flex; gap: var(--space-2); }
 .swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; }

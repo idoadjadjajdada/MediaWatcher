@@ -14,6 +14,8 @@ import * as search from './search.js';
 import * as player from './player.js';
 import * as settings from './settings.js';
 import * as preview from './preview.js';
+import * as offline from './offline.js';
+import * as install from './install.js';
 
 const PAGES = ['home', 'movies', 'shows', 'search', 'downloads', 'settings'];
 const JOB_POLL_MS = 3000;
@@ -153,6 +155,25 @@ function syncJobPolling() {
     clearInterval(jobTimer);
     jobTimer = null;
   }
+}
+
+/* --------------------------------------------------------------------------
+ * Installing
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Register the service worker.
+ *
+ * Deliberately not awaited and never fatal: it is what makes the app
+ * installable and openable offline, and none of that is worth failing a boot
+ * over. Browsers also refuse to register one over plain http on a non-local
+ * host, which is a normal configuration here rather than a fault.
+ */
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/sw.js').catch((error) => {
+    console.info('service worker not registered:', error.message);
+  });
 }
 
 /* --------------------------------------------------------------------------
@@ -429,6 +450,8 @@ const ACTIONS = {
   'set-subtitle': (el) => player.setSubtitle(el.dataset.track),
   'fetch-subtitles': () => player.fetchSubtitles(),
   'fetch-season-subs': (el) => fetchSeasonSubtitles(el),
+  'subs-unavailable': () => views.toast('info', 'Subtitle download is not set up',
+    'Add OPENSUBTITLES_API_KEY, _USERNAME and _PASSWORD to .env, then restart.'),
   'settings-step': (el) => settings.stepSetting(el.dataset.field, el.dataset.delta),
   'settings-toggle': (el) => settings.toggleSetting(el.dataset.field),
   'settings-choose': (el) => settings.chooseSetting(el.dataset.field, el.dataset.value),
@@ -436,6 +459,10 @@ const ACTIONS = {
   'settings-reset-appearance': () => settings.resetAppearance(),
   'settings-revoke': (el) => settings.revokeDevice(el.dataset.id),
   'settings-refresh': () => settings.refreshDiagnostics(),
+  'settings-install': () => settings.install(),
+  'settings-unsave': (el) => settings.unsave(el.dataset.path),
+  'settings-unsave-all': () => settings.unsaveAll(),
+  'save-offline': (el) => saveOffline(el),
   'subtitle-nudge': (el) => player.nudgeSubtitleStyle(el.dataset.field, el.dataset.delta),
   'subtitle-colour': (el) => player.setSubtitleColour(el.dataset.colour),
   'subtitle-reset': () => player.resetSubtitleStyle(),
@@ -455,6 +482,51 @@ const ACTIONS = {
   'play-next': () => player.playNext(),
   'cancel-next': () => player.cancelNext()
 };
+
+/**
+ * Save one file to this device.
+ *
+ * The button becomes the progress indicator rather than opening a dialog: the
+ * download is minutes long on an episode, and a modal that has to stay open
+ * for it would stop you doing anything else meanwhile. Pressing it again while
+ * it runs cancels.
+ */
+async function saveOffline(button) {
+  const filePath = button.dataset.path;
+  const title = button.dataset.title || null;
+  if (!filePath) return;
+
+  if (offline.isSaving(filePath)) {
+    offline.cancelSave(filePath);
+    return;
+  }
+
+  const original = button.textContent;
+  button.textContent = 'Starting…';
+
+  try {
+    await offline.save(filePath, {
+      title,
+      onProgress: ({ ratio, received, total }) => {
+        button.textContent = total > 0
+          ? `${Math.round(ratio * 100)}% — tap to cancel`
+          : `${Math.round(received / 1e6)} MB`;
+      }
+    });
+    button.textContent = 'Saved';
+    views.toast('success', 'Saved to this device', 'It will play with no connection.');
+    offline.requestPersistence();
+  } catch (error) {
+    button.textContent = original;
+    if (error.name === 'AbortError') {
+      views.toast('info', 'Save cancelled');
+    } else if (error.code === 'preparing') {
+      views.toast('info', 'Preparing a copy', error.message);
+    } else {
+      views.toast('error', 'Could not save', error.message);
+    }
+  }
+}
 
 /**
  * Work out what a show is missing, once per show per session.
@@ -801,6 +873,12 @@ async function boot() {
 
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('error', onResourceError, true);
+
+  registerServiceWorker();
+  install.watch(() => setState({}));
+  // An installed app is the case where evicted offline video hurts most, so
+  // the request is made once the app is actually installed rather than at boot.
+  if (install.isInstalled()) offline.requestPersistence();
 
   // A reload while the player was up leaves #player in the address bar with no
   // player behind it. Nothing can restore one - the file is not in the hash -

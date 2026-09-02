@@ -72,6 +72,13 @@ html.is-player-open body { overflow: hidden; }
   font-size: 13px;
 }
 
+/*
+ * Without this the `hidden` attribute does nothing: the UA's [hidden] rule is
+ * weaker than a class selector setting display, so `card.hidden = true` left
+ * the pill on screen and the X appeared broken. Every other component in this
+ * file already carries its own [hidden] rule; this one was missed.
+ */
+.player__resumed[hidden] { display: none; }
 .player__resumed-text { color: #d6d6dd; }
 .player__resumed-text b { color: #fff; font-weight: 700; }
 

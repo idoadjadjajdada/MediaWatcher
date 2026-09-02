@@ -345,3 +345,16 @@
 .gap--missing .gap__title { color: var(--fg-2, var(--fg)); }
 /* Unaired is dimmer still: nothing to act on. */
 .gap--unaired { opacity: .55; }
+
+/* The row itself is data-action="play"; these sit inside it, and the delegated
+   handler matches the closest [data-action], so the inner button wins. */
+.episode__actions { display: flex; align-items: center; gap: var(--space-2); }
+.episode__save {
+  min-height: 30px; padding: 0 var(--space-3); border-radius: var(--radius-sm);
+  border: 1px solid var(--line); font-size: 11px; font-weight: 600; color: var(--fg-3);
+  white-space: nowrap;
+}
+.episode__save:hover { color: var(--fg); background: var(--surface-2); }
+/* Offered but unavailable: visibly inert rather than absent, so the feature
+   can be found and the reason read from its tooltip. */
+.season__subs[data-disabled] { opacity: .45; }

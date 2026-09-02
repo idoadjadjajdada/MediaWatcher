@@ -621,6 +621,13 @@ export function renderDetailModal(item) {
             ${firstFile
     ? `<button class="btn btn--primary" data-action="play" data-path="${esc(firstFile.file_path)}">${playIcon('icon-sm')}Play</button>`
     : ''}
+            ${firstFile && !isShow
+    // Only for movies here. A show's files belong to individual episodes, so
+    // its save buttons live on the episode rows instead — "save this show"
+    // would be a hundred gigabytes behind one unlabelled press.
+    ? `<button class="btn btn--secondary" data-action="save-offline"
+        data-path="${esc(firstFile.file_path)}" data-title="${esc(item.title)}">Save offline</button>`
+    : ''}
             <button class="btn ${unowned ? 'btn--primary' : 'btn--secondary'}"
                     data-action="find-torrents"
                     data-type="${isShow ? 'show' : 'movie'}"
@@ -695,7 +702,11 @@ function renderSeason(show, season, open) {
   // The bulk fetch sits beside the toggle rather than inside it: a button
   // nested in a button is invalid, and clicking it would also collapse the
   // season it had just started working on.
+  // Three states, not two. Unknown draws nothing; unavailable draws a disabled
+  // button that says why, because a feature that renders as absence cannot be
+  // discovered or diagnosed.
   const canFetch = Boolean(state.subtitles?.download && show.tmdb_id);
+  const showFetch = Boolean(state.subtitles && show.tmdb_id);
 
   return `
     <div class="season${open ? ' is-open' : ''}">
@@ -705,10 +716,13 @@ function renderSeason(show, season, open) {
           Season ${pad2(season.number)}
           <span class="season__count">${season.episodes.length} episode${season.episodes.length === 1 ? '' : 's'}</span>
         </button>
-        ${canFetch ? `
-        <button class="season__subs" data-action="fetch-season-subs"
+        ${showFetch ? `
+        <button class="season__subs" data-action="${canFetch ? 'fetch-season-subs' : 'subs-unavailable'}"
           data-show="${show.tmdb_id}" data-season="${season.number}"
-          title="Download subtitles for every episode of this season">Subtitles</button>` : ''}
+          ${canFetch ? '' : 'data-disabled="1"'}
+          title="${canFetch
+    ? 'Download subtitles for every episode of this season'
+    : 'Needs an OpenSubtitles account — see Settings'}">Subtitles</button>` : ''}
       </div>
       ${renderMissing(show, season)}
       <div class="season__episodes">
@@ -737,7 +751,15 @@ function renderSeason(show, season, open) {
               ${seen.started && !seen.watched && seen.remaining
     ? `<div class="episode__left">${formatTime(seen.remaining)} left</div>` : ''}
             </div>
-            ${file ? `<button class="btn btn--ghost btn--icon" aria-label="Play">${playIcon()}</button>` : '<span class="badge">missing</span>'}
+            ${file ? `
+              <div class="episode__actions">
+                <button class="btn btn--ghost btn--icon" aria-label="Play">${playIcon()}</button>
+                <!-- Stops the row's own data-action="play" from firing too. -->
+                <button class="episode__save" data-action="save-offline"
+                  data-path="${esc(file.file_path)}"
+                  data-title="${esc(`${show.title} ${episodeTag(season.number, episode.episode_number)}`)}"
+                  title="Save this episode to this device">Save</button>
+              </div>` : '<span class="badge">missing</span>'}
           </div>`;
   }).join('')}
       </div>

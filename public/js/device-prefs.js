@@ -58,20 +58,43 @@ export function normaliseDevicePrefs(input = {}) {
   return out;
 }
 
+/*
+ * Read once, then served from memory.
+ *
+ * These are read on the playback hot path - the seek step, the next-up lead
+ * and the intro behaviour are all consulted from `tick`, which runs on every
+ * `timeupdate`. Going to localStorage there means a synchronous storage read
+ * and a JSON.parse several times a second, for values that change when someone
+ * visits the settings page and at no other time.
+ *
+ * The cache is dropped on every write, so a change still applies to the very
+ * next press rather than the next reload — which was the point of reading them
+ * live in the first place.
+ */
+let cached = null;
+
 /** Read them. Every failure path yields the defaults; nothing throws. */
 export function loadDevicePrefs() {
+  if (cached) return cached;
+
   try {
     const raw = globalThis.localStorage?.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULTS };
-    return normaliseDevicePrefs(JSON.parse(raw));
+    cached = raw ? normaliseDevicePrefs(JSON.parse(raw)) : { ...DEFAULTS };
   } catch {
-    return { ...DEFAULTS };
+    cached = { ...DEFAULTS };
   }
+  return cached;
+}
+
+/** Forget the cached copy, so the next read goes back to storage. */
+export function invalidateDevicePrefs() {
+  cached = null;
 }
 
 /** Merge a patch in and store the result, returning what was stored. */
 export function saveDevicePrefs(patch) {
   const merged = normaliseDevicePrefs({ ...loadDevicePrefs(), ...patch });
+  cached = merged;
   try {
     globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify(merged));
   } catch {
@@ -81,12 +104,24 @@ export function saveDevicePrefs(patch) {
 }
 
 export function resetDevicePrefs() {
+  cached = { ...DEFAULTS };
   try {
     globalThis.localStorage?.removeItem(STORAGE_KEY);
   } catch {
     // Nothing to remove is the same outcome as removing it.
   }
-  return { ...DEFAULTS };
+  return cached;
+}
+
+/*
+ * Another tab changing a setting invalidates this one's copy. Without it, two
+ * open tabs disagree until one of them is reloaded - and the settings page is
+ * exactly the sort of thing someone opens in a second tab.
+ */
+if (typeof globalThis.addEventListener === 'function') {
+  globalThis.addEventListener('storage', (event) => {
+    if (event.key === STORAGE_KEY || event.key === null) invalidateDevicePrefs();
+  });
 }
 
 export default {

@@ -48,6 +48,42 @@ if (failures === 0) {
   console.log(`${total} checks, all passed\n`);
   process.exit(0);
 } else {
-  console.log(`${total} checks, ${failures} FAILED\n`);
+  console.log('\nthe preview agrees with where the click lands');
+/*
+ * Seeking goes through a native <input type="range">, which keeps its thumb
+ * inside the track: the value at a point is measured across `width - thumb`,
+ * starting half a thumb in. Computing the preview as x/width therefore named
+ * one time and jumped to another - correct in the middle, off by half a thumb
+ * at the ends, which is exactly what "it doesn't go where I clicked" is.
+ */
+const THUMB = 13;
+const WIDTH = 813;
+
+/** What a range input reports for a pointer at `x`. */
+const nativeValue = (x, width = WIDTH, thumb = THUMB) =>
+  Math.max(0, Math.min(1, (x - thumb / 2) / (width - thumb)));
+
+for (const x of [0, 7, 100, 406, 500, 700, 806, 813]) {
+  check(`preview matches the input at x=${x}`,
+    Math.abs(previewFraction(x, WIDTH, THUMB) - nativeValue(x)) < 1e-9);
+}
+
+// The old behaviour is what the bug looked like: agreeing dead centre and
+// drifting towards the ends.
+check('the centre was always right, which is why this was easy to miss',
+  Math.abs(previewFraction(WIDTH / 2, WIDTH, 0) - previewFraction(WIDTH / 2, WIDTH, THUMB)) < 1e-9);
+check('but the far end was off by half a thumb',
+  Math.abs(previewFraction(WIDTH - 1, WIDTH, 0) - previewFraction(WIDTH - 1, WIDTH, THUMB)) > 0.007);
+
+check('a click at the very start is 0', previewFraction(0, WIDTH, THUMB) === 0);
+check('a click at the very end is 1', previewFraction(WIDTH, WIDTH, THUMB) === 1);
+check('the thumb defaults to zero, preserving the old callers',
+  previewFraction(100, 200) === 0.5);
+check('a track narrower than its thumb does not divide by zero',
+  previewFraction(5, 10, 13) === 0);
+check('a negative thumb is ignored rather than inverting the maths',
+  previewFraction(100, 200, -5) === 0.5);
+
+console.log(`${total} checks, ${failures} FAILED\n`);
   process.exit(1);
 }

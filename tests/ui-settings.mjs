@@ -125,6 +125,14 @@ try {
   await page.waitForTimeout(300);
   const after = await page.evaluate(() => JSON.parse(localStorage.getItem('mw.device') || '{}').autoplayNext);
   check('the toggle writes to storage', after === false, { before, after });
+  // It read as a circle because `.switch` already existed in content.css with
+  // min-height: 44px, which turned a 44x26 pill into a 44x44 blob.
+  const shape = await page.$eval('[data-action="settings-toggle"]', (n) => {
+    const box = n.getBoundingClientRect();
+    return { w: Math.round(box.width), h: Math.round(box.height) };
+  });
+  check('the toggle is a pill, not a circle', shape.w > shape.h * 1.4, shape);
+
   check('and the switch reflects it',
     (await page.getAttribute('[data-action="settings-toggle"][data-field="autoplayNext"]', 'aria-checked')) === 'false');
 

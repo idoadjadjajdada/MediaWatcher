@@ -32,6 +32,7 @@ import {
   prefsKey, matchAudio, matchSubtitle, describeAudio, describeSubtitle
 } from './track-prefs.js';
 import { loadDevicePrefs } from './device-prefs.js';
+import * as offline from './offline.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -242,7 +243,7 @@ async function openInner(filePath) {
   const trackKey = prefsKey(located);
 
   // Probe, saved position and subtitle list in parallel — none depend on each other.
-  const [info, saved, tracks, intro, prefs] = await Promise.all([
+  const [info, saved, tracks, intro, prefs, offlineSrc] = await Promise.all([
     api.getStreamInfo(filePath).catch(() => null),
     api.getProgressFor(filePath).catch(() => null),
     api.listSubtitles(filePath).catch(() => []),
@@ -250,7 +251,10 @@ async function openInner(filePath) {
     located?.type === 'episode' && located.item?.tmdb_id
       ? api.getIntro(located.item.tmdb_id, located.season).then((r) => r.marker).catch(() => null)
       : Promise.resolve(null),
-    trackKey ? api.getTrackPrefs(trackKey).then((r) => r.prefs).catch(() => null) : Promise.resolve(null)
+    trackKey ? api.getTrackPrefs(trackKey).then((r) => r.prefs).catch(() => null) : Promise.resolve(null),
+    // A saved copy short-circuits everything below — no probe decision, no
+    // encoder, no network. Resolved here so `load` stays synchronous.
+    offline.playbackUrl(filePath).catch(() => null)
   ]);
 
   const seekable = info ? info.seekable !== false : true;
@@ -308,6 +312,9 @@ async function openInner(filePath) {
     // Same reasoning: how big subtitles need to be is a property of the screen
     // you are sitting in front of, not of the episode.
     subtitleStyle: loadSubtitleStyle(),
+    // Set when this file has been saved for offline: playback reads from the
+    // Cache instead of the server, so it works with no network at all.
+    offlineSrc,
     // The parsed ASS document and its animation-frame handle, when the active
     // track is one the overlay renderer owns rather than a <track> element.
     ass: null,
@@ -481,6 +488,27 @@ function endHlsSession() {
 }
 
 function load(startAt = 0, { autoplay = true } = {}) {
+  /*
+   * A saved copy wins over everything. It is already a browser-native file,
+   * so it needs no decision from the server and plays with the network down -
+   * which is the entire point of having saved it.
+   */
+  if (ctx.offlineSrc) {
+    if (ctx.video.src !== ctx.offlineSrc) {
+      detachHls();
+      ctx.video.src = ctx.offlineSrc;
+      if (startAt > 0) {
+        ctx.video.addEventListener('loadedmetadata', () => { ctx.video.currentTime = startAt; }, { once: true });
+      }
+    } else if (startAt >= 0) {
+      ctx.video.currentTime = startAt;
+    }
+    if (autoplay) ctx.video.play().catch(() => {});
+    applyTrack(ctx.activeTrack);
+    tick();
+    return;
+  }
+
   /*
    * HLS covers everything that needs ffmpeg, and it seeks by segment, so the
    * element's own currentTime is the real position.
@@ -853,7 +881,23 @@ export function loadSubtitleCapabilities() {
 }
 
 function buildFetchSection() {
-  if (!state.subtitles?.download) return '';
+  // Still waiting on the capability answer: render nothing rather than a
+  // control that would immediately be replaced by a different one.
+  if (!state.subtitles) return '';
+
+  /*
+   * Unconfigured used to render nothing at all, which is why "how do I
+   * download subtitles for this episode?" had no answer anywhere on screen -
+   * the feature was invisible rather than merely unavailable. Saying so, and
+   * saying where to fix it, costs two lines.
+   */
+  if (!state.subtitles.download) {
+    return `
+      <div class="player__menu-label">OpenSubtitles</div>
+      <div class="player__menu-note">
+        Add an OpenSubtitles account in Settings to download subtitles.
+      </div>`;
+  }
 
   const label = fetchingSubs
     ? 'Searching&hellip;'
@@ -1061,6 +1105,16 @@ function reportPossibleIntroSkip(from, to) {
 
 /** How long the "resumed from" pill stays before it gets out of the way. */
 const RESUMED_PILL_MS = 9000;
+
+/*
+ * Width of the seek bar's thumb, matching `.range::-webkit-slider-thumb` in
+ * player.css. A range input keeps its thumb inside the track, so the value it
+ * reports is measured across `width - thumb` rather than the full width; the
+ * hover preview has to use the same span or it names a different time from the
+ * one the click lands on. The CSS `transform: scale()` on the thumb does not
+ * change layout, so this stays 13 whether or not it is hovered.
+ */
+const SEEK_THUMB_PX = 13;
 
 function showResumedPill(at) {
   const card = el('resume-card');
@@ -2064,7 +2118,7 @@ function attach() {
   scrub.addEventListener('pointermove', (event) => {
     markIdle();
     const rect = scrub.getBoundingClientRect();
-    showPreview(previewFraction(event.clientX - rect.left, rect.width));
+    showPreview(previewFraction(event.clientX - rect.left, rect.width, SEEK_THUMB_PX));
   });
   scrub.addEventListener('pointerleave', hidePreview);
   // Touch has no hover, so the preview follows the finger through a drag and

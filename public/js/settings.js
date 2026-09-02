@@ -27,6 +27,8 @@ import {
 import {
   loadPicture, savePicture, clampPicture, PICTURE_MIN, PICTURE_MAX
 } from './picture.js';
+import * as offline from './offline.js';
+import { canInstall, isInstalled, prompt as promptInstall } from './install.js';
 
 /* --------------------------------------------------------------------------
  * Formatting
@@ -80,8 +82,8 @@ const row = (label, hint, control) => `
   </div>`;
 
 const toggle = (field, value) => `
-  <button class="switch${value ? ' is-on' : ''}" role="switch" aria-checked="${value}"
-    data-action="settings-toggle" data-field="${field}"><span class="switch__dot"></span></button>`;
+  <button class="toggle${value ? ' is-on' : ''}" role="switch" aria-checked="${value}"
+    data-action="settings-toggle" data-field="${field}"><span class="toggle__dot"></span></button>`;
 
 const stepper = (field, value, suffix, min, max, step) => `
   <div class="stepper">
@@ -219,6 +221,63 @@ function renderLogins() {
  * you actually want to know is what to delete. Shows also carry a per-episode
  * figure, because the total only tells you a show is long.
  */
+/**
+ * Installing, and what has been saved to this device.
+ *
+ * The install button only appears where the browser has actually offered one.
+ * Chrome hands over a `beforeinstallprompt` event; Safari on iOS never does
+ * and expects Share -> Add to Home Screen instead, so there it says so rather
+ * than showing a button that cannot work.
+ */
+function renderOffline() {
+  const saved = state.settings?.offline;
+  const quota = state.settings?.quota;
+
+  const used = quota && quota.quota > 0
+    ? `${formatBytes(quota.usage)} of about ${formatBytes(quota.quota)} used`
+    : null;
+
+  return `
+    <section class="settings__group">
+      <h2 class="settings__heading">Offline</h2>
+      <p class="settings__note">
+        Saved titles play with no connection at all, straight from this device.
+        ${used ? esc(used) : 'Browsers report storage space only approximately.'}
+      </p>
+      ${canInstall() ? `
+        <div class="settings__actions">
+          <button class="btn btn--primary" data-action="settings-install">Install app</button>
+        </div>`
+    : `<p class="settings__note">
+          ${/iphone|ipad/i.test(navigator.userAgent)
+        ? 'To install: Share, then Add to Home Screen.'
+        : isInstalled()
+          ? 'Already installed.'
+          : 'This browser has not offered an install prompt.'}
+        </p>`}
+      ${!saved ? '<div class="settings__loading">Loading…</div>'
+    : saved.length === 0 ? '<div class="settings__empty">Nothing saved yet. Open a title and choose Save offline.</div>' : `
+      <div class="table-scroll">
+        <table class="table">
+          <thead><tr><th>Title</th><th>Size</th><th>Saved</th><th></th></tr></thead>
+          <tbody>
+            ${saved.map((entry) => `
+              <tr>
+                <td>${esc(entry.title || entry.filePath.split(/[\/]/).pop())}</td>
+                <td class="t-num">${esc(formatBytes(entry.bytes))}</td>
+                <td class="t-num">${esc(formatWhen(entry.savedAt))}</td>
+                <td><button class="btn btn--ghost btn--danger" data-action="settings-unsave"
+                  data-path="${esc(entry.filePath)}">Remove</button></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="settings__actions">
+        <button class="btn btn--secondary" data-action="settings-unsave-all">Remove everything saved</button>
+      </div>`}
+    </section>`;
+}
+
 function renderStorage() {
   const storage = state.settings?.storage;
   if (!storage) return '<section class="settings__group"><h2 class="settings__heading">Storage</h2><div class="settings__loading">Loading…</div></section>';
@@ -313,6 +372,7 @@ export function renderSettings() {
       </header>
       ${renderPlayback(prefs)}
       ${renderAppearance(subtitle, picture)}
+      ${renderOffline()}
       ${renderStorage()}
       ${renderDevices()}
       ${renderLogins()}
@@ -328,13 +388,15 @@ export function renderSettings() {
  * their own data arrives rather than blocking the whole page.
  */
 export async function loadSettings() {
-  const [devices, logins, diagnostics, storage] = await Promise.all([
+  const [devices, logins, diagnostics, storage, saved, quota] = await Promise.all([
     api.getDevices().catch(() => []),
     api.getLoginHistory().catch(() => []),
     api.getDiagnostics().catch(() => null),
-    api.getStorage().catch(() => null)
+    api.getStorage().catch(() => null),
+    offline.listSaved().catch(() => []),
+    offline.quota().catch(() => null)
   ]);
-  setState({ settings: { devices, logins, diagnostics, storage } });
+  setState({ settings: { devices, logins, diagnostics, storage, offline: saved, quota } });
 }
 
 /* --------------------------------------------------------------------------
@@ -411,6 +473,23 @@ export async function revokeDevice(id) {
 export async function refreshDiagnostics() {
   await loadSettings();
   toast('success', 'Refreshed');
+}
+
+export async function install() {
+  const outcome = await promptInstall();
+  if (outcome === 'accepted') toast('success', 'Installed', 'It will open like an app from now on.');
+}
+
+export async function unsave(filePath) {
+  await offline.remove(filePath);
+  setState({ settings: { ...state.settings, offline: await offline.listSaved() } });
+  toast('success', 'Removed from this device');
+}
+
+export async function unsaveAll() {
+  const count = await offline.removeAll();
+  setState({ settings: { ...state.settings, offline: await offline.listSaved() } });
+  toast('success', count > 0 ? `Removed ${count} saved title${count === 1 ? '' : 's'}` : 'Nothing was saved');
 }
 
 export default { renderSettings, loadSettings };

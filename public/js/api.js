@@ -271,6 +271,27 @@ export const getMissingEpisodes = (show) => get(`/api/library/missing?${q({ show
 /** Where the space went, by title rather than by folder. */
 export const getStorage = () => get('/api/library/storage');
 
+/* --------------------------------------------------------------------------
+ * Saving for offline
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Whether a single-file copy exists yet, and how big it is.
+ *
+ * Decoder capabilities are sent because they decide which variant counts as
+ * browser-native — the same question playback already asks.
+ */
+export const getOfflineInfo = (filePath) => {
+  const caps = decoderCapabilities();
+  return get(`/api/offline/info?${q({ path: filePath, hevc: caps.hevc ? 1 : '', ac3: caps.ac3 ? 1 : '' })}`);
+};
+
+/** The whole file, for downloading into the offline cache. */
+export const offlineFileUrl = (filePath) => {
+  const caps = decoderCapabilities();
+  return `/api/offline/file?${q({ path: filePath, hevc: caps.hevc ? 1 : '', ac3: caps.ac3 ? 1 : '' })}`;
+};
+
 export const thumbMetaUrl = (filePath) => `/api/thumbs/meta?${q({ path: filePath })}`;
 export const thumbUrl = (filePath, index) => `/api/thumbs?${q({ path: filePath, i: index })}`;
 
@@ -287,5 +308,6 @@ export default {
   getIntro, reportSkip, forgetIntro,
   getTrackPrefs, saveTrackPrefs, forgetTrackPrefs,
   getDevices, revokeDevice, getLoginHistory, getDiagnostics,
-  getMissingEpisodes, getStorage
+  getMissingEpisodes, getStorage,
+  getOfflineInfo, offlineFileUrl
 };
