@@ -36,6 +36,7 @@ const SUITES = [
   { file: 'encoder-registry.test.mjs' },
   { file: 'hls-pool.test.mjs' },
   { file: 'env-file.test.mjs' },
+  { file: 'source-stats.test.mjs' },
   { file: 'cache-limits.test.mjs' },
   { file: 'scanner-titles.test.mjs' },
   { file: 'downloads.test.mjs' },

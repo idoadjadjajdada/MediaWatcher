@@ -239,8 +239,26 @@ async function runJob(jobId, request) {
   job._lastPersisted = -1;
 
   try {
-    // Phase 1 — AllDebrid resolves the torrent.
+    /*
+     * Phase 1 — AllDebrid resolves the torrent.
+     *
+     * The first tick answers the question every stalled-looking download
+     * raises. A torrent AllDebrid already holds comes back ready immediately
+     * and the local transfer starts within seconds; one it does not has to be
+     * downloaded on their side first, which can take twenty minutes during
+     * which the bar sits at the boundary between the two phases and looks
+     * stuck. Both are recorded, so the page can say which is happening rather
+     * than leaving it to be guessed from a percentage that is not moving.
+     */
+    let firstTick = true;
     const ready = await alldebrid.pollUntilReady(jobId, config.alldebrid.pollTimeoutMs, (tick) => {
+      if (firstTick) {
+        firstTick = false;
+        const cached = Boolean(tick.ready);
+        job = updateJob(jobId, { cached: cached ? 1 : 0 });
+        job._lastPersisted = -1;
+        log.info(`${jobId}: ${cached ? 'cached on AllDebrid, starting now' : 'not cached, AllDebrid is fetching it first'}`);
+      }
       if (controller.signal.aborted) return;
       persistProgress(job, tick.progress * DEBRID_SHARE, 'debrid');
     });

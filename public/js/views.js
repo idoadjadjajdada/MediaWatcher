@@ -551,9 +551,30 @@ export function renderDownloads() {
   return `<div class="page">${header}<div class="job-list">${jobs.map(jobRow).join('')}</div></div>`;
 }
 
+/**
+ * What this job is actually waiting for.
+ *
+ * "50%" was the single most confusing thing on this page: it is the boundary
+ * between AllDebrid fetching the torrent and the local transfer, so a job that
+ * sits there is not stuck, it is waiting on a torrent AllDebrid did not
+ * already hold. Now it says so — and says the opposite too, because a cached
+ * torrent racing through the same percentage is worth telling apart.
+ */
+function jobPhase(job) {
+  if (job.status !== 'downloading') return null;
+  if (job.phase === 'debrid') {
+    return job.cached === 0
+      ? 'AllDebrid is fetching this torrent — it was not already cached'
+      : 'waiting for AllDebrid';
+  }
+  if (job.cached === 1) return 'was cached — transferring';
+  return 'transferring';
+}
+
 function jobRow(job) {
   const percent = Math.round((Number(job.progress) || 0) * 100);
   const active = job.status === 'downloading' || job.status === 'queued';
+  const phase = jobPhase(job);
 
   /*
    * Reordering is only offered on jobs that are actually waiting. A running
@@ -593,7 +614,7 @@ function jobRow(job) {
         <div class="job__progress">
           <div class="progress progress--lg"><div class="progress__fill" style="width:${percent}%"></div></div>
           <div class="job__stats">
-            <span>${percent}%${job.phase ? ` · ${esc(job.phase)}` : ''}${active && !job.phase ? ' · waiting' : ''}${job.status === 'paused' ? ' · paused' : ''}</span>
+            <span>${percent}%${phase ? ` · ${esc(phase)}` : ''}${active && !job.phase ? ' · waiting' : ''}${job.status === 'paused' ? ' · paused' : ''}</span>
             <span>${job.status === 'complete' ? 'Finished' : ''}</span>
           </div>
         </div>`}

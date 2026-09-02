@@ -480,6 +480,7 @@ const ACTIONS = {
   'settings-refresh': () => settings.refreshDiagnostics(),
   'settings-kill-encoder': (el) => settings.killEncoder(el.dataset.id),
   'settings-benchmark': () => settings.runBenchmark(),
+  'settings-reset-sources': () => settings.resetSourceStats(),
   'settings-log-level': (el) => settings.setLogLevel(el.dataset.level),
   'settings-log-follow': () => settings.toggleLogFollow(),
   'settings-env-edit': (el) => settings.editEnv(el.dataset.key, el.value),

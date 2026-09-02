@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS download_jobs (
   -- NULL and fall back to created_at, behind anything placed by hand.
   position INTEGER,
   progress REAL DEFAULT 0,
+  -- Whether AllDebrid already held this torrent. Null until the first status
+  -- poll answers: "not asked yet" and "not cached" are very different waits.
+  cached INTEGER,
   file_path TEXT,
   error TEXT,
   created_at INTEGER NOT NULL,

@@ -442,6 +442,77 @@ function renderEncoders() {
 }
 
 /* --------------------------------------------------------------------------
+ * Sources
+ *
+ * Where results and downloads actually come from, and whether either is
+ * healthy. Both were previously only knowable by watching a search go wrong.
+ * ----------------------------------------------------------------------- */
+
+function renderSources() {
+  const stats = state.settings?.sourceStats;
+  const account = state.settings?.account;
+
+  const ms = (value) => (value === null || value === undefined ? '—' : `${Math.round(value)}ms`);
+
+  return `
+    <section class="settings__group">
+      <h2 class="settings__heading">Sources</h2>
+
+      <div class="settings__sub">
+        <h3 class="settings__subheading">AllDebrid</h3>
+        ${account === null ? '<div class="settings__warn">Could not reach AllDebrid.</div>' : ''}
+        ${account ? `
+          <div class="facts">
+            <div class="fact"><dt>Account</dt><dd class="t-num">${esc(account.username || '—')}</dd></div>
+            <div class="fact"><dt>Premium</dt><dd>${account.premium ? 'Yes' : 'No'}${account.trial ? ' (trial)' : ''}</dd></div>
+            <div class="fact"><dt>Paid until</dt><dd class="t-num">${esc(formatWhen(account.premiumUntil))}</dd></div>
+            <div class="fact"><dt>Renewing</dt><dd>${account.subscribed ? 'Yes' : 'No'}</dd></div>
+          </div>
+          ${account.premium ? '' : `
+            <div class="settings__warn">
+              This account is not premium, so every download will fail at the
+              point of unlocking a link.
+            </div>`}` : ''}
+      </div>
+
+      <div class="settings__sub">
+        <h3 class="settings__subheading">Search sources</h3>
+        <p class="settings__note">
+          The last ${stats?.window || 100} searches per source. A source that
+          answers quickly and returns nothing every time is the quiet failure:
+          it never appears as an error and never contributes a result either.
+        </p>
+        ${!stats || stats.sources.length === 0
+    ? '<div class="settings__empty">Nothing searched yet.</div>'
+    : `<div class="table-scroll"><table class="table">
+            <thead><tr>
+              <th>Source</th><th>Searches</th><th>Failed</th><th>Timed out</th>
+              <th>Empty</th><th>Median</th><th>p95</th><th>Results</th>
+            </tr></thead>
+            <tbody>
+              ${stats.sources.map((source) => `
+                <tr>
+                  <td>${esc(source.label || source.id)}</td>
+                  <td class="t-num">${source.searches}</td>
+                  <td class="t-num${source.failed > 0 ? ' is-slow' : ''}">${source.failed}</td>
+                  <td class="t-num">${source.timedOut}</td>
+                  <td class="t-num">${source.empty}</td>
+                  <td class="t-num">${esc(ms(source.medianMs))}</td>
+                  <td class="t-num">${esc(ms(source.p95Ms))}</td>
+                  <td class="t-num">${source.resultsPerSearch}</td>
+                </tr>
+                ${source.lastError ? `
+                  <tr class="table__note"><td colspan="8">${esc(source.lastError)}</td></tr>` : ''}`).join('')}
+            </tbody>
+          </table></div>`}
+        <div class="settings__actions">
+          <button class="btn btn--ghost" data-action="settings-reset-sources">Start the history again</button>
+        </div>
+      </div>
+    </section>`;
+}
+
+/* --------------------------------------------------------------------------
  * The server itself
  *
  * Three things that used to require being at the machine: reading the log,
@@ -658,6 +729,7 @@ export function renderSettings() {
       ${renderStorage()}
       ${renderDevices()}
       ${renderLogins()}
+      ${renderSources()}
       ${renderServer()}
       ${renderDiagnostics()}
     </div>`;
@@ -671,7 +743,8 @@ export function renderSettings() {
  * their own data arrives rather than blocking the whole page.
  */
 export async function loadSettings() {
-  const [devices, logins, diagnostics, storage, saved, quota, warm, encoders, env, log, benchmark] =
+  const [devices, logins, diagnostics, storage, saved, quota, warm, encoders, env, log, benchmark,
+    sourceStats, account] =
     await Promise.all([
       api.getDevices().catch(() => []),
       api.getLoginHistory().catch(() => []),
@@ -683,12 +756,16 @@ export async function loadSettings() {
       api.getEncoders().catch(() => null),
       api.getEnv().catch(() => null),
       api.getServerLog({ limit: 400 }).catch(() => null),
-      api.getBenchmark().catch(() => null)
+      api.getBenchmark().catch(() => null),
+      api.getSourceStats().catch(() => null),
+      // null means the call failed, which is itself worth showing: an
+      // unreachable AllDebrid is the reason every download is about to fail.
+      api.getDebridAccount().catch(() => null)
     ]);
   setState({
     settings: {
       devices, logins, diagnostics, storage, offline: saved, quota, warm, encoders,
-      env, log, benchmark,
+      env, log, benchmark, sourceStats, account,
       // Carried across a reload so following the log survives a refresh of the
       // page's data, which is the one time you are most likely to be doing it.
       logLevel: state.settings?.logLevel || '',
@@ -885,6 +962,18 @@ export async function restartServer() {
   };
   // Long enough that the poll does not catch the server it is about to leave.
   setTimeout(poll, 2500);
+}
+
+/** Forget the source history — for a source that has just been fixed. */
+export async function resetSourceStats() {
+  try {
+    await api.resetSourceStats();
+    state.settings.sourceStats = await api.getSourceStats().catch(() => null);
+    setState({});
+    toast('success', 'History cleared');
+  } catch (error) {
+    toast('error', 'Could not clear it', error.message);
+  }
 }
 
 export async function runBenchmark() {

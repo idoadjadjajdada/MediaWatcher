@@ -82,6 +82,15 @@ export const getSources = () => get('/api/torrents/sources');
 export const suggest = (query, limit = 8) => get(`/api/search/suggest?${q({ q: query, limit })}`);
 
 export const getJobs = () => get('/api/torrents/jobs');
+
+/** How each search source has behaved lately, over a rolling window. */
+export const getSourceStats = () => get('/api/torrents/source-stats');
+
+/** Start that history again — for a source that has just been fixed. */
+export const resetSourceStats = () => del('/api/torrents/source-stats');
+
+/** The AllDebrid account every download depends on. */
+export const getDebridAccount = () => get('/api/torrents/account');
 export const startDownload = (payload) => post('/api/torrents/download', payload);
 export const cancelJob = (id) => del(`/api/torrents/jobs/${encodeURIComponent(id)}`);
 
@@ -391,6 +400,7 @@ export default {
   getTrackPrefs, saveTrackPrefs, forgetTrackPrefs,
   getDevices, revokeDevice, getLoginHistory, getDiagnostics, getEncoders, killEncoder,
   getServerLog, getEnv, saveEnv, restartServer, getBenchmark, runBenchmark,
+  getSourceStats, resetSourceStats, getDebridAccount,
   getMissingEpisodes, getStorage, warmLibrary, getWarmStatus,
   getOfflineInfo, offlineFileUrl
 };

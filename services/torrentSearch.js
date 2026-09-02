@@ -14,6 +14,7 @@ import config, { createLogger } from '../config/index.js';
 import { rankResults } from './qualityRanker.js';
 import * as alldebrid from './alldebrid.js';
 import { getImdbId, rankMovies, rankShows } from './tmdb.js';
+import * as sourceStats from './sourceStats.js';
 
 const log = createLogger('search');
 
@@ -453,6 +454,14 @@ export async function search({ query, type = 'movie', tmdbId, imdbId, season, ep
       return { id: source.id, label: source.label, ok: false, count: 0, ms: Date.now() - started, error: error.message, results: [] };
     }
   }));
+
+  /*
+   * Recorded before the all-failed check, not after: a search where every
+   * source failed is the most informative one there is, and returning early
+   * without recording it would keep exactly the runs that explain a problem
+   * out of the history meant to show it.
+   */
+  sourceStats.record(settled);
 
   if (settled.every((entry) => !entry.ok)) {
     throw new SearchError('All search sources failed', 502, settled.map(({ id, error }) => ({ id, error })));

@@ -9,6 +9,8 @@ import { createLogger } from '../config/index.js';
 import * as torrentSearch from '../services/torrentSearch.js';
 import * as downloader from '../services/downloader.js';
 import * as tmdb from '../services/tmdb.js';
+import * as alldebrid from '../services/alldebrid.js';
+import * as sourceStats from '../services/sourceStats.js';
 import { listJobs, getJob } from '../db/index.js';
 
 const log = createLogger('api:torrents');
@@ -49,6 +51,52 @@ async function searchHandler(req, res) {
     res.status(status).json({ error: error.message, sources: error.details || null });
   }
 }
+
+/**
+ * GET /api/torrents/source-stats — how each source has been behaving lately.
+ *
+ * One search reports which sources answered and how fast, and throws it away.
+ * This is the same information kept, so a source that times out on half of all
+ * searches or reliably returns nothing can be told apart from one that works.
+ */
+router.get('/torrents/source-stats', (_req, res) => {
+  res.json({ window: sourceStats.WINDOW, sources: sourceStats.summary() });
+});
+
+/** DELETE /api/torrents/source-stats — start the history again. */
+router.delete('/torrents/source-stats', (_req, res) => {
+  sourceStats.reset();
+  res.json({ cleared: true });
+});
+
+/**
+ * GET /api/torrents/account — the AllDebrid account behind every download.
+ *
+ * An expired subscription surfaces today as downloads that fail one by one
+ * with an auth error, which is a slow way to learn something the account page
+ * says outright.
+ */
+router.get('/torrents/account', wrap(async (_req, res) => {
+  try {
+    const user = await alldebrid.getUser();
+    if (!user) return res.status(502).json({ error: 'AllDebrid returned no account' });
+
+    // Only what is worth showing. The payload also carries an email address
+    // and a notification list, and neither belongs on a settings page that
+    // anyone signed in can open.
+    return res.json({
+      username: user.username || null,
+      premium: Boolean(user.isPremium),
+      trial: Boolean(user.isTrial),
+      subscribed: Boolean(user.isSubscribed),
+      // AllDebrid reports seconds; everything else in this app is milliseconds.
+      premiumUntil: user.premiumUntil ? user.premiumUntil * 1000 : null,
+      fidelityPoints: Number(user.fidelityPoints) || 0
+    });
+  } catch (error) {
+    return res.status(error.status || 502).json({ error: error.message });
+  }
+}));
 
 /**
  * GET /api/search/suggest?q=&limit=

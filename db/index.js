@@ -40,7 +40,16 @@ const COLUMN_MIGRATIONS = [
   'ALTER TABLE download_jobs ADD COLUMN episode_title TEXT',
   // Explicit queue order. Nullable on purpose: existing rows keep falling back
   // to created_at until something reorders them.
-  'ALTER TABLE download_jobs ADD COLUMN position INTEGER'
+  'ALTER TABLE download_jobs ADD COLUMN position INTEGER',
+  /*
+   * Whether AllDebrid already had this torrent when it was uploaded.
+   *
+   * Nullable and stays null until the first status poll answers, because
+   * "not asked yet" and "not cached" are the difference between a job that is
+   * about to start and one that will sit on AllDebrid's side for twenty
+   * minutes - which is exactly the confusion this exists to end.
+   */
+  'ALTER TABLE download_jobs ADD COLUMN cached INTEGER'
 ];
 
 for (const statement of COLUMN_MIGRATIONS) {
@@ -349,7 +358,7 @@ export const deleteProgressPaths = db.transaction((paths) => {
 
 const JOB_COLUMNS = [
   'type', 'title', 'tmdb_id', 'year', 'season', 'episode', 'episode_title',
-  'magnet', 'source', 'status', 'progress', 'file_path', 'error', 'position'
+  'magnet', 'source', 'status', 'progress', 'file_path', 'error', 'position', 'cached'
 ];
 const updateCache = new Map();
 
