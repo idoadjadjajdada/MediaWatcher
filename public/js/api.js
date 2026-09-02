@@ -186,6 +186,19 @@ export const touchHlsSession = (sessionId) => post(`/api/hls/${sessionId}/touch`
 /** Stop a session's encoder immediately rather than waiting for the sweeper. */
 export const endHlsSession = (sessionId) => del(`/api/hls/${sessionId}`);
 
+/* --------------------------------------------------------------------------
+ * Intro markers
+ * ----------------------------------------------------------------------- */
+
+/** The learned intro for a show and season, or null. */
+export const getIntro = (show, season) => get(`/api/intro?${q({ show, season })}`);
+
+/** Report a jump that might be someone skipping the title sequence. */
+export const reportSkip = (payload) => post('/api/intro/skip', payload);
+
+/** Forget what was learned, when the offer turns out to be wrong. */
+export const forgetIntro = (show, season) => del(`/api/intro?${q({ show, season })}`);
+
 export const thumbMetaUrl = (filePath) => `/api/thumbs/meta?${q({ path: filePath })}`;
 export const thumbUrl = (filePath, index) => `/api/thumbs?${q({ path: filePath, i: index })}`;
 
@@ -197,5 +210,6 @@ export default {
   getContinueWatching, getAllProgress, getProgressFor, saveProgress,
   getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities,
   getQuality, setQuality, QUALITY_LEVELS,
-  thumbMetaUrl, thumbUrl, touchHlsSession, endHlsSession
+  thumbMetaUrl, thumbUrl, touchHlsSession, endHlsSession,
+  getIntro, reportSkip, forgetIntro
 };

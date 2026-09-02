@@ -73,3 +73,28 @@ CREATE TABLE IF NOT EXISTS devices (
 
 CREATE INDEX IF NOT EXISTS idx_devices_last_seen
   ON devices(last_seen DESC);
+
+-- Skips someone made near the start of an episode. Two that agree become an
+-- intro marker; the raw observations are kept so a marker can be recomputed
+-- if the rules for agreement change.
+CREATE TABLE IF NOT EXISTS intro_skips (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  key        TEXT NOT NULL,        -- show:<tmdb_id>:s<season>
+  file_path  TEXT NOT NULL,
+  from_pos   REAL NOT NULL,
+  to_pos     REAL NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_intro_skips_key ON intro_skips(key);
+
+-- One intro per show and season. Seasons get their own row because opening
+-- titles are routinely recut between them.
+CREATE TABLE IF NOT EXISTS intro_markers (
+  key          TEXT PRIMARY KEY,
+  start_pos    REAL NOT NULL,
+  end_pos      REAL NOT NULL,
+  source       TEXT NOT NULL,      -- 'learned' | 'detected' | 'manual'
+  observations INTEGER NOT NULL DEFAULT 1,
+  updated_at   INTEGER NOT NULL
+);

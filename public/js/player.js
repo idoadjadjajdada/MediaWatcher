@@ -22,6 +22,7 @@ import { clampPicture, pictureFilter, loadPicture, savePicture, PICTURE_MIN, PIC
 import { previewFraction, cardLeft, frameIndex } from './preview.js';
 import { attachHls } from './hls-player.js';
 import * as mediaSession from './media-session.js';
+import { introKey, shouldOfferSkip } from './intro.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -223,10 +224,14 @@ async function openInner(filePath) {
     : (located?.item?.year ? String(located.item.year) : '');
 
   // Probe, saved position and subtitle list in parallel — none depend on each other.
-  const [info, saved, tracks] = await Promise.all([
+  const [info, saved, tracks, intro] = await Promise.all([
     api.getStreamInfo(filePath).catch(() => null),
     api.getProgressFor(filePath).catch(() => null),
-    api.listSubtitles(filePath).catch(() => [])
+    api.listSubtitles(filePath).catch(() => []),
+    // Only shows have a repeating intro to have learned anything about.
+    located?.type === 'episode' && located.item?.tmdb_id
+      ? api.getIntro(located.item.tmdb_id, located.season).then((r) => r.marker).catch(() => null)
+      : Promise.resolve(null)
   ]);
 
   const seekable = info ? info.seekable !== false : true;
@@ -270,6 +275,9 @@ async function openInner(filePath) {
     // Which audio stream of the file to decode. The server re-encodes the
     // chosen one, so changing it means a new stream, exactly like the delay.
     audioIndex: 0,
+    // Where this season's title sequence is, if enough episodes have been
+    // skipped for us to know.
+    intro,
     // Global, not per-file: brightness tracks the room, not the master.
     picture: loadPicture(),
     // Set by the touch handlers; read by markIdle to choose its timing and by
@@ -306,20 +314,15 @@ async function openInner(filePath) {
   loadThumbMeta();
   attach();
 
+  load(resumeAt, { autoplay: true });
+
   /*
-   * A saved position is offered rather than taken. Dropping someone into the
-   * middle of something with no explanation is disorienting, and "start over"
-   * used to mean scrubbing all the way back by hand.
+   * Playback starts either way; the pill only says where it picked up and
+   * offers to go back. It used to be a sheet that blocked playback until
+   * answered, which meant a control that did not respond - as happened on iOS -
+   * made the episode unwatchable. Telling you afterwards cannot do that.
    */
-  if (resumeAt > RESUME_MIN) {
-    ctx.pendingResume = resumeAt;
-    el('resume-time').textContent = formatTime(resumeAt);
-    el('resume-card').hidden = false;
-    load(resumeAt, { autoplay: false });
-    markIdle();
-  } else {
-    load(resumeAt, { autoplay: true });
-  }
+  if (resumeAt > RESUME_MIN) showResumedPill(resumeAt);
 
   /*
    * The stream URL is fetched in parallel with the saved progress, so it cannot
@@ -350,6 +353,7 @@ export async function close({ save = true, keepPage = false } = {}) {
   clearInterval(ctx.saveTimer);
   clearInterval(ctx.hlsTimer);
   clearInterval(ctx.statsTimer);
+  clearTimeout(ctx.resumedTimer);
   clearTimeout(ctx.idleTimer);
   clearTimeout(ctx.thumbRetry);
 
@@ -425,18 +429,12 @@ function load(startAt = 0, { autoplay = true } = {}) {
   if (ctx.info?.hls) {
     detachHls();
 
-    attachHls(ctx.video, ctx.info.hls)
+    attachHls(ctx.video, ctx.info.hls, { startPosition: startAt })
       .then((detach) => {
         // The player may have closed or switched files while the library was
         // loading; detaching immediately avoids a stream with no owner.
         if (!ctx) { detach(); return; }
         ctx.detachHls = detach;
-
-        if (startAt > 0) {
-          ctx.video.addEventListener('loadedmetadata', () => {
-            ctx.video.currentTime = startAt;
-          }, { once: true });
-        }
         if (autoplay) ctx.video.play().catch(() => {});
       })
       .catch((error) => {
@@ -481,8 +479,14 @@ function load(startAt = 0, { autoplay = true } = {}) {
 function seekTo(seconds) {
   const total = duration();
   const target = Math.max(0, Math.min(total ? total - 1 : seconds, seconds));
+  const from = position();
+
   ctx.video.currentTime = target;
   tick();
+
+  // Every jump goes through here, which is why the learning hangs off it
+  // rather than off any one control.
+  if (target > from) reportPossibleIntroSkip(from, target);
 }
 
 export function skip(seconds) {
@@ -514,6 +518,9 @@ function tick() {
 
   if (ctx.nextTarget && !shouldOfferNext(total, current)) withdrawNextOffer();
   maybeOfferNext(total, current);
+
+  const skipButton = el('skip-intro');
+  if (skipButton) skipButton.hidden = !shouldOfferSkip(ctx.intro, current);
 }
 
 /**
@@ -809,16 +816,74 @@ function renderStats() {
     .join('');
 }
 
-/** Take the offered resume point, or start from the beginning instead. */
+/**
+ * Jump past the title sequence.
+ *
+ * Deliberately not reported back as a skip: this is the app acting on what it
+ * already learned, and counting it would let one real observation breed
+ * agreement with itself on every later episode.
+ */
+export function skipIntro() {
+  if (!ctx?.intro) return;
+  seekTo(ctx.intro.end);
+  const button = el('skip-intro');
+  if (button) button.hidden = true;
+  markIdle();
+}
+
+/**
+ * Tell the server about a jump that might have been someone skipping an intro.
+ *
+ * Sent on every forward seek near the start; the server decides whether it
+ * qualifies and whether it agrees with what other episodes did. Failure is
+ * silent because nothing about playback depends on it.
+ */
+function reportPossibleIntroSkip(from, to) {
+  if (!ctx || ctx.located?.type !== 'episode') return;
+  const showId = ctx.located.item?.tmdb_id;
+  if (!showId) return;
+  // The app's own skip must not teach the app.
+  if (ctx.intro && to >= ctx.intro.end - 1 && to <= ctx.intro.end + 1) return;
+
+  api.reportSkip({
+    show: showId,
+    season: ctx.located.season,
+    path: ctx.filePath,
+    from,
+    to,
+    duration: duration()
+  }).then((result) => {
+    // A marker can appear on the very episode that completed the pattern.
+    if (result?.marker && ctx) ctx.intro = result.marker;
+  }).catch(() => {});
+}
+
+/** How long the "resumed from" pill stays before it gets out of the way. */
+const RESUMED_PILL_MS = 9000;
+
+function showResumedPill(at) {
+  const card = el('resume-card');
+  const time = el('resume-time');
+  if (!card || !time) return;
+
+  time.textContent = formatTime(at);
+  card.hidden = false;
+
+  clearTimeout(ctx.resumedTimer);
+  ctx.resumedTimer = setTimeout(() => { card.hidden = true; }, RESUMED_PILL_MS);
+}
+
+/** Dismiss the pill, or take the offer to start from the beginning. */
 export function answerResume(choice) {
   if (!ctx) return;
+
   const card = el('resume-card');
   if (card) card.hidden = true;
+  clearTimeout(ctx.resumedTimer);
 
-  const at = choice === 'restart' ? 0 : (ctx.pendingResume || 0);
-  ctx.pendingResume = null;
+  if (choice !== 'restart') return;
 
-  seekTo(at);
+  seekTo(0);
   ctx.video.play().catch(() => {});
   markIdle();
 }
@@ -1606,6 +1671,19 @@ function attach() {
   // Stats are a once-a-second job; nothing else needs this cadence.
   ctx.statsTimer = setInterval(renderStats, 1000);
 
+  /*
+   * Bound directly as well as through the delegated handler. The pill is the
+   * one control that appears unbidden over the video, and on iOS it was not
+   * responding to delegation at all - so it does not rely on it.
+   */
+  for (const [selector, choice] of [
+    ['#resume-restart-btn', 'restart'],
+    ['.player__resumed-close', 'dismiss']
+  ]) {
+    const button = node.querySelector(selector);
+    if (button) button.addEventListener('click', () => answerResume(choice));
+  }
+
   publishNowPlaying();
 
   /*
@@ -1813,7 +1891,7 @@ function playNextImmediate() {
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
   skip, setSubtitle, setSpeed, setQuality, setAudioTrack, toggleStats,
-  answerResume, toggleShortcuts, showAirplayPicker,
+  answerResume, toggleShortcuts, showAirplayPicker, skipIntro,
   togglePopover, closePopovers, setPicture,
   playNext, cancelNext
 };

@@ -42,7 +42,7 @@ export const nativeHls = (video) =>
  * Resolves a detach function that MUST be called before the element is reused,
  * or the previous stream keeps loading segments in the background.
  */
-export async function attachHls(video, url) {
+export async function attachHls(video, url, { startPosition = 0 } = {}) {
   /*
    * hls.js is tried first and native is the fallback, which is the opposite of
    * what the naming suggests. Chromium answers canPlayType('...mpegurl') with
@@ -57,6 +57,16 @@ export async function attachHls(video, url) {
 
   if (!Hls?.isSupported()) {
     if (nativeHls(video)) {
+      /*
+       * Registered before the source is assigned. Metadata can arrive in the
+       * same turn, and a listener added afterwards misses it - which is how a
+       * resumed episode silently started from the beginning.
+       */
+      if (startPosition > 0) {
+        video.addEventListener('loadedmetadata', () => {
+          video.currentTime = startPosition;
+        }, { once: true });
+      }
       video.src = url;
       return () => { video.removeAttribute('src'); };
     }
@@ -64,6 +74,12 @@ export async function attachHls(video, url) {
   }
 
   const instance = new Hls({
+    /*
+     * Where to begin, handed to the library rather than seeked afterwards.
+     * Seeking on loadedmetadata raced the event and lost, and even when it
+     * won it made the player fetch the opening segments before jumping.
+     */
+    startPosition: startPosition > 0 ? startPosition : -1,
     // The playlist is complete from the first request and segments are made on
     // demand, so none of the live-edge machinery applies.
     lowLatencyMode: false,

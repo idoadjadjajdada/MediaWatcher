@@ -703,14 +703,17 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
 
       <div class="player__spinner"><div class="spinner spinner--lg"></div></div>
 
-      <!-- Shown instead of silently jumping to a saved position. -->
-      <div class="player__resume" id="resume-card" hidden>
-        <div class="player__resume-label">You were watching this</div>
-        <div class="player__resume-time t-num" id="resume-time">0:00</div>
-        <div class="player__resume-actions">
-          <button class="btn btn--primary" data-action="resume-play" id="resume-btn">Resume</button>
-          <button class="btn btn--ghost" data-action="resume-restart">Start over</button>
-        </div>
+      <!--
+        Says where it picked up and offers to start over, without standing in
+        front of the video. It replaced a blocking sheet with Resume and Start
+        over: on iOS that sheet would not dismiss, and because it covered the
+        whole player a control that fails to respond means the show cannot be
+        watched at all. This way the worst case is a pill that lingers.
+      -->
+      <div class="player__resumed" id="resume-card" hidden>
+        <span class="player__resumed-text">Resumed from <b class="t-num" id="resume-time">0:00</b></span>
+        <button class="player__resumed-btn" data-action="resume-restart" id="resume-restart-btn">Start over</button>
+        <button class="player__resumed-close" data-action="resume-dismiss" aria-label="Dismiss">${icon('close', 'icon')}</button>
       </div>
 
       <div class="player__shortcuts" id="shortcuts-card" hidden>
@@ -740,6 +743,10 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
         </div>
         ${modeLabel ? `<span class="badge${lossless ? '' : ' badge--warn'} player__mode">${esc(modeLabel)}</span>` : ''}
       </div>
+
+      <button class="player__skip-intro" id="skip-intro" data-action="skip-intro" hidden>
+        Skip intro
+      </button>
 
       <div class="next-up" id="next-up" hidden>
         <div class="next-up__label">Up next</div>

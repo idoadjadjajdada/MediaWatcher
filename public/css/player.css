@@ -50,25 +50,50 @@ html.is-player-open body { overflow: hidden; }
 .player.is-idle .player__stats { opacity: .85; }
 
 /*
- * Resume card. Centred and blocking on purpose - it exists because jumping
- * straight into the middle of something with no explanation is disorienting,
- * so it has to be seen before playback starts.
+ * The resumed pill. Top left, clear of the controls, and deliberately not
+ * covering the video: nothing here should be able to stop you watching.
+ *
+ * No backdrop-filter. On iOS a filtered layer inside a position:fixed parent
+ * is a known source of dead touch targets, and this element's whole job is to
+ * be tappable.
  */
-.player__resume {
+.player__resumed {
   position: absolute;
-  inset: 0;
-  z-index: 6;
-  display: grid;
-  place-content: center;
-  gap: 6px;
-  text-align: center;
-  background: rgba(0, 0, 0, .55);
-  backdrop-filter: blur(3px);
+  top: 76px;
+  left: 20px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px 8px 14px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, .9);
+  border: 1px solid rgba(255, 255, 255, .18);
+  font-size: 13px;
 }
 
-.player__resume-label { color: #b9b9c2; font-size: 13px; }
-.player__resume-time { font-size: 30px; font-weight: 700; }
-.player__resume-actions { display: flex; gap: 10px; margin-top: 14px; justify-content: center; }
+.player__resumed-text { color: #d6d6dd; }
+.player__resumed-text b { color: #fff; font-weight: 700; }
+
+.player__resumed-btn {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .14);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  /* Comfortably tappable on a phone without making the pill huge. */
+  min-height: 32px;
+}
+
+.player__resumed-close {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  color: #b9b9c2;
+}
 
 .player__shortcuts {
   position: absolute;
@@ -103,6 +128,29 @@ html.is-player-open body { overflow: hidden; }
 
 .player__shortcuts-list dt { color: #8a8a94; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .player__shortcuts-list dd { margin: 0; }
+
+/*
+ * Bottom right, above the control bar and clear of it. Stays visible when the
+ * chrome hides: the whole point is that it is reachable without first waking
+ * the controls, which would cost a tap on a phone.
+ */
+.player__skip-intro {
+  position: absolute;
+  right: 24px;
+  bottom: 92px;
+  z-index: 4;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, .82);
+  border: 1px solid rgba(255, 255, 255, .22);
+  color: #f4f4f5;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+
+.player__skip-intro:hover { background: rgba(30, 30, 36, .92); }
 
 .player__top, .player__controls { transition: opacity var(--state), transform var(--state); }
 .player.is-idle .player__top { opacity: 0; transform: translateY(-8px); pointer-events: none; }
