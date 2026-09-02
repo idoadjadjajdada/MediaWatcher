@@ -92,6 +92,14 @@ export const resetSourceStats = () => del('/api/torrents/source-stats');
 /** The AllDebrid account every download depends on. */
 export const getDebridAccount = () => get('/api/torrents/account');
 export const startDownload = (payload) => post('/api/torrents/download', payload);
+
+/**
+ * What is actually inside a torrent.
+ *
+ * Answers ready:false rather than waiting when AllDebrid does not already hold
+ * it — the file list does not exist until they have fetched it.
+ */
+export const inspectTorrent = (payload) => post('/api/torrents/inspect', payload);
 export const cancelJob = (id) => del(`/api/torrents/jobs/${encodeURIComponent(id)}`);
 
 /**
@@ -400,7 +408,7 @@ export default {
   getTrackPrefs, saveTrackPrefs, forgetTrackPrefs,
   getDevices, revokeDevice, getLoginHistory, getDiagnostics, getEncoders, killEncoder,
   getServerLog, getEnv, saveEnv, restartServer, getBenchmark, runBenchmark,
-  getSourceStats, resetSourceStats, getDebridAccount,
+  getSourceStats, resetSourceStats, getDebridAccount, inspectTorrent,
   getMissingEpisodes, getStorage, warmLibrary, getWarmStatus,
   getOfflineInfo, offlineFileUrl
 };

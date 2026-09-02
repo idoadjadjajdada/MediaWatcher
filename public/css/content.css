@@ -370,3 +370,21 @@
 }
 .job__arrow:hover { color: var(--fg); background: var(--surface-2); }
 .badge--paused { color: var(--fg-3); }
+
+/* ---- what is inside a torrent ----
+   One row per file, name taking whatever room is left so a long release name
+   truncates rather than pushing the size off the edge. */
+.modal--narrow { max-width: 44rem; }
+.filelist { display: flex; flex-direction: column; gap: 2px; margin: var(--space-4) 0;
+  max-height: 24rem; overflow-y: auto; }
+.filelist__row {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-2) var(--space-3); border-radius: 6px;
+}
+.filelist__row:hover { background: var(--surface-2); }
+.filelist__name { flex: 1; min-width: 0; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filelist__size { flex: none; font-size: 12px; color: var(--fg-3); }
+/* Anything that is not video: still listed, because a torrent that is all
+   subtitles is worth seeing, but not what the eye should land on. */
+.filelist__row.is-other .filelist__name { color: var(--fg-3); }

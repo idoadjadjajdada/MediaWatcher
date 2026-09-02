@@ -6,7 +6,7 @@
  * only read library state.
  */
 import * as api from './api.js';
-import { state, patchSlice } from './state.js';
+import { state, setState, patchSlice } from './state.js';
 import { esc, icon, emptyState, loadingState, toast, formatBytes } from './views.js';
 
 const QUALITY_FILTERS = [
@@ -88,9 +88,9 @@ export async function runSearch(query, type, season, episode) {
 }
 
 /** Send a chosen result to the downloader. */
-export async function downloadResult(index) {
+export async function downloadResult(index, { files = null, pack = false } = {}) {
   const result = state.search.results[index];
-  if (!result) return;
+  if (!result) return null;
 
   const isShow = state.search.type === 'show';
 
@@ -99,19 +99,132 @@ export async function downloadResult(index) {
       magnet: result.magnet,
       infoHash: result.infoHash,
       title: state.search.query || result.title,
-      type: isShow ? 'episode' : 'movie',
+      /*
+       * 'season' is its own thing, not an episode with the number left off. It
+       * tells the server to read each file's own numbering rather than writing
+       * every file in the torrent to one episode's path.
+       */
+      type: pack ? 'season' : (isShow ? 'episode' : 'movie'),
       // Without these the organizer files every episode as S00E00 and picks
       // the largest file out of a season pack rather than the right one.
       season: isShow ? state.search.season : undefined,
-      episode: isShow ? state.search.episode : undefined,
+      episode: isShow && !pack ? state.search.episode : undefined,
+      files: files || undefined,
       source: result.source
     });
-    toast('success', 'Download started', job.title || result.title);
+    toast('success', pack ? 'Season download started' : 'Download started', job.title || result.title);
     return job;
   } catch (error) {
     toast('error', 'Could not start download', error.message);
     return null;
   }
+}
+
+/* --------------------------------------------------------------------------
+ * Looking inside a torrent
+ *
+ * A release is a filename and a size, and neither says whether it holds one
+ * episode, a whole season, or a film with three sample files and a readme
+ * beside it. Asking costs an upload to AllDebrid, so it is a deliberate act
+ * rather than something done for every row in a result list.
+ * ----------------------------------------------------------------------- */
+
+/** Which files are ticked, by filename. */
+const chosen = new Set();
+
+export async function inspectResult(index) {
+  const result = state.search.results[index];
+  if (!result) return;
+
+  chosen.clear();
+  patchSlice('search', { inspecting: { index, status: 'loading', files: [], ready: false } });
+
+  try {
+    const found = await api.inspectTorrent({ magnet: result.magnet, infoHash: result.infoHash });
+    // Everything worth having is ticked to start with: the common case is
+    // wanting all of it, minus the sample.
+    for (const file of found.files) if (file.video && !file.sample) chosen.add(file.filename);
+    patchSlice('search', { inspecting: { index, status: 'done', ...found } });
+  } catch (error) {
+    patchSlice('search', { inspecting: { index, status: 'error', error: error.message, files: [] } });
+  }
+}
+
+export function toggleInspectFile(filename) {
+  if (chosen.has(filename)) chosen.delete(filename);
+  else chosen.add(filename);
+  setState({});
+}
+
+export function closeInspect() {
+  chosen.clear();
+  patchSlice('search', { inspecting: null });
+}
+
+/** Download exactly what is ticked. */
+export async function downloadChosen() {
+  const inspecting = state.search.inspecting;
+  if (!inspecting || chosen.size === 0) return;
+
+  /*
+   * More than one episode among the ticked files means this is a pack however
+   * it was searched for, so each file has to be filed by its own name rather
+   * than all of them at whatever episode the search box happened to hold.
+   */
+  const episodes = inspecting.files.filter((file) => chosen.has(file.filename) && file.episode);
+  const pack = episodes.length > 1;
+
+  await downloadResult(inspecting.index, { files: [...chosen], pack });
+  closeInspect();
+}
+
+/** The file list, as a dialog over the results. */
+export function renderInspect() {
+  const inspecting = state.search.inspecting;
+  if (!inspecting) return '';
+
+  const tag = (episode) =>
+    'S' + String(episode.season).padStart(2, '0') + 'E' + String(episode.episode).padStart(2, '0');
+
+  const body = inspecting.status === 'loading'
+    ? '<div class="settings__loading">Asking AllDebrid what is in it…</div>'
+    : inspecting.status === 'error'
+      ? `<div class="settings__warn">${esc(inspecting.error)}</div>`
+      : !inspecting.ready
+        ? `<div class="settings__warn">
+             AllDebrid does not hold this torrent yet, so there is no file list to
+             show — it only exists once they have fetched it. Downloading starts
+             that, and every episode will still be filed by its own name.
+           </div>`
+        : `<div class="filelist">
+            ${inspecting.files.map((file) => `
+              <label class="filelist__row${file.video ? '' : ' is-other'}">
+                <input type="checkbox" data-action="toggle-inspect-file"
+                  data-filename="${esc(file.filename)}"${chosen.has(file.filename) ? ' checked' : ''}>
+                <span class="filelist__name">${esc(file.filename)}</span>
+                ${file.episode ? `<span class="badge">${esc(tag(file.episode))}</span>` : ''}
+                ${file.sample ? '<span class="badge badge--warning">sample</span>' : ''}
+                <span class="filelist__size t-num">${esc(formatBytes(file.size))}</span>
+              </label>`).join('')}
+          </div>`;
+
+  return `
+    <div class="modal-backdrop" data-action="close-inspect-backdrop">
+      <div class="modal modal--narrow" role="dialog" aria-modal="true" aria-label="Files in this torrent">
+        <button class="modal__close" data-action="close-inspect" aria-label="Close">${icon('close')}</button>
+        <div class="modal__body">
+          <h2 class="modal__title">What is in this torrent</h2>
+          ${body}
+          <div class="settings__actions">
+            <button class="btn btn--primary" data-action="download-chosen"
+              ${inspecting.ready && chosen.size > 0 ? '' : 'disabled'}>
+              Download ${inspecting.ready ? `${chosen.size} file${chosen.size === 1 ? '' : 's'}` : 'anyway'}
+            </button>
+            <button class="btn btn--ghost" data-action="close-inspect">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
 }
 
 /* --------------------------------------------------------------------------
@@ -214,7 +327,8 @@ export function renderSearch() {
     : ''}
     </div>
     ${toolbar}
-    ${body}`;
+    ${body}
+    ${renderInspect()}`;
 }
 
 function resultRow(result) {
@@ -246,8 +360,13 @@ function resultRow(result) {
       <div class="result__stat"><strong>${esc(result.size_human || formatBytes(result.size_bytes))}</strong>size</div>
       <div class="result__stat"><strong>${result.seeders ?? 0}</strong>seeders</div>
       <div class="result__stat"><strong>${Number(result.final_score).toFixed(2)}</strong>score</div>
+      <button class="btn btn--ghost" data-action="inspect-result" data-index="${index}"
+        title="List what is inside before downloading">Files</button>
       <button class="btn ${result.is_upscaled || result.is_cam ? 'btn--secondary' : 'btn--primary'}" data-action="download-result" data-index="${index}">Download</button>
     </div>`;
 }
 
-export default { renderSearch, runSearch, downloadResult, applyFilters };
+export default {
+  renderSearch, runSearch, downloadResult, applyFilters,
+  inspectResult, toggleInspectFile, closeInspect, downloadChosen, renderInspect
+};

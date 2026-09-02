@@ -163,7 +163,10 @@ router.post('/torrents/download', wrap(async (req, res) => {
       season: body.season,
       episode: body.episode,
       episodeTitle: body.episodeTitle,
-      source: body.source
+      source: body.source,
+      // Explicitly chosen files, from the picker. Absent means "decide", which
+      // is what every caller before the picker existed relied on.
+      files: Array.isArray(body.files) ? body.files.map(String) : undefined
     });
 
     res.status(202).json({ id: job.id, status: job.status, title: job.title });
@@ -171,6 +174,29 @@ router.post('/torrents/download', wrap(async (req, res) => {
     const status = error.status || 502;
     log.warn(`download failed for "${body.title}": ${error.message}`);
     res.status(status).json({ error: error.message });
+  }
+}));
+
+/**
+ * POST /api/torrents/inspect — what is actually inside a torrent.
+ *
+ * Body: { magnet | infoHash }
+ *
+ * Answers `ready: false` rather than waiting when AllDebrid does not already
+ * hold the torrent: the file list does not exist until they have fetched it,
+ * which can take twenty minutes, and no page should be held open for that.
+ */
+router.post('/torrents/inspect', wrap(async (req, res) => {
+  const body = req.body || {};
+  if (!body.magnet && !body.infoHash) {
+    return res.status(400).json({ error: 'magnet or infoHash is required' });
+  }
+
+  try {
+    return res.json(await downloader.inspectTorrent(body));
+  } catch (error) {
+    log.warn(`inspect failed: ${error.message}`);
+    return res.status(error.status || 502).json({ error: error.message });
   }
 }));
 

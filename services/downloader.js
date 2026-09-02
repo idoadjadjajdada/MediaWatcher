@@ -21,6 +21,7 @@ import {
 } from '../db/index.js';
 import * as alldebrid from './alldebrid.js';
 import * as organizer from './organizer.js';
+import * as scanner from './scanner.js';
 import {
   nextRunnable, nextPosition, moveJob as planMove, canTransition, sortQueue
 } from './queueOrder.js';
@@ -47,6 +48,8 @@ events.on('error', () => {});
 
 const DEBRID_SHARE = 0.5;
 const SAMPLE_PATTERN = /(^|[^a-z])sample([^a-z]|$)/i;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const MIN_VIDEO_BYTES = 50 * 1024 * 1024;
 
 // id -> { controller, tempPaths[], request }
@@ -80,6 +83,34 @@ function isVideo(name) {
  * torrent holds exactly one video — see below.
  */
 export function selectFiles(links, request) {
+  /*
+   * An explicit choice ends the argument, and it is checked before anything
+   * else and against every file the torrent holds — not just the ones the
+   * rules would have kept. The picker showed the sample and the stray extras
+   * too; ticking one means it was meant, and filtering it back out here would
+   * make the checkbox a lie.
+   *
+   * Matched on the filename because that is what the picker showed. The links
+   * are unlocked per download and are not a stable way to name a file.
+   *
+   * Not persisted with the job: a transfer resumed after a restart falls back
+   * to the ordinary rules rather than to a stored choice. That degrades to the
+   * default rather than to something wrong, which is the acceptable direction.
+   */
+  if (Array.isArray(request.files) && request.files.length > 0) {
+    const wanted = new Set(request.files.map((name) => String(name)));
+    const chosen = links
+      .map((entry) => ({
+        link: entry.link,
+        filename: entry.filename || entry.link,
+        size: Number(entry.size) || 0
+      }))
+      .filter((entry) => wanted.has(entry.filename));
+    // A choice naming nothing in this torrent falls through to the rules: the
+    // alternative is a job that fails for a reason nobody can see.
+    if (chosen.length > 0) return chosen;
+  }
+
   const videos = links
     .map((entry) => ({
       link: entry.link,
@@ -98,6 +129,13 @@ export function selectFiles(links, request) {
 
   const bigEnough = usable.filter((entry) => entry.size >= MIN_VIDEO_BYTES);
   const pool = bigEnough.length > 0 ? bigEnough : usable;
+
+  /*
+   * A season pack takes every video it holds. Which episode each one is comes
+   * from its own name, in planPlacements below — this only decides what is
+   * worth transferring.
+   */
+  if (request.type === 'season') return pool.sort((a, b) => a.filename.localeCompare(b.filename));
 
   if (request.type === 'episode' && request.season != null && request.episode != null) {
     const tag = organizer.episodeTag(request.season, request.episode);
@@ -126,6 +164,91 @@ export function selectFiles(links, request) {
   }
 
   return pool.sort((a, b) => b.size - a.size);
+}
+
+/* --------------------------------------------------------------------------
+ * Season packs
+ *
+ * The common real-world release for a show is one torrent holding a whole
+ * season, and until now a job was one file with one destination. Taking every
+ * file and filing it at the requested episode's path wrote the entire season
+ * over one name - "Show - S01E05.mkv", " (2).mkv", " (3).mkv" - so the
+ * selector refused packs outright and they simply could not be used.
+ *
+ * What makes them usable is that each file carries its own numbering in its
+ * name, which is exactly what the library scanner already reads. Every file is
+ * parsed on its own and filed where it belongs.
+ * ----------------------------------------------------------------------- */
+
+/**
+ * The season and episode a file names for itself, or null.
+ *
+ * Reuses the scanner's parser rather than a second set of patterns: the two
+ * would drift, and this is the same question about the same kind of name. The
+ * path is synthetic - only the filename carries information here - so folder
+ * inference is deliberately not trusted.
+ */
+export function parseEpisodeName(filename) {
+  const parsed = scanner.parseFile(path.join(config.tempPath, String(filename || '')), config.tempPath);
+  if (!parsed || parsed.kind !== 'episode' || parsed.pattern === 'folder') return null;
+
+  const episode = parsed.episodes?.[0];
+  if (parsed.season == null || episode == null) return null;
+  return { season: Number(parsed.season), episode: Number(episode) };
+}
+
+/**
+ * Which episode each selected file becomes.
+ *
+ * A movie or a single named episode keeps the request's own numbering, because
+ * the request is better evidence than the filename: plenty of single-episode
+ * releases are named something no pattern can read, and the torrent was chosen
+ * for that episode.
+ *
+ * A pack is the opposite. The request carries one season and no episode, and
+ * every file has to say which one it is. Anything that will not say is skipped
+ * rather than guessed at — filing an episode under the wrong number is worse
+ * than not filing it, because the wrong number is silent and a missing file is
+ * visible in the season list.
+ */
+export function planPlacements(files, request) {
+  if (request.type !== 'season') {
+    return files.map((file) => ({
+      file,
+      season: request.season,
+      episode: request.episode,
+      episodeTitle: request.episodeTitle
+    }));
+  }
+
+  const placed = [];
+  const skipped = [];
+  const taken = new Set();
+
+  for (const file of files) {
+    const parsed = parseEpisodeName(file.filename);
+    if (!parsed) {
+      skipped.push({ filename: file.filename, reason: 'no episode number in the name' });
+      continue;
+    }
+    // A pack that carries the same episode twice - a proper and a repack, say -
+    // files the first and leaves the second, rather than racing to one path.
+    const key = `${parsed.season}x${parsed.episode}`;
+    if (taken.has(key)) {
+      skipped.push({ filename: file.filename, reason: `a second file for ${key}` });
+      continue;
+    }
+    // A pack for one season should not smuggle in another; the request names
+    // the season the library entry was chosen for.
+    if (request.season != null && parsed.season !== Number(request.season)) {
+      skipped.push({ filename: file.filename, reason: `season ${parsed.season}, not ${request.season}` });
+      continue;
+    }
+    taken.add(key);
+    placed.push({ file, season: parsed.season, episode: parsed.episode, episodeTitle: null });
+  }
+
+  return Object.assign(placed, { skipped });
 }
 
 /* --------------------------------------------------------------------------
@@ -281,7 +404,23 @@ async function runJob(jobId, request) {
       unlocked.push({ ...file, url: link.link, filename: link.filename || file.filename, size: link.filesize || file.size });
     }
 
-    const totalBytes = unlocked.reduce((sum, file) => sum + (file.size || 0), 0);
+    /*
+     * Where each file is going, decided before a byte moves. A pack that
+     * cannot say what half its files are is better found out now than after
+     * forty gigabytes have been transferred.
+     */
+    const placements = planPlacements(unlocked, request);
+    if (placements.length === 0) {
+      throw new Error('none of the files in this torrent name an episode');
+    }
+    for (const skip of placements.skipped || []) {
+      log.warn(`${jobId}: skipping ${skip.filename} — ${skip.reason}`);
+    }
+    if (request.type === 'season') {
+      log.info(`${jobId}: season pack — filing ${placements.length} episode(s)`);
+    }
+
+    const totalBytes = placements.reduce((sum, place) => sum + (place.file.size || 0), 0);
     let completedBytes = 0;
     const finalPaths = [];
 
@@ -306,7 +445,8 @@ async function runJob(jobId, request) {
       }
     }
 
-    for (const file of unlocked) {
+    for (const placement of placements) {
+      const file = placement.file;
       if (controller.signal.aborted) throw new Error('cancelled');
 
       const ext = organizer.extensionFrom(file.filename, organizer.extensionFrom(file.url));
@@ -329,12 +469,14 @@ async function runJob(jobId, request) {
       completedBytes += bytes;
 
       const destination = organizer.targetPath({
-        type: request.type,
+        // A season pack is a set of episodes; the type names how it was
+        // requested, not what each file is.
+        type: request.type === 'season' ? 'episode' : request.type,
         title: request.title,
         year: request.year,
-        season: request.season,
-        episode: request.episode,
-        episodeTitle: request.episodeTitle,
+        season: placement.season,
+        episode: placement.episode,
+        episodeTitle: placement.episodeTitle,
         ext
       });
 
@@ -453,6 +595,83 @@ export function moveJob(id, move) {
  * as the job's primary key (as the schema requires); everything after that runs
  * in the background.
  */
+/* --------------------------------------------------------------------------
+ * Looking inside a torrent
+ * ----------------------------------------------------------------------- */
+
+/**
+ * How long to wait for AllDebrid to say what a torrent holds.
+ *
+ * Short on purpose. A torrent AllDebrid already has answers on the first poll;
+ * one it does not has to be fetched on their side first, which takes as long
+ * as it takes and is not something to hold a page open for.
+ */
+const INSPECT_TIMEOUT_MS = 12000;
+
+/**
+ * List the files inside a torrent, without committing to downloading it.
+ *
+ * Uploading is the only way to ask: there is no endpoint that takes a hash and
+ * answers with a file list, and AllDebrid removed the instant-availability
+ * lookup that used to at least say whether one was cached. So this uploads,
+ * waits briefly, and deletes the magnet again if nothing came back — leaving
+ * the account as it found it rather than accumulating a torrent per peek.
+ */
+export async function inspectTorrent({ magnet, infoHash }) {
+  const link = magnet || (infoHash ? `magnet:?xt=urn:btih:${infoHash}` : null);
+  if (!link) {
+    const error = new Error('a magnet or infoHash is required');
+    error.status = 400;
+    throw error;
+  }
+
+  const uploaded = await alldebrid.uploadMagnet(link);
+  const deadline = Date.now() + INSPECT_TIMEOUT_MS;
+
+  for (;;) {
+    const status = await alldebrid.getTorrentStatus(uploaded.id);
+
+    if (status.ready) {
+      const files = await alldebrid.getMagnetFiles(uploaded.id);
+      const selectable = files.map((file) => {
+        const filename = file.filename || file.link;
+        return {
+          filename,
+          size: Number(file.size) || 0,
+          video: config.videoExtensions.includes(path.extname(String(filename)).toLowerCase()),
+          sample: SAMPLE_PATTERN.test(String(filename)),
+          // What the name says it is, so a pack can be recognised as one
+          // before anything is transferred.
+          episode: parseEpisodeName(filename)
+        };
+      });
+      /*
+       * Kept, not deleted. It is ready, so it costs AllDebrid nothing to hold,
+       * and downloading it next is the likely reason anyone looked - which
+       * uploads the same magnet and gets this same id back.
+       */
+      return { id: uploaded.id, ready: true, cached: true, files: selectable };
+    }
+
+    if (status.failed) {
+      await alldebrid.deleteMagnet(uploaded.id);
+      throw Object.assign(new Error(`AllDebrid could not fetch this torrent: ${status.status}`), { status: 502 });
+    }
+
+    if (Date.now() >= deadline) {
+      /*
+       * Not cached, so the file list does not exist yet and will not for some
+       * minutes. Deleting is the honest choice: the person asked to look, not
+       * to start a transfer, and leaving it would quietly begin one.
+       */
+      await alldebrid.deleteMagnet(uploaded.id);
+      return { id: null, ready: false, cached: false, files: [] };
+    }
+
+    await sleep(config.alldebrid.pollIntervalMs);
+  }
+}
+
 export async function startDownload(request) {
   if (!request?.magnet && !request?.infoHash) {
     const error = new Error('a magnet or infoHash is required');
@@ -485,7 +704,16 @@ export async function startDownload(request) {
 
   const job = insertJob({
     id: uploaded.id,
-    type: request.type === 'episode' || request.type === 'show' ? 'episode' : 'movie',
+    /*
+     * 'season' is kept as itself rather than folded into 'episode': it is what
+     * tells the transfer to read each file's own numbering instead of writing
+     * every one of them to the requested episode's path. reconcileOnBoot
+     * rebuilds a resumed job from this row, so a pack that survives a restart
+     * has to still know it is a pack.
+     */
+    type: request.type === 'season'
+      ? 'season'
+      : (request.type === 'episode' || request.type === 'show' ? 'episode' : 'movie'),
     title: request.title,
     tmdb_id: request.tmdb_id ?? null,
     // Stored, not just used: reconcileOnBoot rebuilds the destination path from

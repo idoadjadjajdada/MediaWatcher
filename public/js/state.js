@@ -30,7 +30,10 @@ export const state = {
     sources: [],
     status: 'idle',           // idle | loading | done | error
     error: null,
-    filters: { quality: 'all', hideUpscaled: true }
+    filters: { quality: 'all', hideUpscaled: true },
+    // The torrent whose file list is open, if any. A release is a filename and
+    // a size, neither of which says whether it is one episode or a season.
+    inspecting: null
   },
   // Browsable titles that are not in the library. Loaded once after the
   // library so Home never blocks on TMDB.

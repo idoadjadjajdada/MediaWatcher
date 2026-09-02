@@ -481,6 +481,14 @@ const ACTIONS = {
   'settings-kill-encoder': (el) => settings.killEncoder(el.dataset.id),
   'settings-benchmark': () => settings.runBenchmark(),
   'settings-reset-sources': () => settings.resetSourceStats(),
+  'inspect-result': (el) => search.inspectResult(Number(el.dataset.index)),
+  'toggle-inspect-file': (el) => search.toggleInspectFile(el.dataset.filename),
+  'download-chosen': () => search.downloadChosen(),
+  'close-inspect': () => search.closeInspect(),
+  // Only the backdrop itself, so a click inside the dialog does not close it.
+  'close-inspect-backdrop': (el, event) => {
+    if (event.target === el) search.closeInspect();
+  },
   'settings-log-level': (el) => settings.setLogLevel(el.dataset.level),
   'settings-log-follow': () => settings.toggleLogFollow(),
   'settings-env-edit': (el) => settings.editEnv(el.dataset.key, el.value),
