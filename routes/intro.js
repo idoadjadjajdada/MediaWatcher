@@ -13,6 +13,8 @@ import { createLogger } from '../config/index.js';
 import { isInsideLibrary } from '../services/organizer.js';
 import { introKey, isCandidateSkip, agreeOnIntro } from '../services/intro.js';
 import { recordSkip, skipsFor, markerFor, saveMarker, forgetIntro } from '../db/intro.js';
+import { detectIntroForSeason } from '../services/introDetect.js';
+import * as scanner from '../services/scanner.js';
 
 const log = createLogger('api:intro');
 const router = express.Router();
@@ -36,10 +38,75 @@ function allowedPath(raw) {
   return isInsideLibrary(resolved) ? resolved : null;
 }
 
+/**
+ * Seasons already being analysed.
+ *
+ * Detection costs two ffmpeg decodes per pair, and the player asks for the
+ * marker every time an episode opens - so without this, starting three
+ * episodes in a row would launch three identical analyses.
+ */
+const detecting = new Set();
+
+/** Episode files for a show and season, in episode order. */
+function seasonFiles(showId, seasonNumber) {
+  const library = scanner.getLibrary();
+  const show = (library.shows || []).find((s) => s.tmdb_id === showId);
+  const season = (show?.seasons || []).find((s) => s.number === seasonNumber);
+  if (!season) return [];
+
+  return (season.episodes || [])
+    .slice()
+    .sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
+    .map((episode) => episode.files?.[0]?.file_path)
+    .filter(Boolean);
+}
+
+/**
+ * Work out where the intro is without waiting to be shown.
+ *
+ * Runs in the background and answers nothing: the episode being opened now
+ * plays without it, and the marker is there the next time. Waiting would add
+ * two decodes to the time before playback starts.
+ */
+function detectInBackground(key, showId, seasonNumber) {
+  if (detecting.has(key)) return;
+
+  const files = seasonFiles(showId, seasonNumber);
+  if (files.length < 2) {
+    /*
+     * Usually means the library has not finished its first scan yet, which
+     * looked identical to a broken detector until this said so. A later
+     * request will try again, so there is nothing to recover from.
+     */
+    log.debug(`not enough episodes to compare for ${key} yet (${files.length})`);
+    return;
+  }
+
+  detecting.add(key);
+  detectIntroForSeason(files)
+    .then((marker) => {
+      if (!marker) {
+        log.info(`no shared intro found for ${key}`);
+        return;
+      }
+      // Never over a learned marker: someone actually skipping is better
+      // evidence than two episodes sounding alike.
+      if (markerFor(key)?.source === 'learned') return;
+      saveMarker(key, { ...marker, source: 'detected', observations: 1 });
+      log.info(`detected intro for ${key}: ${marker.start.toFixed(0)}s-${marker.end.toFixed(0)}s`);
+    })
+    .catch((error) => log.warn(`intro detection failed for ${key}: ${error.message}`))
+    .finally(() => detecting.delete(key));
+}
+
 router.get('/', (req, res) => {
   const key = keyFrom(req.query);
   if (!key) return res.json({ marker: null });
-  return res.json({ marker: markerFor(key) });
+
+  const marker = markerFor(key);
+  if (!marker) detectInBackground(key, Number(req.query.show), Number(req.query.season));
+
+  return res.json({ marker });
 });
 
 router.post('/skip', (req, res) => {
