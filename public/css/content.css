@@ -130,6 +130,16 @@
 .season__toggle { display: flex; align-items: center; gap: var(--space-2); width: 100%;
   min-height: 44px; text-align: left; font-weight: 600; }
 .season__count { margin-left: auto; color: var(--fg-3); font-size: 11px; }
+.season__head { display: flex; align-items: center; gap: var(--space-2); }
+/* The count already pushes itself right inside the toggle, so the toggle has
+   to keep filling the row or the two would sit next to each other. */
+.season__head .season__toggle { flex: 1; min-width: 0; }
+.season__subs {
+  flex: none; min-height: 32px; padding: 0 var(--space-3); border-radius: var(--radius-sm);
+  font-size: 11px; font-weight: 600; color: var(--fg-3); border: 1px solid var(--line);
+}
+.season__subs:hover:not([disabled]) { color: var(--fg); background: var(--surface-2); }
+.season__subs[disabled] { opacity: .6; pointer-events: none; }
 .season__chevron { transition: transform var(--state); }
 .season.is-open .season__chevron { transform: rotate(90deg); }
 .season__episodes { display: none; flex-direction: column; gap: var(--space-2); padding-bottom: var(--space-3); }

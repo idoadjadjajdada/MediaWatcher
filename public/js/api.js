@@ -180,6 +180,25 @@ export const subsUrl = (filePath, track) => {
 
 export const listSubtitles = (filePath) => get(`/api/subs?${q({ path: filePath, list: 1 })}`);
 
+/* --------------------------------------------------------------------------
+ * Fetching subtitles from OpenSubtitles
+ *
+ * Downloading needs an account, searching only a key, so a deployment can
+ * legitimately offer one and not the other. Callers read `capabilities` once
+ * and hide what is unavailable rather than surfacing a 503 on click.
+ * ----------------------------------------------------------------------- */
+
+export const subtitleCapabilities = () => get('/api/subs/capabilities');
+
+export const searchSubtitles = (filePath, { tmdbId, season, episode, lang } = {}) =>
+  get(`/api/subs/search?${q({ path: filePath, tmdbId, season, episode, lang })}`);
+
+/** Download one and save it beside the video. Resolves for "none" too. */
+export const fetchSubtitle = (payload) => post('/api/subs/fetch', payload);
+
+/** One per episode across a whole season. Slow by design; show a pending state. */
+export const fetchSeasonSubtitles = (payload) => post('/api/subs/fetch-season', payload);
+
 /** Keepalive so the server does not reap a session that is still playing. */
 export const touchHlsSession = (sessionId) => post(`/api/hls/${sessionId}/touch`, {});
 
@@ -209,6 +228,7 @@ export default {
   getJobs, startDownload, cancelJob,
   getContinueWatching, getAllProgress, getProgressFor, saveProgress,
   getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities,
+  subtitleCapabilities, searchSubtitles, fetchSubtitle, fetchSeasonSubtitles,
   getQuality, setQuality, QUALITY_LEVELS,
   thumbMetaUrl, thumbUrl, touchHlsSession, endHlsSession,
   getIntro, reportSkip, forgetIntro

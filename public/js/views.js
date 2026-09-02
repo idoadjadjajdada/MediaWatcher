@@ -642,13 +642,24 @@ export function renderDetailModal(item) {
 }
 
 function renderSeason(show, season, open) {
+  // The bulk fetch sits beside the toggle rather than inside it: a button
+  // nested in a button is invalid, and clicking it would also collapse the
+  // season it had just started working on.
+  const canFetch = Boolean(state.subtitles?.download && show.tmdb_id);
+
   return `
     <div class="season${open ? ' is-open' : ''}">
-      <button class="season__toggle" data-action="toggle-season">
-        ${icon('chevron', 'season__chevron')}
-        Season ${pad2(season.number)}
-        <span class="season__count">${season.episodes.length} episode${season.episodes.length === 1 ? '' : 's'}</span>
-      </button>
+      <div class="season__head">
+        <button class="season__toggle" data-action="toggle-season">
+          ${icon('chevron', 'season__chevron')}
+          Season ${pad2(season.number)}
+          <span class="season__count">${season.episodes.length} episode${season.episodes.length === 1 ? '' : 's'}</span>
+        </button>
+        ${canFetch ? `
+        <button class="season__subs" data-action="fetch-season-subs"
+          data-show="${show.tmdb_id}" data-season="${season.number}"
+          title="Download subtitles for every episode of this season">Subtitles</button>` : ''}
+      </div>
       <div class="season__episodes">
         ${season.episodes.map((episode) => {
     const file = (episode.files || [])[0];

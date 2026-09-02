@@ -293,6 +293,13 @@ async function openInner(filePath) {
 
   setState({ player: { open: true, src: filePath, subs: ctx.tracks, resumeAt } });
 
+  // "Added Some.Release.Name" from the previous episode would otherwise still
+  // be sitting under the button on this one.
+  subsFetchNote = '';
+  // Fire and forget: the menu redraws itself when the answer lands, and
+  // nothing about starting playback should wait on it.
+  loadSubtitleCapabilities();
+
   // The player is position:fixed, so the page behind it keeps its full scroll
   // height and the browser paints a scrollbar that moves nothing visible.
   // Remember where the page was, because locking and unlocking loses it.
@@ -719,7 +726,123 @@ function buildSubsPopover() {
         ${esc(track.label || track.lang || 'Track')}${track.source === 'embedded' ? ' (embedded)' : ''}
       </button>`).join('')}
     ${ctx.tracks.length === 0 ? '<div class="player__menu-label">None found</div>' : ''}
+    ${buildFetchSection()}
     ${buildAudioTrackSection()}`;
+}
+
+/* --------------------------------------------------------------------------
+ * Downloading a subtitle mid-playback
+ *
+ * The capability answer is a property of the deployment, not of the file, so
+ * it is fetched once per page load and cached. Until it arrives the section
+ * renders as nothing rather than as a button that might turn out to be
+ * unavailable - a control that appears and then disappears is worse than one
+ * that appears a moment late.
+ * ----------------------------------------------------------------------- */
+
+let subsCapsPending = null;
+let fetchingSubs = false;
+// The outcome of the last fetch, shown under the button. Cleared on open.
+let subsFetchNote = '';
+
+/**
+ * Load the capability answer into state, once.
+ *
+ * Called at boot so the season list can offer a bulk fetch without the player
+ * ever having been opened, and again when the player opens in case boot's
+ * attempt failed. Concurrent callers share the in-flight request.
+ */
+export function loadSubtitleCapabilities() {
+  if (state.subtitles || subsCapsPending) return subsCapsPending || Promise.resolve(state.subtitles);
+
+  subsCapsPending = api.subtitleCapabilities()
+    .then((caps) => {
+      setState({ subtitles: caps });
+      // The menu may already be on screen, so redraw rather than waiting for
+      // the next time it is opened.
+      if (ctx) buildSubsPopover();
+      return caps;
+    })
+    .catch(() => {
+      // An unreachable capabilities endpoint means no offer, not a broken menu.
+      const caps = { search: false, download: false };
+      setState({ subtitles: caps });
+      return caps;
+    })
+    .finally(() => { subsCapsPending = null; });
+
+  return subsCapsPending;
+}
+
+function buildFetchSection() {
+  if (!state.subtitles?.download) return '';
+
+  const label = fetchingSubs
+    ? 'Searching&hellip;'
+    : ctx.tracks.length > 0 ? 'Download a better subtitle' : 'Download subtitles';
+
+  return `
+    <div class="player__menu-label">OpenSubtitles</div>
+    <button class="player__menu-item" data-action="fetch-subtitles"${fetchingSubs ? ' disabled' : ''}>
+      ${label}
+    </button>
+    ${subsFetchNote ? `<div class="player__menu-note">${esc(subsFetchNote)}</div>` : ''}`;
+}
+
+/**
+ * Download the best-matching subtitle for what is playing and switch to it.
+ *
+ * `force` is what the "download a better subtitle" case passes: without it the
+ * server skips a file that already has a sidecar, which is right for a bulk
+ * run and wrong for someone who just looked at the subtitle and disliked it.
+ */
+export async function fetchSubtitles() {
+  if (!ctx || fetchingSubs) return;
+
+  const located = ctx.located;
+  const isEpisode = located?.type === 'episode';
+
+  fetchingSubs = true;
+  subsFetchNote = '';
+  buildSubsPopover();
+
+  try {
+    const result = await api.fetchSubtitle({
+      path: ctx.filePath,
+      tmdbId: located?.item?.tmdb_id,
+      season: isEpisode ? located.season : undefined,
+      episode: isEpisode ? located.episode?.episode_number : undefined,
+      // Anything already beside the file was either downloaded here or shipped
+      // with the release; asking again means the existing one is unwanted.
+      force: ctx.tracks.some((track) => track.source === 'external')
+    });
+
+    if (result.status === 'saved') {
+      const tracks = await api.listSubtitles(ctx.filePath).catch(() => null);
+      if (Array.isArray(tracks)) {
+        ctx.tracks = tracks;
+        setState({ player: { ...state.player, subs: tracks } });
+        const added = tracks.find((track) => track.path === result.file);
+        applyTrack(added || tracks[0]);
+      }
+      subsFetchNote = result.release ? `Added ${result.release}` : 'Subtitle added';
+    } else if (result.status === 'none') {
+      subsFetchNote = result.error || 'Nothing found for this file';
+    } else if (result.status === 'skipped') {
+      subsFetchNote = 'Already had one';
+    } else {
+      subsFetchNote = result.error || 'Download failed';
+    }
+
+    if (result.remaining !== null && result.remaining !== undefined) {
+      subsFetchNote += ` · ${result.remaining} left today`;
+    }
+  } catch (error) {
+    subsFetchNote = error.message || 'Download failed';
+  } finally {
+    fetchingSubs = false;
+    buildSubsPopover();
+  }
 }
 
 /**

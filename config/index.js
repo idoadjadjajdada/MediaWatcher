@@ -264,6 +264,29 @@ const config = {
     timeoutMs: int('JACKETT_TIMEOUT_MS', 20000)
   },
 
+  // OpenSubtitles REST API v1 — optional. Leave OPENSUBTITLES_API_KEY empty to
+  // disable subtitle downloading; the routes answer 503 and nothing else cares.
+  //
+  // Searching needs only the key, but /download also requires a JWT minted by
+  // /login, which means real account credentials. That split is why there are
+  // two capability flags rather than one: a deployment with a key and no
+  // credentials can search and never fetch, and the routes gate on
+  // `downloadable` so it fails at the point of asking rather than mid-write.
+  opensubtitles: {
+    apiKey: str('OPENSUBTITLES_API_KEY'),
+    username: str('OPENSUBTITLES_USERNAME'),
+    password: str('OPENSUBTITLES_PASSWORD'),
+    baseUrl: str('OPENSUBTITLES_BASE_URL', 'https://api.opensubtitles.com/api/v1'),
+    // The docs single out generic agents as a rejection cause, so this names
+    // the app and version rather than leaving axios' default in place.
+    userAgent: str('OPENSUBTITLES_USER_AGENT', 'MediaWatcher v1.0'),
+    languages: str('OPENSUBTITLES_LANGUAGES', 'en'),
+    // A JWT lasts 24h; refreshed early so a long bulk fetch cannot expire
+    // halfway through.
+    tokenTtlMs: 20 * 60 * 60 * 1000,
+    timeoutMs: int('OPENSUBTITLES_TIMEOUT_MS', 20000)
+  },
+
   // Per-source ceiling so one slow indexer can't stall a search.
   search: {
     sourceTimeoutMs: int('SEARCH_SOURCE_TIMEOUT_MS', 20000),

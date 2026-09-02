@@ -36,6 +36,11 @@ export const state = {
   // library so Home never blocks on TMDB.
   discover: { rails: [], status: 'idle', error: null },
   player: { open: false, src: '', subs: null, resumeAt: 0, audioOffset: 0 },
+  // What this deployment can do with OpenSubtitles. A property of the server's
+  // configuration, not of any file, so it is loaded once at boot and read by
+  // both the player menu and the season list. Null until the answer arrives:
+  // rendering nothing is better than rendering a button that then vanishes.
+  subtitles: null,
 
   // UI bookkeeping
   loading: true,

@@ -278,6 +278,13 @@ html.is-player-open body { overflow: hidden; }
 }
 .player__menu-item:hover { background: var(--surface-2); }
 .player__menu-item.is-active { background: var(--fg); color: #000; font-weight: 700; }
+.player__menu-item[disabled] { opacity: .5; pointer-events: none; }
+/* The outcome of the last subtitle fetch. Wraps, because a release name is
+   long and truncating it hides the part that identifies the rip. */
+.player__menu-note {
+  padding: var(--space-2) var(--space-3) 0;
+  font-size: 11px; line-height: 1.4; color: var(--fg-3); overflow-wrap: anywhere;
+}
 
 .next-up {
   position: absolute; right: var(--space-5); bottom: 132px; z-index: 4; width: 300px;

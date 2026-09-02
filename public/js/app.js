@@ -80,6 +80,12 @@ function renderInner(main) {
  * ----------------------------------------------------------------------- */
 
 async function loadLibrary() {
+  // Whether subtitles can be fetched decides whether the season list draws a
+  // button, so it is asked for alongside the library rather than lazily on
+  // first player open. It resolves into state on its own and is deliberately
+  // not awaited: the library must not wait on it.
+  player.loadSubtitleCapabilities();
+
   try {
     const [library, progress, allProgress] = await Promise.all([
       api.getLibrary(),
@@ -419,6 +425,8 @@ const ACTIONS = {
   'play-episode': (el) => { player.closeEpisodes(); player.open(el.dataset.path); },
   'picture-reset': () => player.setPicture({ brightness: 100, contrast: 100 }),
   'set-subtitle': (el) => player.setSubtitle(el.dataset.track),
+  'fetch-subtitles': () => player.fetchSubtitles(),
+  'fetch-season-subs': (el) => fetchSeasonSubtitles(el),
   'set-speed': (el) => player.setSpeed(el.dataset.speed),
   'set-quality': (el) => player.setQuality(el.dataset.quality),
   'set-audio-track': (el) => player.setAudioTrack(el.dataset.index),
@@ -435,6 +443,60 @@ const ACTIONS = {
   'play-next': () => player.playNext(),
   'cancel-next': () => player.cancelNext()
 };
+
+/**
+ * Download one subtitle per episode of a season.
+ *
+ * The request is sequential on the server and can take a minute over a long
+ * season, so the button holds a pending state for the whole run rather than
+ * answering immediately. It is deliberately not a background job: this is a
+ * thing you asked for and want to see the result of, and a season is bounded.
+ *
+ * Episodes that already had a subtitle are skipped rather than replaced, so
+ * running this twice is cheap and does not spend the account's daily quota
+ * re-fetching what is already on disk.
+ */
+async function fetchSeasonSubtitles(button) {
+  const tmdbId = Number(button.dataset.show);
+  const season = Number(button.dataset.season);
+  const label = button.textContent;
+
+  button.disabled = true;
+  button.textContent = 'Fetching…';
+
+  try {
+    const result = await api.fetchSeasonSubtitles({ tmdbId, season });
+    const tally = result.tally || {};
+    const saved = tally.saved || 0;
+    const failed = tally.error || 0;
+
+    const parts = [];
+    if (saved) parts.push(`${saved} added`);
+    if (tally.skipped) parts.push(`${tally.skipped} already had one`);
+    if (tally.none) parts.push(`${tally.none} not found`);
+    if (failed) parts.push(`${failed} failed`);
+    // Fewer attempts than episodes only happens when the quota ran out.
+    if (result.attempted < result.requested) {
+      parts.push(`stopped after ${result.attempted} of ${result.requested}`);
+    }
+    if (result.remaining !== null && result.remaining !== undefined) {
+      parts.push(`${result.remaining} downloads left today`);
+    }
+
+    views.toast(
+      saved === 0 && failed > 0 ? 'error' : 'success',
+      `Season ${season} subtitles`,
+      parts.join(' · ') || 'Nothing to do'
+    );
+  } catch (error) {
+    views.toast('error', 'Subtitle fetch failed', error.message);
+  } finally {
+    // A re-render may have replaced this node mid-fetch, in which case these
+    // land on a detached element and the fresh button is already enabled.
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
 
 /* --------------------------------------------------------------------------
  * Continue Watching hover frame
