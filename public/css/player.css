@@ -70,6 +70,24 @@ html.is-player-open body { overflow: hidden; }
   background: rgba(20, 20, 24, .9);
   border: 1px solid rgba(255, 255, 255, .18);
   font-size: 13px;
+  /* Matches RESUMED_FADE_MS in player.js. */
+  transition: opacity .4s ease, transform .4s ease;
+}
+
+/*
+ * On its way out, whether it was dismissed or simply ignored for nine seconds.
+ * pointer-events go first so a click during the fade cannot land on a control
+ * that is already leaving.
+ */
+.player__resumed.is-leaving {
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .player__resumed { transition: none; }
+  .player__resumed.is-leaving { opacity: 0; }
 }
 
 /*

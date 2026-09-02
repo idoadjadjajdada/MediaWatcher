@@ -158,8 +158,9 @@ at a timestamp, so seek accuracy is bounded by the source's keyframe interval.
 - **Bitmap subtitles (PGS/VobSub) cannot be shown.** They are images, and turning
   them into WebVTT would need OCR. Text-based tracks (SRT, ASS, embedded SubRip)
   are fine.
-- **ASS styling is not rendered.** ASS tracks are served as plain text; the
-  `<track>` element has no ASS renderer.
+- **Bitmap subtitles still cannot be shown** — see above. ASS *is* rendered now,
+  in an overlay rather than through `<track>`, but karaoke, animated transforms
+  and vector drawings are dropped rather than approximated.
 
 ---
 
