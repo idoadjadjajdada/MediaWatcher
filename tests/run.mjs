@@ -33,6 +33,12 @@ const SUITES = [
   { file: 'tonemap.test.mjs' },
   { file: 'thumbnails.test.mjs' },
   { file: 'mp4cache.test.mjs' },
+  { file: 'cache-limits.test.mjs' },
+  { file: 'scanner-titles.test.mjs' },
+  { file: 'downloads.test.mjs' },
+  { file: 'download-retry.test.mjs' },
+  { file: 'transfer.test.mjs' },
+  { file: 'error-handler.test.mjs' },
   { file: 'auth.test.mjs' },
   { file: 'auth-loopback.test.mjs' },
   { file: 'remote-quality.test.mjs' },
@@ -47,6 +53,9 @@ const SUITES = [
   { file: 'offline.test.mjs' },
   { file: 'hls-playlist.test.mjs' },
   { file: 'hls-session.test.mjs' },
+  { file: 'hls-ownership.test.mjs' },
+  // Runs a real encoder against a generated clip; skips itself without ffmpeg.
+  { file: 'hls-tail.test.mjs' },
   { file: 'discover.test.mjs' },
   { file: 'tmdb-suggest.test.mjs', network: true },
   { file: 'search-resolution.test.mjs', network: true }

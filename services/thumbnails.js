@@ -15,8 +15,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import config, { createLogger, ROOT_DIR } from '../config/index.js';
+import config, { createLogger } from '../config/index.js';
 import { probe, isAvailable } from './transcoder.js';
+import * as ffmpegPool from './ffmpegPool.js';
+import * as cacheSweeper from './cacheSweeper.js';
 
 const log = createLogger('thumbnails');
 
@@ -24,7 +26,7 @@ export const FRAME_SECONDS = 10;
 export const MAX_FRAMES = 300;
 
 const CONCURRENCY = 4;
-const CACHE_DIR = path.join(ROOT_DIR, 'cache', 'thumbs');
+const CACHE_DIR = config.thumbCache.dir;
 
 /** One frame every FRAME_SECONDS, stretched so no file exceeds MAX_FRAMES. */
 export function frameInterval(duration) {
@@ -56,6 +58,40 @@ export function cacheKey(filePath, size, mtimeMs) {
 /** In-flight generations, keyed by cache key, so hovering cannot double-start. */
 const running = new Map();
 
+/**
+ * What the last finished run managed, keyed by cache key.
+ *
+ * Some files never yield a full set — a truncated download, a codec ffmpeg
+ * cannot seek, a frame at a timestamp past the real end. `count < total` stays
+ * true for those forever, so every hover used to re-kick the whole remaining
+ * job, spawning hundreds of ffmpeg processes that fail exactly as they did the
+ * first time.
+ */
+const attempts = new Map();   // key -> { reached, at }
+
+/**
+ * Long enough that a hover storm cannot restart a hopeless job, short enough
+ * that a real fix — a repaired file, an ffmpeg that is now installed — is
+ * picked up without clearing the cache by hand.
+ */
+export const RETRY_AFTER_MS = 60 * 60 * 1000;
+
+/**
+ * Should a generation run start for this file?
+ *
+ * Pure so the retry rule can be tested without spawning anything: the whole
+ * point is what happens on the second hover, and that is not observable from
+ * the outside.
+ */
+export function shouldGenerate({ count, total, running: inFlight, attempt, now = Date.now() }) {
+  if (total <= 0 || count >= total) return false;
+  if (inFlight) return false;
+  if (!attempt) return true;
+  // Frames appeared since that run gave up, so it is making progress after all.
+  if (count > attempt.reached) return true;
+  return now - attempt.at >= RETRY_AFTER_MS;
+}
+
 function keyFor(filePath) {
   const stat = fs.statSync(filePath);
   return cacheKey(filePath, stat.size, stat.mtimeMs);
@@ -63,9 +99,16 @@ function keyFor(filePath) {
 
 const dirFor = (key) => path.join(CACHE_DIR, key);
 
-/** Grab one frame. Resolves false rather than throwing on any failure. */
-function grabFrame(filePath, seconds, outPath) {
-  return new Promise((resolve) => {
+/**
+ * Grab one frame. Resolves false rather than throwing on any failure.
+ *
+ * The slot is per frame rather than per file: a grab is a second of work, so
+ * holding one for a whole 300-frame job would keep the budget occupied for
+ * minutes and starve everything else that needs an encoder.
+ */
+async function grabFrame(filePath, seconds, outPath) {
+  const release = await ffmpegPool.acquire('thumbnail');
+  const done = new Promise((resolve) => {
     const child = spawn(config.ffmpeg.ffmpegPath, [
       '-hide_banner', '-loglevel', 'error',
       '-ss', String(seconds),
@@ -79,6 +122,12 @@ function grabFrame(filePath, seconds, outPath) {
     child.on('error', () => resolve(false));
     child.on('close', (code) => resolve(code === 0 && fs.existsSync(outPath)));
   });
+
+  try {
+    return await done;
+  } finally {
+    release();
+  }
 }
 
 /** Generate every frame for a file, CONCURRENCY at a time. */
@@ -99,7 +148,16 @@ async function generate(filePath, key, interval, count) {
 
   const started = Date.now();
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
-  log.info(`generated ${count} frames for ${path.basename(filePath)} in ${Date.now() - started}ms`);
+
+  const produced = fs.readdirSync(dir).filter((name) => name.endsWith('.jpg')).length;
+  attempts.set(key, { reached: produced, at: Date.now() });
+
+  if (produced < count) {
+    log.warn(`only ${produced} of ${count} frames for ${path.basename(filePath)} — `
+      + `not retrying for ${Math.round(RETRY_AFTER_MS / 60000)}m`);
+  } else {
+    log.info(`generated ${count} frames for ${path.basename(filePath)} in ${Date.now() - started}ms`);
+  }
 }
 
 /**
@@ -119,13 +177,22 @@ export async function getMeta(filePath) {
   const key = keyFor(filePath);
   const dir = dirFor(key);
 
-  const count = fs.existsSync(dir)
+  const exists = fs.existsSync(dir);
+  const count = exists
     ? fs.readdirSync(dir).filter((name) => name.endsWith('.jpg')).length
     : 0;
+  // Eviction is least-recently-used, and this is what makes a set that is still
+  // being hovered over look recent.
+  if (exists) cacheSweeper.markUsed(dir);
 
-  if (total > 0 && count < total && !running.has(key)) {
+  if (shouldGenerate({ count, total, running: running.has(key), attempt: attempts.get(key) })) {
     const job = generate(filePath, key, interval, total)
-      .catch((error) => log.warn(`generation failed: ${error.message}`))
+      .catch((error) => {
+        log.warn(`generation failed: ${error.message}`);
+        // A thrown run counts as an attempt too, or the failure repeats on
+        // every hover exactly as it did before.
+        attempts.set(key, { reached: count, at: Date.now() });
+      })
       .finally(() => running.delete(key));
     running.set(key, job);
   }
@@ -139,4 +206,4 @@ export async function framePath(filePath, index) {
   return fs.existsSync(candidate) ? candidate : null;
 }
 
-export default { frameInterval, frameCount, cacheKey, getMeta, framePath };
+export default { frameInterval, frameCount, cacheKey, shouldGenerate, getMeta, framePath };

@@ -14,6 +14,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import config, { createLogger } from '../config/index.js';
+import { listAllProgress, deleteProgressPaths } from '../db/index.js';
 import * as tmdb from './tmdb.js';
 
 const log = createLogger('scanner');
@@ -45,20 +46,60 @@ const EXTRA_EPISODES = /e(\d{1,3})/gi;
 const GROUP_PREFIX = /^\[[^\]]+\]\s*/;
 const TRAILING_YEAR = /[\s._-]*[([{]?(19\d{2}|20\d{2})[)\]}]?$/;
 
-// Release junk that trails a title once the year/episode marker is stripped.
-const JUNK_TOKENS = new Set([
-  '1080p', '720p', '2160p', '480p', '4k', 'uhd', 'hd', 'sd', 'hdr', 'hdr10', 'dv', 'sdr',
+/**
+ * Release junk that trails a title once the year/episode marker is stripped.
+ *
+ * Split in two because some of these are also ordinary English words. "The Web"
+ * is a real film; so is "Complete Unknown"; "TS" ends a title as often as it
+ * marks a telesync. Stripping those on sight sent TMDB the query "The" and the
+ * wrong match came back looking perfectly confident.
+ */
+const STRONG_JUNK = new Set([
+  '1080p', '720p', '2160p', '480p', '4k', 'uhd', 'hdr', 'hdr10', 'sdr',
   'x264', 'x265', 'h264', 'h265', 'hevc', 'avc', 'av1', 'xvid', 'divx', '10bit', '8bit',
-  'bluray', 'blu-ray', 'bdrip', 'brrip', 'bdremux', 'remux', 'webrip', 'web', 'webdl',
-  'web-dl', 'hdtv', 'dvdrip', 'dvd', 'hdrip', 'cam', 'ts', 'tc',
+  'bluray', 'blu-ray', 'bdrip', 'brrip', 'bdremux', 'remux', 'webrip', 'webdl',
+  'web-dl', 'hdtv', 'dvdrip', 'hdrip',
   'aac', 'aac5', 'ac3', 'dts', 'dtshd', 'ddp', 'ddp5', 'dd5', 'eac3', 'atmos', 'truehd', 'flac',
-  'proper', 'repack', 'internal', 'limited', 'extended', 'uncut', 'unrated', 'remastered',
-  'imax', 'multi', 'dual', 'subbed', 'dubbed', 'complete'
+  'proper', 'repack', 'unrated', 'subbed', 'dubbed'
 ]);
+
+/**
+ * Junk only in the company of the above. A trailing run made up entirely of
+ * these is left alone: on its own the evidence that it is a release tag rather
+ * than the end of the title is not there.
+ */
+const WEAK_JUNK = new Set([
+  'hd', 'sd', 'dv', 'web', 'dvd', 'cam', 'ts', 'tc',
+  'internal', 'limited', 'extended', 'uncut', 'remastered', 'imax',
+  'multi', 'dual', 'complete'
+]);
+
+const normaliseToken = (token) => token.toLowerCase().replace(/[[\]()]/g, '');
+
+/**
+ * Drop the trailing release tags from a token list.
+ *
+ * The whole trailing junk run is found first, then kept or dropped as one: it
+ * goes only if something in it is unambiguously a release tag. "The Movie 1080p
+ * WEB" loses both, "The Web" loses nothing.
+ */
+export function stripJunkTokens(tokens) {
+  let start = tokens.length;
+  let strong = false;
+
+  while (start > 1) {
+    const token = normaliseToken(tokens[start - 1]);
+    if (STRONG_JUNK.has(token)) strong = true;
+    else if (!WEAK_JUNK.has(token)) break;
+    start -= 1;
+  }
+
+  return strong ? tokens.slice(0, start) : tokens;
+}
 
 /** Turn a raw filename fragment into a human title. */
 function cleanTitle(raw) {
-  let title = String(raw || '')
+  const title = String(raw || '')
     .replace(GROUP_PREFIX, '')
     .replace(/[._]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -66,15 +107,7 @@ function cleanTitle(raw) {
     .replace(/^[-–\s]+|[-–\s]+$/g, '');
 
   // Drop trailing release junk ("The Movie 1080p x264" -> "The Movie").
-  let tokens = title.split(' ');
-  while (tokens.length > 1) {
-    const last = tokens[tokens.length - 1].toLowerCase().replace(/[[\]()]/g, '');
-    if (JUNK_TOKENS.has(last)) tokens.pop();
-    else break;
-  }
-  title = tokens.join(' ').trim();
-
-  return title;
+  return stripJunkTokens(title.split(' ')).join(' ').trim();
 }
 
 /** Pull a year off the end of a title, returning both parts. */
@@ -262,7 +295,14 @@ export async function* walkLibrary(root) {
  * TMDB enrichment
  * ----------------------------------------------------------------------- */
 
-const lookupKey = (kind, title, year) =>
+/**
+ * How two files are decided to be the same title for TMDB purposes.
+ *
+ * Exported so the grouping rule can be tested directly: shows used to be keyed
+ * without their year, so two distinct series of the same name shared one
+ * lookup and both took whichever TMDB returned first.
+ */
+export const lookupKey = (kind, title, year) =>
   `${kind}|${String(title).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}|${year || ''}`;
 
 function castOf(details) {
@@ -361,7 +401,16 @@ async function runScan({ force = false } = {}) {
   const groups = new Map();
   for (const file of files) {
     const kind = file.parsed.kind === 'episode' ? 'show' : 'movie';
-    const key = lookupKey(kind, file.parsed.title, kind === 'movie' ? file.parsed.year : null);
+    /*
+     * The year is part of the key for shows as well as movies. Without it two
+     * distinct series with the same name - and there are plenty - collapsed
+     * into one lookup and both resolved to whichever TMDB returned first.
+     *
+     * Splitting a show into two groups because only some of its files carry a
+     * year costs one extra search: both resolve to the same TMDB id, and the
+     * entries are merged by that id a few lines below.
+     */
+    const key = lookupKey(kind, file.parsed.title, file.parsed.year);
     if (!groups.has(key)) {
       groups.set(key, { kind, title: file.parsed.title, year: file.parsed.year, files: [] });
     }
@@ -495,6 +544,8 @@ async function runScan({ force = false } = {}) {
     scanning: false
   };
 
+  pruneMissingProgress();
+
   const totalMs = Date.now() - started;
   log.info(
     `scan complete: ${fileCount} files in ${totalMs}ms (walk ${walkMs}ms) — `
@@ -503,6 +554,39 @@ async function runScan({ force = false } = {}) {
 
   cachedLibrary = library;
   return library;
+}
+
+/**
+ * Drop watch-progress rows whose file no longer exists.
+ *
+ * Continue Watching served these happily and clicking one failed in the player,
+ * because nothing ever swept after a deletion.
+ *
+ * The guard is the containing directory: a file whose directory is there and
+ * which is not is genuinely gone, while an unplugged drive or an unmounted
+ * share takes its directories with it and its rows are left alone. Rows for
+ * paths outside the library are not this function's business at all.
+ */
+export function pruneMissingProgress() {
+  const root = path.resolve(config.libraryPath);
+  const doomed = [];
+
+  for (const row of listAllProgress()) {
+    const filePath = String(row.file_path || '');
+    if (!filePath) continue;
+
+    const resolved = path.resolve(filePath);
+    const relative = path.relative(root, resolved);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+
+    if (!fs.existsSync(path.dirname(resolved)) || fs.existsSync(resolved)) continue;
+    doomed.push(row.file_path);
+  }
+
+  if (doomed.length === 0) return 0;
+  const removed = deleteProgressPaths(doomed);
+  log.info(`pruned ${removed} progress row(s) whose file is gone`);
+  return removed;
 }
 
 /** Force a single item to be refetched from TMDB on the next scan. */
@@ -537,6 +621,7 @@ export default {
   isScanning,
   parseFile,
   walkLibrary,
+  pruneMissingProgress,
   invalidateItem,
   findByPath
 };

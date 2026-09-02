@@ -14,6 +14,7 @@ import cors from 'cors';
 import config, { ensureRuntimeDirs, log } from './config/index.js';
 import { closeDatabase } from './db/index.js';
 import requireAuth from './middleware/requireAuth.js';
+import errorHandler from './middleware/errorHandler.js';
 import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
 import hlsRouter from './routes/hls.js';
@@ -34,6 +35,7 @@ import * as downloader from './services/downloader.js';
 import * as transcoder from './services/transcoder.js';
 import * as watcher from './services/watcher.js';
 import * as hls from './services/hls/manager.js';
+import * as cacheSweeper from './services/cacheSweeper.js';
 
 ensureRuntimeDirs();
 
@@ -49,8 +51,14 @@ app.set('etag', 'strong');
  * this port is tailscale serve on loopback. Without this every tunnelled
  * request reports req.ip as 127.0.0.1 and remote clients become invisible —
  * both to the device list and to the quality cap.
+ *
+ * It is off unless a tunnel is actually configured, because any local process
+ * can send an X-Forwarded-For header and claim to be a tailnet address. The
+ * consequence is only a wrong quality cap and a wrong label in the device list
+ * — it grants no access, the gate never looks at an address — but there is no
+ * reason to believe the header on a machine that is not behind a tunnel.
  */
-app.set('trust proxy', 'loopback');
+app.set('trust proxy', config.auth.tailnetHost ? 'loopback' : false);
 
 /* --------------------------------------------------------------------------
  * Security + middleware
@@ -95,7 +103,16 @@ app.use(cors({
     if (!origin) return callback(null, true);
     if (LOCALHOST_ORIGIN.test(origin)) return callback(null, true);
     if (tailnetOrigin && origin.toLowerCase() === tailnetOrigin) return callback(null, true);
-    return callback(new Error(`Origin not allowed: ${origin}`));
+    /*
+     * Without a status this surfaced as a 500, which reads as "the server broke"
+     * rather than "that origin is not on the list". The origin itself is logged
+     * rather than returned: it is attacker-controlled text and belongs in the
+     * log, not in a response body.
+     */
+    log.warn(`refused cross-origin request from ${origin}`);
+    const rejected = new Error('Origin not allowed');
+    rejected.status = 403;
+    return callback(rejected);
   },
   // The device cookie has to ride along, so the browser needs permission to
   // send it.
@@ -183,12 +200,9 @@ app.get('*', (_req, res, next) => {
   res.sendFile(INDEX_HTML, (error) => (error ? next(error) : undefined));
 });
 
-app.use((error, _req, res, _next) => {
-  const status = error.status || error.statusCode || 500;
-  if (status >= 500) log.error(error.stack || error.message);
-  else log.warn(error.message);
-  res.status(status).json({ error: error.message || 'Internal server error' });
-});
+// 4xx messages are written for the caller and pass through; a 5xx says nothing
+// but its status. See middleware/errorHandler.js for why.
+app.use(errorHandler(log));
 
 /* --------------------------------------------------------------------------
  * Boot
@@ -211,6 +225,10 @@ const server = app.listen(config.port, config.host, () => {
   // owned them died with that process.
   hls.clearOrphans();
   hls.startSweeper();
+
+  // cache/mp4 and cache/thumbs are trimmed to their budgets here and on an
+  // interval; nothing used to remove an entry from either.
+  cacheSweeper.start();
 
   transcoder.isAvailable().then((available) => {
     log.info(available
@@ -235,6 +253,7 @@ function shutdown(signal) {
   shuttingDown = true;
   log.info(`${signal} received, shutting down`);
   watcher.stop().catch(() => {});
+  cacheSweeper.stop();
   // No ffmpeg should outlive the server.
   hls.shutdownAll();
   server.close(() => {

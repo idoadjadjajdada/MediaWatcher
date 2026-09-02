@@ -42,6 +42,22 @@ function isRelevant(filePath) {
   return WATCHED_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
+/**
+ * Is `candidate` inside `parent`?
+ *
+ * A string prefix test is not the same question. chokidar reports paths in
+ * whatever form the platform hands it — a different separator, a different
+ * drive-letter case, a trailing slash — so `startsWith` could answer no for a
+ * path plainly inside the directory, which is how in-progress downloads inside
+ * the library would have triggered a rescan each. It also answers yes for
+ * "/temporary" against "/temp", which is the opposite mistake.
+ */
+export function isWithin(parent, candidate) {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  if (relative === '') return true;
+  return !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
 async function runScan() {
   debounceTimer = null;
 
@@ -101,7 +117,7 @@ export function start() {
       const name = path.basename(candidate);
       if (name.startsWith('.')) return true;
       if (config.ignoredDirectories.some((dir) => dir.toLowerCase() === name.toLowerCase())) return true;
-      return candidate.startsWith(config.tempPath);
+      return isWithin(config.tempPath, candidate);
     },
     awaitWriteFinish: {
       stabilityThreshold: 2000,
@@ -136,4 +152,4 @@ export async function stop() {
 export const isWatching = () => watcher !== null;
 export const getStats = () => ({ ...stats, watching: isWatching(), pending: pending.size });
 
-export default { start, stop, isWatching, getStats };
+export default { start, stop, isWatching, isWithin, getStats };

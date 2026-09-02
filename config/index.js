@@ -189,7 +189,15 @@ const config = {
     adminKey: loadOrCreateAdminKey(),
     // The tailnet hostname tailscale serve publishes, e.g.
     // "mediapc.tail1a2b3c.ts.net". Needed so CORS accepts that origin.
-    tailnetHost: str('TAILNET_HOST')
+    tailnetHost: str('TAILNET_HOST'),
+    /*
+     * How long an unremembered login survives on the server.
+     *
+     * The cookie for one is a session cookie and dies with the browser, but the
+     * server-side entry has to expire on its own or the set only ever grows —
+     * and a token stays valid long after the browser that held it is gone.
+     */
+    sessionTtlMs: int('AUTH_SESSION_TTL_HOURS', 12) * 60 * 60 * 1000
   },
 
   // Filesystem
@@ -197,6 +205,7 @@ const config = {
   moviesPath: path.join(libraryPath, 'movies'),
   showsPath: path.join(libraryPath, 'shows'),
   tempPath,
+  cachePath: path.join(ROOT_DIR, 'cache'),
   dbPath: path.join(ROOT_DIR, 'db', 'mediawatcher.db'),
 
   // Scanning
@@ -300,8 +309,28 @@ const config = {
   // seekable, which is the only way to get instant seeking - an ffmpeg pipe
   // has no byte offsets. Sources are never touched or replaced.
   mp4Cache: {
-    enabled: str('MP4_CACHE_ENABLED', '1') !== '0'
+    enabled: str('MP4_CACHE_ENABLED', '1') !== '0',
+    dir: path.join(ROOT_DIR, 'cache', 'mp4'),
+    /*
+     * A converted copy is roughly the size of the source, so an unbounded cache
+     * is a second library. Least-recently-played variants are evicted once the
+     * directory passes this, and anything untouched for the TTL goes regardless
+     * of how much room is left.
+     */
+    maxBytes: Math.round(Number(str('MP4_CACHE_MAX_GB', '50')) * 1024 ** 3),
+    ttlMs: int('MP4_CACHE_TTL_DAYS', 30) * 24 * 60 * 60 * 1000
   },
+
+  // Seek-preview frames. Tiny per file, but the keys are content-addressed, so
+  // every replaced or re-downloaded file leaves its old set behind.
+  thumbCache: {
+    dir: path.join(ROOT_DIR, 'cache', 'thumbs'),
+    maxBytes: Math.round(Number(str('THUMB_CACHE_MAX_GB', '2')) * 1024 ** 3),
+    ttlMs: int('THUMB_CACHE_TTL_DAYS', 60) * 24 * 60 * 60 * 1000
+  },
+
+  // How often the cache directories are measured and trimmed.
+  cacheSweepIntervalMs: int('CACHE_SWEEP_INTERVAL_MS', 30 * 60 * 1000),
 
   hls: {
     dir: path.join(ROOT_DIR, 'cache', 'hls'),
@@ -336,6 +365,16 @@ const config = {
 
   ffmpeg: {
     enabled: str('FFMPEG_ENABLED', '1') !== '0',
+    /*
+     * Ceiling on ffmpeg processes across the whole app.
+     *
+     * HLS encoders, MP4 conversions, thumbnail grabs and intro detection each
+     * had their own pool and no idea the others existed, so a couple of viewers
+     * plus background work could put a dozen encodes on one machine. Live
+     * playback never queues behind this — it takes its slot and background work
+     * waits for what is left.
+     */
+    maxProcesses: int('FFMPEG_MAX_PROCESSES', 4),
     ffmpegPath: str('FFMPEG_PATH', 'ffmpeg'),
     ffprobePath: str('FFPROBE_PATH', 'ffprobe'),
     probeTimeoutMs: int('FFPROBE_TIMEOUT_MS', 15000),
@@ -354,7 +393,18 @@ const config = {
   // Downloads
   downloads: {
     maxConcurrent: 2,
-    progressStepPercent: 5
+    progressStepPercent: 5,
+    /*
+     * Longest a transfer may receive nothing before it is treated as dead.
+     *
+     * The HTTP request itself has no timeout, which is right for a multi-hour
+     * download but means a silently stalled link would hold one of the two
+     * slots forever.
+     */
+    stallTimeoutMs: int('DOWNLOAD_STALL_TIMEOUT_MS', 120000),
+    // Refuse to start a transfer that would leave less than this free. Running
+    // the disk to zero surfaces as unrelated ffmpeg write errors elsewhere.
+    minFreeBytes: Math.round(Number(str('DOWNLOAD_MIN_FREE_GB', '5')) * 1024 ** 3)
   }
 };
 
@@ -371,7 +421,11 @@ deepFreeze(config);
 
 /** Create the runtime directories the app writes into. Safe to call repeatedly. */
 export function ensureRuntimeDirs() {
-  for (const dir of [config.libraryPath, config.moviesPath, config.showsPath, config.tempPath]) {
+  const dirs = [
+    config.libraryPath, config.moviesPath, config.showsPath, config.tempPath,
+    config.cachePath, config.mp4Cache.dir, config.thumbCache.dir
+  ];
+  for (const dir of dirs) {
     fs.mkdirSync(dir, { recursive: true });
   }
 }

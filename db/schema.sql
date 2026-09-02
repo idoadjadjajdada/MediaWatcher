@@ -28,11 +28,19 @@ CREATE INDEX IF NOT EXISTS idx_progress_updated
 CREATE INDEX IF NOT EXISTS idx_progress_completed
   ON progress(completed);
 
+-- The whole request, not just what the Downloads page displays. A job that is
+-- re-queued after a restart has to land in the same file as the one that was
+-- interrupted, and season/episode/year/episode_title are what decide that
+-- path; without them a resumed episode filed itself under "Season 00".
 CREATE TABLE IF NOT EXISTS download_jobs (
   id TEXT PRIMARY KEY,          -- AllDebrid torrent ID
   type TEXT NOT NULL,           -- 'movie' or 'episode'
   title TEXT NOT NULL,
   tmdb_id INTEGER,
+  year INTEGER,
+  season INTEGER,
+  episode INTEGER,
+  episode_title TEXT,
   magnet TEXT,
   source TEXT,                  -- 'alldebrid' or 'torrentio' or 'public'
   status TEXT NOT NULL,         -- 'queued' 'downloading' 'complete' 'error'

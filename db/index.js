@@ -24,14 +24,29 @@ db.pragma('foreign_keys = ON');
 db.pragma('busy_timeout = 5000');
 
 db.exec(fs.readFileSync(path.join(HERE, 'schema.sql'), 'utf8'));
-// CREATE TABLE IF NOT EXISTS cannot add a column to a table that already
-// exists, and SQLite has no IF NOT EXISTS for columns - a duplicate is the
-// expected no-op on every boot after the first.
-try {
-  db.exec('ALTER TABLE progress ADD COLUMN audio_offset REAL NOT NULL DEFAULT 0');
-  log.info('migrated: progress.audio_offset added');
-} catch (error) {
-  if (!/duplicate column name/i.test(error.message)) throw error;
+
+/*
+ * CREATE TABLE IF NOT EXISTS cannot add a column to a table that already
+ * exists, and SQLite has no IF NOT EXISTS for columns - a duplicate is the
+ * expected no-op on every boot after the first.
+ */
+const COLUMN_MIGRATIONS = [
+  'ALTER TABLE progress ADD COLUMN audio_offset REAL NOT NULL DEFAULT 0',
+  // A job re-queued after a restart rebuilds its destination path from these,
+  // so a database written before they existed has to gain them.
+  'ALTER TABLE download_jobs ADD COLUMN year INTEGER',
+  'ALTER TABLE download_jobs ADD COLUMN season INTEGER',
+  'ALTER TABLE download_jobs ADD COLUMN episode INTEGER',
+  'ALTER TABLE download_jobs ADD COLUMN episode_title TEXT'
+];
+
+for (const statement of COLUMN_MIGRATIONS) {
+  try {
+    db.exec(statement);
+    log.info(`migrated: ${statement.split(' ADD COLUMN ')[1].split(' ')[0]} added`);
+  } catch (error) {
+    if (!/duplicate column name/i.test(error.message)) throw error;
+  }
 }
 
 log.info(`database ready at ${config.dbPath}`);
@@ -118,16 +133,20 @@ const stmt = {
 
   jobInsert: db.prepare(`
     INSERT INTO download_jobs (
-      id, type, title, tmdb_id, magnet, source, status, progress,
-      file_path, error, created_at, updated_at
+      id, type, title, tmdb_id, year, season, episode, episode_title,
+      magnet, source, status, progress, file_path, error, created_at, updated_at
     ) VALUES (
-      @id, @type, @title, @tmdb_id, @magnet, @source, @status, @progress,
-      @file_path, @error, @created_at, @updated_at
+      @id, @type, @title, @tmdb_id, @year, @season, @episode, @episode_title,
+      @magnet, @source, @status, @progress, @file_path, @error, @created_at, @updated_at
     )
     ON CONFLICT(id) DO UPDATE SET
       type = excluded.type,
       title = excluded.title,
       tmdb_id = excluded.tmdb_id,
+      year = excluded.year,
+      season = excluded.season,
+      episode = excluded.episode,
+      episode_title = excluded.episode_title,
       magnet = excluded.magnet,
       source = excluded.source,
       status = excluded.status,
@@ -259,11 +278,24 @@ export function deleteProgress(filePath) {
   return stmt.progressDelete.run(filePath).changes > 0;
 }
 
+/**
+ * Drop several rows at once. Used by the post-scan sweep, where a deleted file
+ * would otherwise keep its place in Continue Watching and fail on click.
+ */
+export const deleteProgressPaths = db.transaction((paths) => {
+  let removed = 0;
+  for (const filePath of paths) removed += stmt.progressDelete.run(filePath).changes;
+  return removed;
+});
+
 /* --------------------------------------------------------------------------
  * download_jobs
  * ----------------------------------------------------------------------- */
 
-const JOB_COLUMNS = ['type', 'title', 'tmdb_id', 'magnet', 'source', 'status', 'progress', 'file_path', 'error'];
+const JOB_COLUMNS = [
+  'type', 'title', 'tmdb_id', 'year', 'season', 'episode', 'episode_title',
+  'magnet', 'source', 'status', 'progress', 'file_path', 'error'
+];
 const updateCache = new Map();
 
 export function insertJob(job) {
@@ -273,6 +305,10 @@ export function insertJob(job) {
     type: job.type,
     title: job.title,
     tmdb_id: job.tmdb_id ?? null,
+    year: job.year ?? null,
+    season: job.season ?? null,
+    episode: job.episode ?? null,
+    episode_title: job.episode_title ?? null,
     magnet: job.magnet ?? null,
     source: job.source ?? null,
     status: job.status ?? 'queued',

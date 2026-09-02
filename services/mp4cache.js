@@ -21,9 +21,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import config, { createLogger, ROOT_DIR } from '../config/index.js';
+import config, { createLogger } from '../config/index.js';
 import { probe, isAvailable, hardwareEncoder, isHdr, tonemapChain } from './transcoder.js';
 import { cacheKey } from './thumbnails.js';
+import * as ffmpegPool from './ffmpegPool.js';
+import * as cacheSweeper from './cacheSweeper.js';
+import { hasRoomFor, formatBytes } from './diskspace.js';
 
 const log = createLogger('mp4cache');
 
@@ -33,7 +36,16 @@ export const VARIANT_H264 = 'h264';
 /** Height cap for the universal variant. Above this it is re-encoded down. */
 export const H264_MAX_HEIGHT = 1080;
 
-const CACHE_DIR = path.join(ROOT_DIR, 'cache', 'mp4');
+const CACHE_DIR = config.mp4Cache.dir;
+
+/**
+ * Conversions run one at a time.
+ *
+ * They are background work with no viewer waiting on them — the live pipe keeps
+ * serving until one lands — so there is nothing to gain from running several,
+ * and plenty to lose: each is a full-length encode competing with playback.
+ */
+const MAX_CONCURRENT = 1;
 
 /** Codecs a browser opens without help. Anything else has to be re-encoded. */
 const NATIVE_VIDEO = new Set(['h264', 'avc1', 'vp8', 'vp9', 'av1']);
@@ -121,7 +133,11 @@ export function readyVariant(filePath, variant) {
     const candidate = variantPath(filePath, variant);
     // A conversion in progress writes to a .part file, so anything at the final
     // name is complete by construction.
-    return fs.existsSync(candidate) ? candidate : null;
+    if (!fs.existsSync(candidate)) return null;
+    // Eviction is least-recently-used, and "used" is this stamp. Without it a
+    // file played every evening looks exactly as cold as one played once.
+    cacheSweeper.markUsed(path.dirname(candidate));
+    return candidate;
   } catch {
     return null;
   }
@@ -142,48 +158,92 @@ export async function ensureVariant(filePath, variant) {
 
   const target = variantPath(filePath, variant);
   if (running.has(target)) return null;
+  if (running.size >= MAX_CONCURRENT) return null;
 
+  /*
+   * The slot is claimed here, synchronously, before the first await.
+   *
+   * Two plays of the same file land in the same tick often enough to matter -
+   * the info request and the stream request, for one - and every guard above
+   * this line reads state that a second caller would still see as free.
+   */
+  const job = convert(filePath, target, variant)
+    .catch((error) => {
+      log.warn(`${variant} conversion failed: ${error.message}`);
+      return null;
+    })
+    .finally(() => {
+      running.delete(target);
+      // A finished conversion is exactly when the cache is at its largest.
+      cacheSweeper.sweep().catch(() => { /* logged there */ });
+    });
+
+  running.set(target, job);
+  return null;
+}
+
+/** The conversion itself. Resolves the finished path, or null on any failure. */
+async function convert(filePath, target, variant) {
   const info = await probe(filePath);
   if (!info) return null;
+
+  /*
+   * A copy is roughly the size of the source and an H.264 re-encode is smaller,
+   * so the source size is a safe over-estimate. Starting a conversion that
+   * cannot fit fills the disk and fails at the very end, having spent the whole
+   * encode getting there.
+   */
+  try {
+    const room = await hasRoomFor(CACHE_DIR, fs.statSync(filePath).size, config.downloads.minFreeBytes);
+    if (!room.ok) {
+      log.warn(`skipping ${variant} for ${path.basename(filePath)}: only ${formatBytes(room.free)} free`);
+      return null;
+    }
+  } catch { /* unmeasurable: proceed, see services/diskspace.js */ }
 
   const encoder = variant === VARIANT_H264 ? await hardwareEncoder() : null;
   const partial = `${target}.part`;
   fs.mkdirSync(path.dirname(target), { recursive: true });
 
   const args = variantArgs(filePath, partial, variant, { video: info.video, encoder });
+
+  // Taken before the spawn and released however the run ends, so a background
+  // conversion draws on the same budget live playback does.
+  const release = await ffmpegPool.acquire(`mp4:${variant}`);
   log.info(`converting ${path.basename(filePath)} → ${variant}`);
 
-  const job = new Promise((resolve) => {
-    const started = Date.now();
-    const child = spawn(config.ffmpeg.ffmpegPath, args, { windowsHide: true });
-    let stderr = '';
-    child.stderr?.on('data', (chunk) => {
-      stderr += chunk;
-      if (stderr.length > 4000) stderr = stderr.slice(-2000);
-    });
-    child.on('error', () => resolve(null));
-    child.on('close', (code) => {
-      if (code === 0 && fs.existsSync(partial)) {
-        // Rename only on success, so a killed or failed run never leaves a
-        // truncated file sitting at the name the player trusts.
-        try {
-          fs.renameSync(partial, target);
-          const mb = (fs.statSync(target).size / 1048576).toFixed(0);
-          log.info(`${variant} ready for ${path.basename(filePath)} — ${mb}MB in ${Math.round((Date.now() - started) / 1000)}s`);
-          return resolve(target);
-        } catch (error) {
-          log.warn(`could not finalise ${variant}: ${error.message}`);
+  try {
+    return await new Promise((resolve) => {
+      const started = Date.now();
+      const child = spawn(config.ffmpeg.ffmpegPath, args, { windowsHide: true });
+      let stderr = '';
+      child.stderr?.on('data', (chunk) => {
+        stderr += chunk;
+        if (stderr.length > 4000) stderr = stderr.slice(-2000);
+      });
+      child.on('error', () => resolve(null));
+      child.on('close', (code) => {
+        if (code === 0 && fs.existsSync(partial)) {
+          // Rename only on success, so a killed or failed run never leaves a
+          // truncated file sitting at the name the player trusts.
+          try {
+            fs.renameSync(partial, target);
+            const mb = (fs.statSync(target).size / 1048576).toFixed(0);
+            log.info(`${variant} ready for ${path.basename(filePath)} — ${mb}MB in ${Math.round((Date.now() - started) / 1000)}s`);
+            return resolve(target);
+          } catch (error) {
+            log.warn(`could not finalise ${variant}: ${error.message}`);
+          }
+        } else if (code) {
+          log.warn(`${variant} conversion failed (${code}): ${stderr.trim().split('\n').slice(-1)[0] || ''}`);
         }
-      } else if (code) {
-        log.warn(`${variant} conversion failed (${code}): ${stderr.trim().split('\n').slice(-1)[0] || ''}`);
-      }
-      try { fs.rmSync(partial, { force: true }); } catch { /* already gone */ }
-      resolve(null);
+        try { fs.rmSync(partial, { force: true }); } catch { /* already gone */ }
+        resolve(null);
+      });
     });
-  }).finally(() => running.delete(target));
-
-  running.set(target, job);
-  return null;
+  } finally {
+    release();
+  }
 }
 
 /** Is a conversion running for this file right now? */

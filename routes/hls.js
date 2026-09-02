@@ -1,7 +1,12 @@
 /**
- * GET  /api/hls/playlist.m3u8?path=&q=&hevc=&ac3=&audio=&audioOffset=
- * GET  /api/hls/:session/:segment.ts
- * POST /api/hls/:session/touch
+ * GET    /api/hls/playlist.m3u8?path=&q=&hevc=&ac3=&audio=&audioOffset=
+ * GET    /api/hls/:session/:segment.ts
+ * POST   /api/hls/:session/touch
+ * DELETE /api/hls/:session
+ *
+ * Every one of these is scoped to the viewer that opened the session. Session
+ * ids are shown in the player's diagnostics panel, so without that check any
+ * signed-in device could keep alive - or cut off - anyone else's stream.
  *
  * The playlist URL is the session handle: requesting it creates or reuses a
  * session, so a reload lands on the same encoder rather than starting a second
@@ -22,7 +27,7 @@ import * as manager from '../services/hls/manager.js';
 import { buildPlaylist } from '../services/hls/playlist.js';
 import { resolveQuality } from '../services/quality.js';
 import { classifyOrigin } from '../services/network.js';
-import { buildSessionSpec } from '../services/hls/spec.js';
+import { buildSessionSpec, viewerId } from '../services/hls/spec.js';
 
 const log = createLogger('api:hls');
 const router = express.Router();
@@ -93,7 +98,7 @@ router.get('/:session/:segment.ts', async (req, res, next) => {
     const controller = new AbortController();
     req.on('close', () => controller.abort());
 
-    const file = await manager.requestSegment(req.params.session, index, controller.signal);
+    const file = await manager.requestSegment(req.params.session, index, controller.signal, viewerId(req));
     if (!file) return res.status(404).json({ error: 'segment unavailable' });
 
     res.setHeader('Content-Type', 'video/mp2t');
@@ -107,8 +112,11 @@ router.get('/:session/:segment.ts', async (req, res, next) => {
 });
 
 router.post('/:session/touch', (req, res) => {
-  manager.touch(req.params.session);
-  res.json({ ok: true });
+  // Someone else's session answers exactly as a made-up id does: whether it
+  // exists is not something to confirm to a device that does not own it.
+  const kept = manager.touch(req.params.session, viewerId(req));
+  if (!kept) return res.status(404).json({ error: 'no such session' });
+  return res.json({ ok: true });
 });
 
 /*
@@ -117,7 +125,7 @@ router.post('/:session/touch', (req, res) => {
  * spent on video nobody is watching.
  */
 router.delete('/:session', (req, res) => {
-  res.json({ ended: manager.endSession(req.params.session) });
+  res.json({ ended: manager.endSession(req.params.session, viewerId(req)) });
 });
 
 export default router;

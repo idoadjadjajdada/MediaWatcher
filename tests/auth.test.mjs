@@ -13,7 +13,8 @@ import {
 } from '../db/devices.js';
 import {
   mintToken, hashToken, parseCookies, rememberSession, hasSession, dropSession,
-  resolveToken, recordFailure, blockedForMs, clearFailures, COOKIE_NAME
+  resolveToken, recordFailure, blockedForMs, clearFailures, COOKIE_NAME,
+  pruneSessions, sessionCount, pruneFailures, failureCount
 } from '../services/auth.js';
 import config from '../config/index.js';
 import { isAdminRequest } from '../routes/devices.js';
@@ -93,6 +94,41 @@ dropSession(hashToken(sessionToken));
 check('a dropped session is gone', hasSession(hashToken(sessionToken)) === false);
 check('resolveToken rejects an unissued token', resolveToken(mintToken()) === null);
 
+/*
+ * The set used to be exactly that - a Set - so it only ever grew, and a token
+ * stayed valid until the process restarted. The README said these die with the
+ * browser; the cookie does, and now the server-side entry does too.
+ */
+console.log('\nsessions expire');
+const NOW = 1_700_000_000_000;
+const TTL = config.auth.sessionTtlMs;
+const expiring = hashToken(mintToken());
+
+rememberSession(expiring, NOW);
+check('a fresh session is valid', hasSession(expiring, NOW + 1000) === true);
+check('it is still valid just before the window closes', hasSession(expiring, NOW + TTL - 1) === true);
+check('and not after it', hasSession(expiring, NOW + TTL + 1) === false);
+
+/*
+ * Sliding, not fixed: the window measures idleness, and someone mid-episode is
+ * not idle. Being logged out halfway through an film would be the wrong
+ * reading of "12 hours".
+ */
+const usedToken = mintToken();
+rememberSession(hashToken(usedToken), NOW);
+check('resolving late in the window still works',
+  resolveToken(usedToken, NOW + TTL - 1000)?.kind === 'session');
+check('and pushes the expiry out from there',
+  hasSession(hashToken(usedToken), NOW + TTL + 1000) === true);
+check('an expired token resolves to nothing',
+  resolveToken(usedToken, NOW + TTL * 3) === null);
+
+const tracked = sessionCount();
+rememberSession(hashToken(mintToken()), NOW);
+pruneSessions(NOW + TTL * 10);
+check('pruning drops what has expired', sessionCount() <= tracked);
+dropSession(expiring);
+
 // A persistent device must win over the session path.
 const persistentToken = mintToken();
 const persistentDevice = makeDevice({ tokenHash: hashToken(persistentToken) });
@@ -121,6 +157,35 @@ recordFailure(ip);
 check('the backoff grows', blockedForMs(ip) > afterThree);
 clearFailures(ip);
 check('a success clears the record', blockedForMs(ip) === 0);
+
+/*
+ * The other slow leak: an address that only ever fails left its counter behind
+ * forever, and every fresh address added another. Forgetting after an hour of
+ * silence also gives someone who mistyped their password this morning their
+ * free attempts back.
+ */
+console.log('\nfailure records are forgotten');
+const HOUR = 60 * 60 * 1000;
+const quietIp = '203.0.113.55';
+clearFailures(quietIp);
+recordFailure(quietIp, NOW);
+recordFailure(quietIp, NOW);
+recordFailure(quietIp, NOW);
+check('the backoff is in force at the time', blockedForMs(quietIp, NOW) > 0);
+check('and gone once it has elapsed', blockedForMs(quietIp, NOW + HOUR + 1) === 0);
+// Reading a stale entry is itself what forgets it, so the common case needs no
+// sweep at all.
+check('reading a stale record drops it', failureCount() === 0 || !blockedForMs(quietIp, NOW + HOUR + 2));
+
+// An address nobody asks about again is what the sweep is for.
+const staleIp = '203.0.113.56';
+recordFailure(staleIp, NOW);
+const trackedIps = failureCount();
+check('it is tracked to begin with', trackedIps > 0);
+pruneFailures(NOW + HOUR * 2);
+check('a quiet address stops being tracked at all', failureCount() < trackedIps);
+clearFailures(quietIp);
+clearFailures(staleIp);
 
 console.log('\nadmin key');
 check('an admin key exists', /^[0-9a-f]{64}$/.test(config.auth.adminKey));

@@ -208,8 +208,11 @@ behind a tunnel is the worst failure available here.
 Every device enters it once. Ticking **Remember this device** stores a row in
 the `devices` table keyed by the SHA-256 of a random 256-bit token, which is
 kept in an `HttpOnly` cookie. Only the hash is stored, so a leaked database file
-yields no working credential. Leaving it unticked gives a session that dies with
-the browser and is never recorded.
+yields no working credential. Leaving it unticked gives a session that is never
+recorded: the cookie dies with the browser, and the server-side entry behind it
+expires after `AUTH_SESSION_TTL_HOURS` of no requests. The window measures idle
+time, so it never interrupts a viewing — but a token does stop being one long
+before the next restart, which is what it used to wait for.
 
 A device is identified by that minted token, never by a browser fingerprint. A
 fingerprint merely *describes* a device, and a description can be forged by
@@ -272,6 +275,12 @@ A session belongs to one viewer, not just to one file: two devices playing the
 same episode at the same quality get their own encoder, because a seek by
 either restarts the encoder and discards the segments the other is playing.
 
+The viewer is also who may act on it. Keepalives, segment requests and the
+closing `DELETE` all check that the caller is the one who opened the session,
+and someone else's id answers exactly as an invented one does. Ids are not
+secret — the player shows its own in the diagnostics panel — so without that a
+signed-in phone could cut off the television.
+
 One encoder run produces `HLS_ENCODE_AHEAD_SECONDS` of video (five minutes by
 default) and then stops; the next run starts wherever the viewer has actually
 reached. Without that bound ffmpeg encodes to the end of the file whether or not
@@ -279,6 +288,26 @@ anyone watches that far.
 
 Closing the player ends its session immediately. While it is open the player
 sends a keepalive, so a long pause is not reaped out from under it.
+
+### Disk the app manages
+
+| Directory | Holds | Trimmed by |
+|---|---|---|
+| `cache/mp4` | a browser-native copy of anything played on a non-direct path, roughly source-sized | `MP4_CACHE_MAX_GB`, then `MP4_CACHE_TTL_DAYS` |
+| `cache/thumbs` | seek-preview frames, a few hundred KB per file | `THUMB_CACHE_MAX_GB` / `THUMB_CACHE_TTL_DAYS` |
+| `cache/hls` | live segments, bounded per session and reaped when idle | itself |
+| `temp/` | in-progress downloads, moved into the library when complete | itself |
+
+Both budgeted caches are swept on boot and every `CACHE_SWEEP_INTERVAL_MS`:
+whatever is past its TTL goes first, then the least recently played until the
+directory is under budget. A conversion in progress and anything played in the
+last few minutes are never candidates.
+
+Downloads and conversions also check before they start. A transfer that would
+leave less than `DOWNLOAD_MIN_FREE_GB` free is refused with that as its error,
+and a conversion that would not fit is skipped and retried on a later play —
+which is a great deal easier to act on than the ffmpeg write error a full disk
+used to produce somewhere else entirely.
 
 **Seeking transcoded content costs an encode.** Every seek restarts ffmpeg at
 that point, so the first segment after a jump takes a few seconds — and on 4K
@@ -559,6 +588,13 @@ Everything lives in `.env`. Only the first three are required.
 | `HLS_ENCODE_AHEAD_SECONDS` | `300` | Video one encoder run produces before stopping |
 | `HLS_KEEP_BEHIND` | `100` | Segments kept behind the play position |
 | `HLS_IDLE_TIMEOUT_MS` | `60000` | Idle time before a session is reaped |
+| `FFMPEG_MAX_PROCESSES` | `4` | Ceiling on ffmpeg processes app-wide; playback never queues, background work does |
+| `MP4_CACHE_MAX_GB` / `MP4_CACHE_TTL_DAYS` | `50` / `30` | When converted copies are evicted |
+| `THUMB_CACHE_MAX_GB` / `THUMB_CACHE_TTL_DAYS` | `2` / `60` | When preview frames are evicted |
+| `CACHE_SWEEP_INTERVAL_MS` | `1800000` | How often the caches are measured and trimmed |
+| `DOWNLOAD_MIN_FREE_GB` | `5` | Free space a download must leave behind |
+| `DOWNLOAD_STALL_TIMEOUT_MS` | `120000` | Silence before a transfer is treated as dead |
+| `AUTH_SESSION_TTL_HOURS` | `12` | Idle life of a login without "remember this device" |
 | `TAILNET_HOST` | empty | Tailnet hostname, so CORS accepts that origin |
 | `REMOTE_DEFAULT_QUALITY` | `high` | What `Auto` means over the tunnel |
 | `QUALITY_*_HEIGHT` / `QUALITY_*_MAXRATE` | see `.env.example` | The remote quality ladder |

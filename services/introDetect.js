@@ -16,6 +16,7 @@
 import { spawn } from 'node:child_process';
 import config, { createLogger } from '../config/index.js';
 import { INTRO_WINDOW_SECONDS, MIN_INTRO_SECONDS, MAX_INTRO_SECONDS } from './intro.js';
+import * as ffmpegPool from './ffmpegPool.js';
 
 const log = createLogger('intro');
 
@@ -183,8 +184,11 @@ export function runToMarker(run) {
  * Only the window an intro could occupy is decoded, and only the audio — this
  * runs in the background behind live playback, so it must stay cheap.
  */
-function envelopeFor(filePath) {
-  return new Promise((resolve) => {
+async function envelopeFor(filePath) {
+  // Two of these run per pair, behind live playback, so they queue for a slot
+  // in the shared ffmpeg budget rather than adding to it.
+  const release = await ffmpegPool.acquire('intro-detect');
+  const decoded = new Promise((resolve) => {
     const child = spawn(config.ffmpeg.ffmpegPath, [
       '-hide_banner', '-loglevel', 'error',
       '-t', String(INTRO_WINDOW_SECONDS),
@@ -205,6 +209,12 @@ function envelopeFor(filePath) {
       resolve(envelopeFromPcm(Buffer.concat(chunks)));
     });
   });
+
+  try {
+    return await decoded;
+  } finally {
+    release();
+  }
 }
 
 /**

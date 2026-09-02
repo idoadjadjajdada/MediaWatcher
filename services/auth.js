@@ -69,26 +69,68 @@ export function verifyAdminKey(supplied) {
  *
  * "Remember me" unchecked means no database row: nothing to audit and nothing
  * to revoke, because the credential dies with the browser or the process.
+ *
+ * The cookie for one is a session cookie, so it does die with the browser — but
+ * the server-side entry used to live until the process restarted, so the set
+ * only ever grew and a token stayed valid long after the browser holding it was
+ * closed. Each entry now carries an expiry, and using it pushes that expiry
+ * forward: an evening of watching never logs you out, and a phone that has not
+ * been near the app since this morning is no longer a credential.
  * ----------------------------------------------------------------------- */
 
-const sessions = new Set();
+const sessions = new Map();   // tokenHash -> expiresAt
 
-export const rememberSession = (tokenHash) => { sessions.add(tokenHash); };
-export const hasSession = (tokenHash) => sessions.has(tokenHash);
+/** Drop every expired entry. Returns how many went. */
+export function pruneSessions(now = Date.now()) {
+  let dropped = 0;
+  for (const [tokenHash, expiresAt] of sessions) {
+    if (expiresAt <= now) {
+      sessions.delete(tokenHash);
+      dropped += 1;
+    }
+  }
+  return dropped;
+}
+
+export function rememberSession(tokenHash, now = Date.now()) {
+  // Logins are rare and the map is small, so this is the natural place to take
+  // out the rubbish rather than running a timer for it.
+  pruneSessions(now);
+  sessions.set(tokenHash, now + config.auth.sessionTtlMs);
+}
+
+export function hasSession(tokenHash, now = Date.now()) {
+  const expiresAt = sessions.get(tokenHash);
+  if (expiresAt === undefined) return false;
+  if (expiresAt <= now) {
+    sessions.delete(tokenHash);
+    return false;
+  }
+  return true;
+}
+
 export const dropSession = (tokenHash) => { sessions.delete(tokenHash); };
+
+/** Live session count. Exposed for tests and diagnostics. */
+export const sessionCount = () => sessions.size;
 
 /**
  * Resolve a raw cookie token to whatever issued it, or null.
  * Devices are checked first: they are the persistent, revocable credential.
  */
-export function resolveToken(token) {
+export function resolveToken(token, now = Date.now()) {
   if (!token) return null;
   const tokenHash = hashToken(token);
 
   const device = findDeviceByTokenHash(tokenHash);
   if (device) return { kind: 'device', device };
 
-  if (sessions.has(tokenHash)) return { kind: 'session' };
+  if (hasSession(tokenHash, now)) {
+    // Sliding, not fixed: the window measures idleness, and someone mid-episode
+    // is not idle.
+    sessions.set(tokenHash, now + config.auth.sessionTtlMs);
+    return { kind: 'session' };
+  }
   return null;
 }
 
@@ -105,29 +147,62 @@ const FREE_ATTEMPTS = 2;
 const BASE_DELAY_MS = 1000;
 const MAX_DELAY_MS = 5 * 60 * 1000;
 
-const failures = new Map();   // ip -> { count, until }
+/**
+ * How long a quiet IP is remembered for.
+ *
+ * An entry that is never cleared is a slow leak — a successful login clears
+ * one, but an address that only ever fails leaves its counter behind forever,
+ * and each attempt from a fresh address adds another. Forgetting after an hour
+ * of silence also restores the two free attempts to someone who mistyped their
+ * password this morning, which is the behaviour a household wants.
+ */
+const FORGET_AFTER_MS = 60 * 60 * 1000;
 
-export function recordFailure(ip) {
-  const entry = failures.get(ip) || { count: 0, until: 0 };
+const failures = new Map();   // ip -> { count, until, at }
+
+/** Drop entries that are neither blocking nor recent. Returns how many went. */
+export function pruneFailures(now = Date.now()) {
+  let dropped = 0;
+  for (const [ip, entry] of failures) {
+    if (entry.until <= now && now - entry.at >= FORGET_AFTER_MS) {
+      failures.delete(ip);
+      dropped += 1;
+    }
+  }
+  return dropped;
+}
+
+export function recordFailure(ip, now = Date.now()) {
+  pruneFailures(now);
+
+  const entry = failures.get(ip) || { count: 0, until: 0, at: now };
   entry.count += 1;
+  entry.at = now;
   if (entry.count > FREE_ATTEMPTS) {
     const delay = Math.min(BASE_DELAY_MS * 2 ** (entry.count - FREE_ATTEMPTS - 1), MAX_DELAY_MS);
-    entry.until = Date.now() + delay;
+    entry.until = now + delay;
   }
   failures.set(ip, entry);
 }
 
 /** Milliseconds this IP must wait, or 0. */
-export function blockedForMs(ip) {
+export function blockedForMs(ip, now = Date.now()) {
   const entry = failures.get(ip);
   if (!entry) return 0;
-  return Math.max(0, entry.until - Date.now());
+  if (entry.until <= now && now - entry.at >= FORGET_AFTER_MS) {
+    failures.delete(ip);
+    return 0;
+  }
+  return Math.max(0, entry.until - now);
 }
 
 export const clearFailures = (ip) => { failures.delete(ip); };
 
+/** Tracked address count. Exposed for tests and diagnostics. */
+export const failureCount = () => failures.size;
+
 export default {
   COOKIE_NAME, mintToken, hashToken, parseCookies, verifyPassword, verifyAdminKey,
-  rememberSession, hasSession, dropSession, resolveToken,
-  recordFailure, blockedForMs, clearFailures
+  rememberSession, hasSession, dropSession, resolveToken, pruneSessions, sessionCount,
+  recordFailure, blockedForMs, clearFailures, pruneFailures, failureCount
 };

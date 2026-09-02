@@ -19,12 +19,26 @@ import config, { createLogger } from '../config/index.js';
 import { insertJob, updateJob, getJob, deleteJob, listJobsByStatus } from '../db/index.js';
 import * as alldebrid from './alldebrid.js';
 import * as organizer from './organizer.js';
+import { hasRoomFor, formatBytes } from './diskspace.js';
 
 const log = createLogger('downloader');
 
 /** Emits: progress {id, progress, phase}, complete {id, file_path}, error {id, error}. */
 export const events = new EventEmitter();
 events.setMaxListeners(50);
+
+/*
+ * 'error' is the one event name EventEmitter treats specially: emitting it with
+ * no listener attached throws ERR_UNHANDLED_ERROR rather than doing nothing.
+ * Nothing in the app subscribes to this bus today, so every failed download
+ * threw out of its own catch block and surfaced as an unhandled rejection —
+ * with the useful message already logged a line earlier, so the noise carried
+ * no information.
+ *
+ * A listener that does nothing is the fix: failures are logged and written to
+ * the job row regardless, and a real subscriber can be added beside it.
+ */
+events.on('error', () => {});
 
 const DEBRID_SHARE = 0.5;
 const SAMPLE_PATTERN = /(^|[^a-z])sample([^a-z]|$)/i;
@@ -56,8 +70,11 @@ function isVideo(name) {
  *
  * Season packs return many episodes; a single-episode request pulls just the
  * matching file, a movie takes the largest, and anything else takes every video.
+ *
+ * A request that names an episode it cannot find takes nothing, unless the
+ * torrent holds exactly one video — see below.
  */
-function selectFiles(links, request) {
+export function selectFiles(links, request) {
   const videos = links
     .map((entry) => ({
       link: entry.link,
@@ -85,6 +102,18 @@ function selectFiles(links, request) {
       return name.includes(tag.toLowerCase()) || name.includes(alt.toLowerCase());
     });
     if (match) return [match];
+
+    /*
+     * One video and no episode marker in its name is not ambiguous: whatever
+     * it is called, it is the only thing this torrent holds and the torrent was
+     * chosen for this episode. Plenty of single-episode releases name the file
+     * something the pattern cannot read.
+     *
+     * More than one, though, and there is no way to tell which — that is the
+     * season pack, and taking all of them wrote every episode to the requested
+     * episode's path: "Show - S01E05.mkv", " (2).mkv", " (3).mkv".
+     */
+    return pool.length === 1 ? pool : [];
   }
 
   if (request.type === 'movie') {
@@ -111,7 +140,16 @@ function persistProgress(job, fraction, phase) {
   events.emit('progress', { id: job.id, progress: clamped, phase });
 }
 
-async function streamToFile(url, destination, { signal, onBytes }) {
+/**
+ * Stream one unlocked link to disk.
+ *
+ * `timeout: 0` is deliberate — a multi-hour transfer must not be cut off for
+ * taking a long time — but an overall timeout is not the same thing as noticing
+ * that nothing is arriving. A stalled link used to hold one of the two
+ * concurrency slots indefinitely with nothing but a manual cancel to free it,
+ * so the watchdog below measures silence rather than duration.
+ */
+export async function streamToFile(url, destination, { signal, onBytes = () => {} } = {}) {
   const response = await axios.get(url, {
     responseType: 'stream',
     signal,
@@ -124,17 +162,39 @@ async function streamToFile(url, destination, { signal, onBytes }) {
   const writer = fs.createWriteStream(destination);
 
   let received = 0;
+  let lastByteAt = Date.now();
+
   response.data.on('data', (chunk) => {
     received += chunk.length;
+    lastByteAt = Date.now();
     onBytes(chunk.length, received, declared);
   });
 
-  await new Promise((resolve, reject) => {
-    response.data.pipe(writer);
-    response.data.on('error', reject);
-    writer.on('error', reject);
-    writer.on('finish', resolve);
-  });
+  const stallMs = config.downloads.stallTimeoutMs;
+  let watchdog = null;
+
+  try {
+    await new Promise((resolve, reject) => {
+      if (stallMs > 0) {
+        // Checked at a fraction of the limit so the reported idle time is close
+        // to the real one rather than up to double it.
+        watchdog = setInterval(() => {
+          const idle = Date.now() - lastByteAt;
+          if (idle < stallMs) return;
+          response.data.destroy();
+          reject(new Error(`transfer stalled: nothing received for ${Math.round(idle / 1000)}s`));
+        }, Math.max(1000, Math.floor(stallMs / 4)));
+        watchdog.unref?.();
+      }
+
+      response.data.pipe(writer);
+      response.data.on('error', reject);
+      writer.on('error', reject);
+      writer.on('finish', resolve);
+    });
+  } finally {
+    if (watchdog) clearInterval(watchdog);
+  }
 
   return { bytes: received, declared, contentType: response.headers['content-type'] || null };
 }
@@ -150,6 +210,20 @@ async function removeQuietly(filePath) {
 /* --------------------------------------------------------------------------
  * Job execution
  * ----------------------------------------------------------------------- */
+
+/**
+ * Where one file of one job is written while it transfers.
+ *
+ * The job id is part of the name, not decoration. Two jobs run at once and two
+ * torrents holding an identically named file is ordinary - "Episode 1.mkv" from
+ * two different seasons, say - so without it both transfers wrote to the same
+ * path at the same time, and the interleaved result could still pass the size
+ * check at the end.
+ */
+export function tempPathFor(jobId, filename, ext = '.mkv') {
+  const base = organizer.sanitizeName(filename || `download${ext}`);
+  return path.join(config.tempPath, `${organizer.sanitizeName(String(jobId))}-${base}`);
+}
 
 async function runJob(jobId, request) {
   const controller = new AbortController();
@@ -171,7 +245,10 @@ async function runJob(jobId, request) {
 
     const selected = selectFiles(ready.links, request);
     if (selected.length === 0) {
-      throw new Error('torrent contains no downloadable files');
+      const wanted = request.type === 'episode' && request.season != null && request.episode != null
+        ? ` matching ${organizer.episodeTag(request.season, request.episode)}`
+        : '';
+      throw new Error(`torrent contains no downloadable files${wanted}`);
     }
 
     // Phase 2 — unlock and stream each file.
@@ -185,11 +262,32 @@ async function runJob(jobId, request) {
     let completedBytes = 0;
     const finalPaths = [];
 
+    /*
+     * Both ends are checked, because temp/ and library/ are routinely on
+     * different drives - that is what the EXDEV fallback in organizer.moveInto
+     * exists for - and either one filling up loses the transfer. On a
+     * single-volume setup this is the same question asked twice, which costs a
+     * statfs and nothing else.
+     *
+     * Checking before the first byte is what turns "the disk filled up" from a
+     * confusing ffmpeg write error in some unrelated request into a job that
+     * says what happened.
+     */
+    if (totalBytes > 0) {
+      for (const target of [config.tempPath, config.libraryPath]) {
+        const room = await hasRoomFor(target, totalBytes, config.downloads.minFreeBytes);
+        if (!room.ok) {
+          throw new Error(`not enough disk space: ${formatBytes(totalBytes)} needed, `
+            + `${formatBytes(room.free)} free (keeping ${formatBytes(room.reserve)} in reserve)`);
+        }
+      }
+    }
+
     for (const file of unlocked) {
       if (controller.signal.aborted) throw new Error('cancelled');
 
       const ext = organizer.extensionFrom(file.filename, organizer.extensionFrom(file.url));
-      const tempPath = path.join(config.tempPath, organizer.sanitizeName(file.filename || `${jobId}${ext}`));
+      const tempPath = tempPathFor(jobId, file.filename, ext);
       state.tempPaths.push(tempPath);
 
       const { bytes } = await streamToFile(file.url, tempPath, {
@@ -284,12 +382,28 @@ export async function startDownload(request) {
   if (existing && (existing.status === 'downloading' || existing.status === 'queued')) {
     return existing;
   }
+  /*
+   * A finished job whose file is still there is already the answer. The UI only
+   * offers Retry on an error, but the API is reachable directly and the manual
+   * "Add torrent" box posts the same magnet - and that used to reset the row to
+   * queued and transfer the whole thing a second time.
+   */
+  if (existing?.status === 'complete' && existing.file_path && fs.existsSync(existing.file_path)) {
+    log.info(`already downloaded: ${existing.title} -> ${existing.file_path}`);
+    return existing;
+  }
 
   const job = insertJob({
     id: uploaded.id,
     type: request.type === 'episode' || request.type === 'show' ? 'episode' : 'movie',
     title: request.title,
     tmdb_id: request.tmdb_id ?? null,
+    // Stored, not just used: reconcileOnBoot rebuilds the destination path from
+    // these, and a row without them files a resumed episode under "Season 00".
+    year: request.year ?? null,
+    season: request.season ?? null,
+    episode: request.episode ?? null,
+    episode_title: request.episodeTitle ?? null,
     magnet,
     source: request.source || 'torrentio',
     status: 'queued',
@@ -327,6 +441,27 @@ export function getActive() {
 }
 
 /**
+ * The original request, rebuilt from its row.
+ *
+ * Everything targetPath() needs has to survive a restart, or the re-run lands
+ * somewhere else than the run it is replacing: episodeTag(undefined, undefined)
+ * is "S00E00" and seasonFolder(undefined) is "Season 00".
+ */
+export function requestFromJob(job) {
+  return {
+    type: job.type,
+    title: job.title,
+    tmdb_id: job.tmdb_id,
+    year: job.year ?? null,
+    season: job.season ?? null,
+    episode: job.episode ?? null,
+    episodeTitle: job.episode_title ?? null,
+    magnet: job.magnet,
+    source: job.source
+  };
+}
+
+/**
  * On boot, jobs left in 'downloading' are orphans from a previous process.
  * Ones AllDebrid still has ready are re-queued; the rest are marked errored so
  * the Downloads page shows a Retry button instead of a stuck bar.
@@ -346,10 +481,7 @@ export async function reconcileOnBoot() {
         outcomes.push({ id: job.id, outcome: 'error' });
         continue;
       }
-      queue.push({
-        id: job.id,
-        request: { type: job.type, title: job.title, tmdb_id: job.tmdb_id, magnet: job.magnet, source: job.source }
-      });
+      queue.push({ id: job.id, request: requestFromJob(job) });
       updateJob(job.id, { status: 'queued' });
       outcomes.push({ id: job.id, outcome: 'requeued' });
     } catch (error) {
@@ -362,4 +494,7 @@ export async function reconcileOnBoot() {
   return outcomes;
 }
 
-export default { startDownload, cancelJob, getActive, getLiveProgress, reconcileOnBoot, events };
+export default {
+  startDownload, cancelJob, getActive, getLiveProgress, reconcileOnBoot,
+  selectFiles, requestFromJob, tempPathFor, streamToFile, events
+};

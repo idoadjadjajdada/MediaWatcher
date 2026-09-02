@@ -9,9 +9,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import config, { createLogger } from '../../config/index.js';
-import { segmentCount } from './playlist.js';
+import { segmentCount, SEGMENT_SECONDS } from './playlist.js';
 import { sessionKey, nextAction, completedThrough, segmentsToPrune } from './session.js';
 import { buildSegmentArgs, hardwareEncoder } from '../transcoder.js';
+import * as ffmpegPool from '../ffmpegPool.js';
 
 const log = createLogger('hls');
 
@@ -66,6 +67,8 @@ async function startEncoder(session, startSegment) {
 
   session.startSegment = startSegment;
   session.exited = false;
+  // Belongs to the run that is starting, not the one that just ended.
+  session.exitCode = null;
 
   const encoder = await hardwareEncoder();
   const args = buildSegmentArgs(session.filePath, {
@@ -84,6 +87,15 @@ async function startEncoder(session, startSegment) {
   log.info(`session ${session.id}: encoding from segment ${startSegment}`);
   const proc = spawn(config.ffmpeg.ffmpegPath, args, { windowsHide: true });
   session.proc = proc;
+
+  /*
+   * Taken, never waited for. Someone is watching this one, so it counts against
+   * the shared ffmpeg budget - which is what makes background conversions and
+   * thumbnail jobs stand down - but it never queues behind them.
+   */
+  const releaseSlot = ffmpegPool.reserveInteractive();
+  proc.once('close', releaseSlot);
+  proc.once('error', releaseSlot);
 
   // Nothing reads stdout, and an unread pipe that fills would block ffmpeg.
   proc.stdout?.resume();
@@ -104,6 +116,9 @@ ${text}`.slice(-400);
     if (session.proc === proc) {
       session.proc = null;
       session.exited = true;
+      // Never zero: a process that failed to start has not reached the end of
+      // anything, and the end-of-stream rule keys on a clean exit.
+      session.exitCode = -1;
     }
   });
 
@@ -113,6 +128,9 @@ ${text}`.slice(-400);
     if (session.proc !== proc) return;
     session.proc = null;
     session.exited = true;
+    // Zero means ffmpeg reached the end of what it was asked for. Anything else
+    // is a failure, and the two are handled very differently below.
+    session.exitCode = code;
     /*
      * A non-zero exit here is the difference between "the encoder is still
      * working" and "no segment is ever coming", and it used to be invisible:
@@ -142,6 +160,10 @@ export async function openSession(spec) {
   const session = {
     id,
     dir,
+    // Who opened it. The touch and delete routes check this: a session id is
+    // visible in the player's diagnostics panel, and without an owner any
+    // signed-in device could end any other viewer's stream.
+    viewer: spec.viewer,
     filePath: spec.filePath,
     duration: spec.duration,
     count: segmentCount(spec.duration),
@@ -155,8 +177,18 @@ export async function openSession(spec) {
     startSegment: 0,
     // No encoder has run yet, so nothing is finished and nothing is coming.
     exited: false,
+    exitCode: null,
     started: false,
     restartsWithoutProgress: 0,
+    /*
+     * The last segment that actually exists, once the encoder has told us.
+     *
+     * The playlist is arithmetic on the duration ffprobe reported, and a real
+     * encode can end a fraction of a segment short of it. Those trailing
+     * segments are unreachable, and without this the player spent its whole
+     * retry budget on them and stalled a second before the end.
+     */
+    endOfStream: null,
     lastAccess: Date.now()
   };
 
@@ -173,9 +205,23 @@ export async function openSession(spec) {
 
 export const getSession = (id) => sessions.get(id) || null;
 
-export function touch(id) {
+/**
+ * The session with this id, if `viewer` is the one that opened it.
+ *
+ * Passing no viewer skips the check, which is what the sweeper and shutdown
+ * paths do; anything reached from a request must pass one.
+ */
+function ownedBy(id, viewer) {
   const session = sessions.get(id);
+  if (!session) return null;
+  if (viewer !== undefined && session.viewer !== viewer) return null;
+  return session;
+}
+
+export function touch(id, viewer) {
+  const session = ownedBy(id, viewer);
   if (session) session.lastAccess = Date.now();
+  return Boolean(session);
 }
 
 /** Delete segments far enough behind the play position. */
@@ -193,6 +239,28 @@ function prune(session, current) {
  * The path to a finished segment, waiting for or restarting the encoder as
  * needed. Resolves null if it never arrives.
  */
+/**
+ * Did the run that just ended stop for want of material rather than for want of
+ * budget?
+ *
+ * Only a run that was expected to reach the end of the playlist can answer
+ * that. One run is capped at `encodeAheadSeconds`, so a run starting in the
+ * middle of a long film always stops early and says nothing about where the
+ * file ends — and treating that as the end would refuse the whole rest of the
+ * episode. A run that had the budget to finish the playlist and did not is the
+ * only one whose short output is evidence.
+ *
+ * The evidence itself is a segment count, which is why the question is asked in
+ * this narrow form: the segmenter is entitled to fold a short tail into the
+ * previous segment, so "fewer files than expected" means "the file ended
+ * somewhere around here", not an exact frame.
+ */
+export function isEndOfSource(session, producedThrough) {
+  const budget = Math.ceil(config.hls.encodeAheadSeconds / SEGMENT_SECONDS);
+  if (session.startSegment + budget < session.count) return false;
+  return producedThrough < session.count - 1;
+}
+
 /**
  * Move the encoder, but never while another request is already moving it.
  *
@@ -220,10 +288,12 @@ async function restartTo(session, index) {
  * requests on every seek, and without this the abandoned handler keeps looping
  * — and can restart the encoder for a segment nobody is waiting for any more.
  */
-export async function requestSegment(id, index, signal) {
-  const session = sessions.get(id);
+export async function requestSegment(id, index, signal, viewer) {
+  const session = ownedBy(id, viewer);
   if (!session) return null;
   if (index < 0 || index >= session.count) return null;
+  // Already established that the file ends before here; see `endOfStream`.
+  if (session.endOfStream !== null && index > session.endOfStream) return null;
 
   session.lastAccess = Date.now();
 
@@ -288,6 +358,30 @@ export async function requestSegment(id, index, signal) {
      * forever, so repeated failures without progress eventually surrender.
      */
     if (session.exited && index > through) {
+      /*
+       * Did the run that just ended stop because it ran out of file, or because
+       * it ran out of its own time budget?
+       *
+       * A bounded run writes encodeAheadSeconds of video - fifty segments by
+       * default - whenever there is that much material left. Fewer than that,
+       * on a clean exit, means it reached the end of the source: the playlist is
+       * arithmetic on the probed duration, and the real content stopped short of
+       * it.
+       *
+       * Restarting there is not merely futile, it is actively wrong. ffmpeg
+       * answers an input seek past the end of an MKV by rewinding to the start
+       * and encoding the whole file, so the viewer was served the opening of
+       * the film as its final segment. Refusing here is what prevents that.
+       */
+      if (session.exitCode === 0 && isEndOfSource(session, through)) {
+        if (session.endOfStream === null) {
+          session.endOfStream = through;
+          log.info(`session ${id}: source ends at segment ${through}, `
+            + `${session.count - 1 - through} short of the ${session.count} the playlist expects`);
+        }
+        return null;
+      }
+
       if (session.restartsWithoutProgress >= MAX_RESTARTS_WITHOUT_PROGRESS) {
         log.warn(`session ${id}: giving up on segment ${index} after `
           + `${session.restartsWithoutProgress} restarts that produced nothing`);
@@ -328,9 +422,15 @@ export function stopSweeper() {
   sweeper = null;
 }
 
-/** End one session now. True if there was one to end. */
-export function endSession(id) {
-  const session = sessions.get(id);
+/**
+ * End one session now. True if there was one to end.
+ *
+ * A viewer may only end their own. Someone else's id answers exactly as a
+ * made-up one does, which is also why this returns a boolean rather than a
+ * 403: whether a stranger's session exists is not something to confirm.
+ */
+export function endSession(id, viewer) {
+  const session = ownedBy(id, viewer);
   if (!session) return false;
   destroy(session);
   return true;

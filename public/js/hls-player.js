@@ -33,6 +33,14 @@ function loadHlsLibrary() {
   return libraryPromise;
 }
 
+/**
+ * How close to the end a fatal load error counts as the end of the file.
+ *
+ * Two segments. The drift being covered for is under one, and a genuine failure
+ * that far in is indistinguishable from finishing anyway.
+ */
+const TAIL_SECONDS = 12;
+
 /** Does this browser play HLS without help? */
 export const nativeHls = (video) =>
   Boolean(video.canPlayType && video.canPlayType('application/vnd.apple.mpegurl'));
@@ -91,6 +99,28 @@ export async function attachHls(video, url, { startPosition = 0 } = {}) {
     fragLoadingMaxRetry: 8,
     fragLoadingRetryDelay: 1000,
     fragLoadingMaxRetryTimeout: 20000
+  });
+
+  /*
+   * The playlist is arithmetic on the probed duration, and a real encode can
+   * finish a fraction of a segment short of it. Those trailing segments do not
+   * exist, so the player spent its whole retry budget on 404s and stalled a
+   * second from the end - on an episode the up-next countdown covered for it,
+   * on a film nothing did.
+   *
+   * Close enough to the end, a fatal load error is the end. Anywhere else it is
+   * a real failure and is left to surface as one.
+   */
+  instance.on(Hls.Events.ERROR, (_event, data) => {
+    if (!data?.fatal || data.type !== Hls.ErrorTypes.NETWORK_ERROR) return;
+
+    const duration = Number(video.duration);
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    if (duration - video.currentTime > TAIL_SECONDS) return;
+
+    // The element cannot reach its own end here, so say so on its behalf: every
+    // listener the player has hung on `ended` is what should run now.
+    video.dispatchEvent(new Event('ended'));
   });
 
   instance.loadSource(url);
