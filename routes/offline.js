@@ -18,6 +18,7 @@ import { createLogger } from '../config/index.js';
 import { isInsideLibrary } from '../services/organizer.js';
 import * as transcoder from '../services/transcoder.js';
 import * as mp4cache from '../services/mp4cache.js';
+import * as warmup from '../services/warmup.js';
 
 const log = createLogger('api:offline');
 const router = express.Router();
@@ -76,9 +77,13 @@ router.get('/info', async (req, res, next) => {
       return res.json({ ready: true, source: 'cache', bytes: fs.statSync(cached).size, variant });
     }
 
-    // Not awaited beyond starting it: conversion takes minutes and the caller
-    // is asking whether it can save now, not waiting for it to be possible.
-    mp4cache.ensureVariant(filePath, variant).catch(() => {});
+    /*
+     * Queued rather than started directly. The warm-up queue is sequential and
+     * runs on background ffmpeg slots, so asking to save five episodes at once
+     * converts them one at a time behind whatever is playing — where calling
+     * ensureVariant five times would start as many as the pool allowed.
+     */
+    warmup.enqueue(filePath);
     return res.json({
       ready: false,
       source: 'converting',

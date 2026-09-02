@@ -271,6 +271,15 @@ export const getMissingEpisodes = (show) => get(`/api/library/missing?${q({ show
 /** Where the space went, by title rather than by folder. */
 export const getStorage = () => get('/api/library/storage');
 
+/**
+ * Convert and thumbnail everything ahead of time.
+ *
+ * Answers immediately with what was queued; the work runs on background ffmpeg
+ * slots and yields to anyone watching, so this is safe to start and leave.
+ */
+export const warmLibrary = (show) => post('/api/library/warm', show ? { show } : {});
+export const getWarmStatus = () => get('/api/library/warm');
+
 /* --------------------------------------------------------------------------
  * Saving for offline
  * ----------------------------------------------------------------------- */
@@ -308,6 +317,6 @@ export default {
   getIntro, reportSkip, forgetIntro,
   getTrackPrefs, saveTrackPrefs, forgetTrackPrefs,
   getDevices, revokeDevice, getLoginHistory, getDiagnostics,
-  getMissingEpisodes, getStorage,
+  getMissingEpisodes, getStorage, warmLibrary, getWarmStatus,
   getOfflineInfo, offlineFileUrl
 };

@@ -10,6 +10,7 @@ import { createLogger } from '../config/index.js';
 import * as scanner from '../services/scanner.js';
 import * as tmdb from '../services/tmdb.js';
 import { compareSeason, isRealSeason, summariseShow } from '../services/missing.js';
+import * as warmup from '../services/warmup.js';
 
 const log = createLogger('api:library');
 const router = express.Router();
@@ -143,6 +144,52 @@ router.get('/storage', (_req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+/**
+ * POST /api/library/warm — convert and thumbnail everything, ahead of time.
+ *
+ * Warming happens automatically for anything downloaded from now on, but a
+ * library that already exists has never been through it, and that is exactly
+ * the library where every first play pays for a tone map and an encode before
+ * the first frame. This is the catch-up.
+ *
+ * It answers immediately with what was queued. The work itself runs on
+ * background ffmpeg slots, one file at a time, and yields to anyone watching —
+ * so this is safe to start and walk away from.
+ */
+router.post('/warm', (req, res, next) => {
+  try {
+    const library = scanner.getLibrary();
+    const wanted = req.body?.show ? Number.parseInt(req.body.show, 10) : null;
+
+    const paths = [];
+    for (const movie of library.movies || []) {
+      if (wanted !== null && movie.tmdb_id !== wanted) continue;
+      for (const file of movie.files || []) if (file.file_path) paths.push(file.file_path);
+    }
+    for (const show of library.shows || []) {
+      if (wanted !== null && show.tmdb_id !== wanted) continue;
+      for (const season of show.seasons || []) {
+        for (const episode of season.episodes || []) {
+          for (const file of episode.files || []) if (file.file_path) paths.push(file.file_path);
+        }
+      }
+    }
+
+    const queued = warmup.enqueueAll(paths);
+    log.info(`warm requested: ${queued} of ${paths.length} file(s) queued`);
+    // Fewer queued than found is the normal case on a second run: anything
+    // already converted, or already waiting, is not queued again.
+    return res.json({ found: paths.length, queued, ...warmup.getStats() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** GET /api/library/warm — how far the catch-up has got. */
+router.get('/warm', (_req, res) => {
+  res.json(warmup.getStats());
 });
 
 export default router;

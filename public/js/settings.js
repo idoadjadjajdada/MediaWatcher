@@ -278,6 +278,44 @@ function renderOffline() {
     </section>`;
 }
 
+/**
+ * Warming the library.
+ *
+ * Anything downloaded from now on is converted and thumbnailed automatically
+ * when it lands. A library that already existed never went through that, which
+ * is why its first play of any MKV waits on a tone map and an encode — so this
+ * is the catch-up button for what is already on disk.
+ */
+function renderPerformance() {
+  const warm = state.settings?.warm;
+  const busy = Boolean(warm && (warm.running || warm.pending > 0));
+
+  return `
+    <section class="settings__group">
+      <h2 class="settings__heading">Performance</h2>
+      <p class="settings__note">
+        Playing an MKV that no browser can decode means tone-mapping and
+        encoding it first, which is what makes the first few seconds slow.
+        Converting ahead of time removes that wait entirely — the file then
+        opens from a ready copy with no encoder involved.
+      </p>
+      ${warm ? `
+        <div class="facts">
+          <div class="fact"><dt>Waiting</dt><dd class="t-num">${warm.pending}</dd></div>
+          <div class="fact"><dt>Converted</dt><dd class="t-num">${warm.converted}</dd></div>
+          <div class="fact"><dt>Already fine</dt><dd class="t-num">${warm.skipped}</dd></div>
+          <div class="fact"><dt>Failed</dt><dd class="t-num">${warm.failed}</dd></div>
+        </div>` : ''}
+      ${busy ? `<p class="settings__note">Working through the queue now. It runs behind anything you are watching, so you can leave it.</p>` : ''}
+      <div class="settings__actions">
+        <button class="btn btn--primary" data-action="settings-warm" ${busy ? 'disabled' : ''}>
+          ${busy ? 'Converting…' : 'Convert library ahead of time'}
+        </button>
+        <button class="btn btn--secondary" data-action="settings-refresh">Refresh</button>
+      </div>
+    </section>`;
+}
+
 function renderStorage() {
   const storage = state.settings?.storage;
   if (!storage) return '<section class="settings__group"><h2 class="settings__heading">Storage</h2><div class="settings__loading">Loading…</div></section>';
@@ -372,6 +410,7 @@ export function renderSettings() {
       </header>
       ${renderPlayback(prefs)}
       ${renderAppearance(subtitle, picture)}
+      ${renderPerformance()}
       ${renderOffline()}
       ${renderStorage()}
       ${renderDevices()}
@@ -388,15 +427,16 @@ export function renderSettings() {
  * their own data arrives rather than blocking the whole page.
  */
 export async function loadSettings() {
-  const [devices, logins, diagnostics, storage, saved, quota] = await Promise.all([
+  const [devices, logins, diagnostics, storage, saved, quota, warm] = await Promise.all([
     api.getDevices().catch(() => []),
     api.getLoginHistory().catch(() => []),
     api.getDiagnostics().catch(() => null),
     api.getStorage().catch(() => null),
     offline.listSaved().catch(() => []),
-    offline.quota().catch(() => null)
+    offline.quota().catch(() => null),
+    api.getWarmStatus().catch(() => null)
   ]);
-  setState({ settings: { devices, logins, diagnostics, storage, offline: saved, quota } });
+  setState({ settings: { devices, logins, diagnostics, storage, offline: saved, quota, warm } });
 }
 
 /* --------------------------------------------------------------------------
@@ -478,6 +518,22 @@ export async function refreshDiagnostics() {
 export async function install() {
   const outcome = await promptInstall();
   if (outcome === 'accepted') toast('success', 'Installed', 'It will open like an app from now on.');
+}
+
+export async function warmLibrary() {
+  try {
+    const result = await api.warmLibrary();
+    setState({ settings: { ...state.settings, warm: result } });
+    toast(
+      'success',
+      result.queued > 0 ? `Converting ${result.queued} file${result.queued === 1 ? '' : 's'}` : 'Nothing to convert',
+      result.queued > 0
+        ? 'It runs behind anything you are watching.'
+        : 'Everything is already converted or already plays directly.'
+    );
+  } catch (error) {
+    toast('error', 'Could not start', error.message);
+  }
 }
 
 export async function unsave(filePath) {

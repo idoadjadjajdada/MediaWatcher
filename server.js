@@ -36,6 +36,8 @@ import * as transcoder from './services/transcoder.js';
 import * as watcher from './services/watcher.js';
 import * as hls from './services/hls/manager.js';
 import * as cacheSweeper from './services/cacheSweeper.js';
+import * as warmup from './services/warmup.js';
+import { events as downloadEvents } from './services/downloader.js';
 
 ensureRuntimeDirs();
 
@@ -229,6 +231,9 @@ const server = app.listen(config.port, config.host, () => {
   // cache/mp4 and cache/thumbs are trimmed to their budgets here and on an
   // interval; nothing used to remove an entry from either.
   cacheSweeper.start();
+  // A finished download is the ideal moment to pay for the conversion and the
+  // seek thumbnails, rather than making the first viewer wait for both.
+  warmup.watchDownloads(downloadEvents);
 
   transcoder.isAvailable().then((available) => {
     log.info(available
@@ -254,6 +259,7 @@ function shutdown(signal) {
   log.info(`${signal} received, shutting down`);
   watcher.stop().catch(() => {});
   cacheSweeper.stop();
+  warmup.stop();
   // No ffmpeg should outlive the server.
   hls.shutdownAll();
   server.close(() => {

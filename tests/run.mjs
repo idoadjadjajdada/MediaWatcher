@@ -51,6 +51,7 @@ const SUITES = [
   { file: 'settings.test.mjs' },
   { file: 'missing.test.mjs' },
   { file: 'offline.test.mjs' },
+  { file: 'warmup.test.mjs' },
   { file: 'hls-playlist.test.mjs' },
   { file: 'hls-session.test.mjs' },
   { file: 'hls-ownership.test.mjs' },

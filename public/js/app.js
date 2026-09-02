@@ -460,6 +460,7 @@ const ACTIONS = {
   'settings-revoke': (el) => settings.revokeDevice(el.dataset.id),
   'settings-refresh': () => settings.refreshDiagnostics(),
   'settings-install': () => settings.install(),
+  'settings-warm': () => settings.warmLibrary(),
   'settings-unsave': (el) => settings.unsave(el.dataset.path),
   'settings-unsave-all': () => settings.unsaveAll(),
   'save-offline': (el) => saveOffline(el),
