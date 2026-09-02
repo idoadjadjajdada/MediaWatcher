@@ -41,6 +41,9 @@ export const state = {
   // both the player menu and the season list. Null until the answer arrives:
   // rendering nothing is better than rendering a button that then vanishes.
   subtitles: null,
+  // Devices, login history and diagnostics for the settings page. Each part
+  // arrives independently, so null means "not asked yet" rather than "empty".
+  settings: { devices: null, logins: null, diagnostics: null },
 
   // UI bookkeeping
   loading: true,

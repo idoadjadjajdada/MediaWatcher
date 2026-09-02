@@ -11,6 +11,7 @@ import {
   recordFailure, blockedForMs, clearFailures
 } from '../services/auth.js';
 import { insertDevice, revokeDevice } from '../db/devices.js';
+import { recordLogin } from '../db/loginEvents.js';
 import { classifyOrigin } from '../services/network.js';
 
 const log = createLogger('api:auth');
@@ -45,6 +46,15 @@ router.post('/login', (req, res) => {
 
   if (!verifyPassword(password)) {
     recordFailure(req.ip);
+    // Logged to the database as well as the console: the console scrolls away
+    // with the launcher window, and a run of these is the one thing on this
+    // server worth being able to look back at.
+    recordLogin({
+      ok: false,
+      ip: req.ip,
+      origin: classifyOrigin(req.ip),
+      userAgent: req.headers['user-agent']
+    });
     log.warn(`failed login from ${req.ip}`);
     return res.status(401).json({ error: 'Wrong password' });
   }
@@ -71,6 +81,15 @@ router.post('/login', (req, res) => {
   } else {
     rememberSession(hashToken(token));
   }
+
+  recordLogin({
+    ok: true,
+    ip: req.ip,
+    origin: classifyOrigin(req.ip),
+    userAgent: req.headers['user-agent'],
+    deviceName: remember ? name : null,
+    remembered: Boolean(remember)
+  });
 
   res.cookie(COOKIE_NAME, token, cookieOptions(req, Boolean(remember)));
   return res.json({ ok: true, remembered: Boolean(remember) });

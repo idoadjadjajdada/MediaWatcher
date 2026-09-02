@@ -239,6 +239,22 @@ export const saveTrackPrefs = (payload) => put('/api/track-prefs', payload);
 
 export const forgetTrackPrefs = (key) => del(`/api/track-prefs?${q({ key })}`);
 
+/* --------------------------------------------------------------------------
+ * Devices, access history and health
+ * ----------------------------------------------------------------------- */
+
+/** Remembered devices. Each row is a live credential, not a log entry. */
+export const getDevices = () => get('/api/devices');
+
+/** Revoking locks that device out on its very next request. */
+export const revokeDevice = (id) => del(`/api/devices/${encodeURIComponent(id)}`);
+
+/** Every attempt at the gate, newest first, successes and failures alike. */
+export const getLoginHistory = (limit = 100) => get(`/api/diagnostics/logins?${q({ limit })}`);
+
+/** Whether this install is actually healthy, and what it is using. */
+export const getDiagnostics = () => get('/api/diagnostics');
+
 export const thumbMetaUrl = (filePath) => `/api/thumbs/meta?${q({ path: filePath })}`;
 export const thumbUrl = (filePath, index) => `/api/thumbs?${q({ path: filePath, i: index })}`;
 
@@ -253,5 +269,6 @@ export default {
   getQuality, setQuality, QUALITY_LEVELS,
   thumbMetaUrl, thumbUrl, touchHlsSession, endHlsSession,
   getIntro, reportSkip, forgetIntro,
-  getTrackPrefs, saveTrackPrefs, forgetTrackPrefs
+  getTrackPrefs, saveTrackPrefs, forgetTrackPrefs,
+  getDevices, revokeDevice, getLoginHistory, getDiagnostics
 };

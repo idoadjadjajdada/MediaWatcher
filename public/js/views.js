@@ -267,6 +267,15 @@ export function renderShell() {
               ${entry.page === 'downloads' ? '<span class="navrail__badge" id="jobs-badge" hidden>0</span>' : ''}
             </button>`).join('')}
         </nav>
+        <!--
+          Settings sits in the foot rather than the nav list: the tab bar on
+          mobile is already five items wide, and a sixth would shrink them all
+          to fit something reached once a month.
+        -->
+        <button class="navrail__item navrail__item--foot" data-action="navigate" data-page="settings"
+          aria-label="Settings" title="Settings">
+          ${icon('settings', 'icon')}
+        </button>
         <button class="navrail__item navrail__item--foot" data-action="rescan" id="rescan-btn" aria-label="Rescan" title="Rescan library">
           ${icon('refresh', 'icon')}
         </button>
@@ -279,6 +288,11 @@ export function renderShell() {
         </div>
         <button class="btn btn--secondary topbar__add" data-action="add-torrent" aria-label="Add torrent">
           ${icon('plus', 'icon-sm')}<span class="btn__label">Add</span>
+        </button>
+        <!-- The way in on mobile, where the nav rail's foot is not rendered. -->
+        <button class="btn btn--secondary topbar__settings" data-action="navigate" data-page="settings"
+          aria-label="Settings" title="Settings">
+          ${icon('settings', 'icon-sm')}
         </button>
       </header>
 

@@ -12,9 +12,10 @@ import {
 import * as views from './views.js';
 import * as search from './search.js';
 import * as player from './player.js';
+import * as settings from './settings.js';
 import * as preview from './preview.js';
 
-const PAGES = ['home', 'movies', 'shows', 'search', 'downloads'];
+const PAGES = ['home', 'movies', 'shows', 'search', 'downloads', 'settings'];
 const JOB_POLL_MS = 3000;
 
 let jobTimer = null;
@@ -28,7 +29,8 @@ const RENDERERS = {
   movies: views.renderMovies,
   shows: views.renderShows,
   search: search.renderSearch,
-  downloads: views.renderDownloads
+  downloads: views.renderDownloads,
+  settings: settings.renderSettings
 };
 
 // Replacing main's innerHTML destroys the focused control, which makes the
@@ -427,6 +429,13 @@ const ACTIONS = {
   'set-subtitle': (el) => player.setSubtitle(el.dataset.track),
   'fetch-subtitles': () => player.fetchSubtitles(),
   'fetch-season-subs': (el) => fetchSeasonSubtitles(el),
+  'settings-step': (el) => settings.stepSetting(el.dataset.field, el.dataset.delta),
+  'settings-toggle': (el) => settings.toggleSetting(el.dataset.field),
+  'settings-choose': (el) => settings.chooseSetting(el.dataset.field, el.dataset.value),
+  'settings-colour': (el) => settings.chooseSubtitleColour(el.dataset.value),
+  'settings-reset-appearance': () => settings.resetAppearance(),
+  'settings-revoke': (el) => settings.revokeDevice(el.dataset.id),
+  'settings-refresh': () => settings.refreshDiagnostics(),
   'subtitle-nudge': (el) => player.nudgeSubtitleStyle(el.dataset.field, el.dataset.delta),
   'subtitle-colour': (el) => player.setSubtitleColour(el.dataset.colour),
   'subtitle-reset': () => player.resetSubtitleStyle(),
@@ -714,6 +723,12 @@ function onStateChange() {
   if (state.currentPage !== previousPage) {
     previousPage = state.currentPage;
     syncJobPolling();
+
+    // Devices, login history and diagnostics are only worth fetching when the
+    // page that shows them is open. Diagnostics walks the cache directories,
+    // so asking for it at boot would cost every session a directory scan
+    // nobody looked at.
+    if (state.currentPage === 'settings') settings.loadSettings();
   }
 
   // Progress only loaded at boot, so Continue Watching and the watched marks
@@ -766,6 +781,14 @@ async function boot() {
   // Subscribe before any loading kicks off, or the first setState renders nothing.
   subscribe(onStateChange);
   render();
+
+  /*
+   * Page-entry loading is driven by the page CHANGING, and at boot it has not:
+   * previousPage is initialised to the current page above. So opening the app
+   * straight onto a deep link — or reloading while already there — has to
+   * trigger the same load by hand, or the page sits on "Loading…" forever.
+   */
+  if (state.currentPage === 'settings') settings.loadSettings();
 
   await loadLibrary();
   await loadJobs();

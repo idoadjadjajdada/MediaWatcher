@@ -116,3 +116,21 @@ CREATE TABLE IF NOT EXISTS track_prefs (
   subtitle_src  TEXT,               -- 'external' | 'embedded'
   updated_at    INTEGER NOT NULL
 );
+
+-- Every attempt at the gate, successful or not.
+--
+-- Separate from `devices`: a device row is a live credential and disappears
+-- when revoked, which is exactly when you most want to look at the history.
+-- These rows are an append-only log and outlive the device they created.
+CREATE TABLE IF NOT EXISTS login_events (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  at         INTEGER NOT NULL,
+  ok         INTEGER NOT NULL,          -- 1 success, 0 wrong password
+  ip         TEXT,
+  origin     TEXT,                      -- 'lan' | 'tailnet' | 'loopback' | 'other'
+  user_agent TEXT,
+  device_name TEXT,                     -- only when "remember me" was ticked
+  remembered INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_login_events_at ON login_events(at DESC);

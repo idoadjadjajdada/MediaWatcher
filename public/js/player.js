@@ -31,6 +31,7 @@ import { parseAss, renderAssText, eventsAt, alignmentToAnchor } from './ass.js';
 import {
   prefsKey, matchAudio, matchSubtitle, describeAudio, describeSubtitle
 } from './track-prefs.js';
+import { loadDevicePrefs } from './device-prefs.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -67,7 +68,13 @@ export const NEXT_UP_LEAD_SECONDS = 60;
  * 45227d8 and it takes the ending, and any post-credits scene, with it.
  */
 export const COUNTDOWN_WINDOW_SECONDS = 10;
-const SKIP_SECONDS = 10;
+/*
+ * Read per press rather than captured once. The settings page writes to
+ * localStorage while the player may already be open, and a value frozen at
+ * module load would only take effect after a reload - which reads as the
+ * setting not working.
+ */
+const skipSeconds = () => loadDevicePrefs().seekSeconds;
 export const DOUBLE_TAP_MS = 300;
 
 /** Nudge sizes for the audio delay control. Cumulative, not absolute. */
@@ -293,6 +300,9 @@ async function openInner(filePath) {
     // Where this season's title sequence is, if enough episodes have been
     // skipped for us to know.
     intro,
+    // Latch for the automatic setting: taken once per open, so seeking back
+    // into the titles on purpose is not immediately undone.
+    introSkipped: false,
     // Global, not per-file: brightness tracks the room, not the master.
     picture: loadPicture(),
     // Same reasoning: how big subtitles need to be is a property of the screen
@@ -355,7 +365,7 @@ async function openInner(filePath) {
    * answered, which meant a control that did not respond - as happened on iOS -
    * made the episode unwatchable. Telling you afterwards cannot do that.
    */
-  if (resumeAt > RESUME_MIN) showResumedPill(resumeAt);
+  if (resumeAt > RESUME_MIN && loadDevicePrefs().resumePrompt) showResumedPill(resumeAt);
 
   /*
    * The remembered audio track can only be resolved now: matching it needs the
@@ -565,11 +575,36 @@ function tick() {
   playBtn.innerHTML = ctx.video.paused ? playIcon() : pauseIcon();
   playBtn.setAttribute('aria-label', ctx.video.paused ? 'Play' : 'Pause');
 
-  if (ctx.nextTarget && !shouldOfferNext(total, current)) withdrawNextOffer();
+  if (ctx.nextTarget && !shouldOfferNext(total, current, loadDevicePrefs().nextUpLeadSeconds)) withdrawNextOffer();
   maybeOfferNext(total, current);
 
+  updateIntroOffer(current);
+}
+
+/**
+ * Show, take, or suppress the Skip intro offer.
+ *
+ * `auto` takes it once per open rather than whenever the window is entered:
+ * without the latch, seeking back into the title sequence to watch it would
+ * be undone on the very next frame, which is the app fighting the viewer.
+ */
+function updateIntroOffer(current) {
   const skipButton = el('skip-intro');
-  if (skipButton) skipButton.hidden = !shouldOfferSkip(ctx.intro, current);
+  const inWindow = shouldOfferSkip(ctx.intro, current);
+  const behaviour = loadDevicePrefs().introBehaviour;
+
+  if (behaviour === 'off') {
+    if (skipButton) skipButton.hidden = true;
+    return;
+  }
+
+  if (behaviour === 'auto' && inWindow && !ctx.introSkipped) {
+    ctx.introSkipped = true;
+    skipIntro();
+    return;
+  }
+
+  if (skipButton) skipButton.hidden = !inWindow;
 }
 
 /**
@@ -1092,8 +1127,8 @@ function publishNowPlaying() {
   mediaSession.publishHandlers({
     play: () => { ctx?.video.play().catch(() => {}); },
     pause: () => { ctx?.video.pause(); },
-    seekbackward: () => skip(-SKIP_SECONDS),
-    seekforward: () => skip(SKIP_SECONDS),
+    seekbackward: () => skip(-skipSeconds()),
+    seekforward: () => skip(skipSeconds()),
     seekto: (details) => {
       if (Number.isFinite(details?.seekTime)) seekTo(details.seekTime);
     },
@@ -1842,7 +1877,7 @@ async function persist(final = false) {
 function maybeOfferNext(total, current) {
   if (!ctx || ctx.nextDismissed) return;
   if (!ctx.located || ctx.located.type !== 'episode') return;
-  if (!shouldOfferNext(total, current)) return;
+  if (!shouldOfferNext(total, current, loadDevicePrefs().nextUpLeadSeconds)) return;
 
   const box = el('next-up');
   if (!box) return;
@@ -1886,7 +1921,11 @@ function maybeOfferNext(total, current) {
   // Advance only once the episode has actually finished. `ended` handles the
   // usual case, but in ffmpeg pipe mode the element's duration is Infinity and
   // `ended` can fail to fire, so this is the backstop.
-  if (left <= 0) playNext();
+  //
+  // With autoplay off the card still appears and the countdown still runs out;
+  // it simply stops there, leaving "Play next" as something to press. Hiding
+  // the card entirely would remove the one convenient way to move on.
+  if (left <= 0 && loadDevicePrefs().autoplayNext) playNext();
 }
 
 /** Hide the up-next card and forget the target, e.g. after seeking back. */
@@ -2145,7 +2184,7 @@ function attach() {
     const chromeHidden = node.classList.contains('is-idle');
 
     if (tapAction({ chromeHidden, zone, isDouble }) === 'seek') {
-      skip(zone === 'left' ? -SKIP_SECONDS : SKIP_SECONDS);
+      skip(zone === 'left' ? -skipSeconds() : skipSeconds());
       flashRipple(zone);
       lastTapAt = 0;
       lastTapZone = null;
@@ -2347,9 +2386,9 @@ function onKeyDown(event) {
     case 'k': case 'K':
       event.preventDefault(); togglePlay(); break;
     case 'ArrowLeft':
-      event.preventDefault(); skip(-SKIP_SECONDS); break;
+      event.preventDefault(); skip(-skipSeconds()); break;
     case 'ArrowRight':
-      event.preventDefault(); skip(SKIP_SECONDS); break;
+      event.preventDefault(); skip(skipSeconds()); break;
     case 'ArrowUp':
       event.preventDefault(); adjustVolume(0.1); break;
     case 'ArrowDown':
