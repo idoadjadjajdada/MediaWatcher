@@ -353,6 +353,21 @@ export const getBenchmark = () => get('/api/admin/benchmark');
 /** Measure now. Takes about a minute and answers with the result. */
 export const runBenchmark = () => post('/api/admin/benchmark', {});
 
+/* --------------------------------------------------------------------------
+ * Notifications
+ * ----------------------------------------------------------------------- */
+
+/** The server's push identity. Public: every subscription is bound to it. */
+export const getPushKey = () => get('/api/notifications/key');
+
+/** Register this browser's endpoint. It goes in and never comes back out. */
+export const subscribePush = (endpoint) => post('/api/notifications/subscribe', { endpoint });
+
+export const unsubscribePush = (endpoint) => post('/api/notifications/unsubscribe', { endpoint });
+
+/** Prove the whole chain works, rather than finding out on the night it matters. */
+export const testPush = () => post('/api/notifications/test', {});
+
 /** Every ffmpeg process running right now, with the budget it sits in. */
 export const getEncoders = () => get('/api/diagnostics/encoders');
 
@@ -429,6 +444,7 @@ export default {
   getDevices, revokeDevice, getLoginHistory, createEnrolment, cancelEnrolments, qrUrl, createEnrolment, cancelEnrolments, qrUrl, getDiagnostics, getEncoders, killEncoder,
   getServerLog, getEnv, saveEnv, restartServer, getBenchmark, runBenchmark,
   getSourceStats, resetSourceStats, getDebridAccount, inspectTorrent,
+  getPushKey, subscribePush, unsubscribePush, testPush,
   getMissingEpisodes, getStorage, warmLibrary, getWarmStatus, getChanges, markChangesSeen,
   getOfflineInfo, offlineFileUrl
 };

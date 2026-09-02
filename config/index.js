@@ -467,6 +467,19 @@ const config = {
     videoMaxrate: str('TRANSCODE_VIDEO_MAXRATE', '12M')
   },
 
+  /*
+   * Web Push. Only a contact address, because the keys are minted once and
+   * kept in the database: regenerating them silently invalidates every device
+   * that has already subscribed.
+   *
+   * Deliberately not the user's email. Nothing here needs one, and sending a
+   * personal address to Google and Mozilla on every push is not a reasonable
+   * default; `.invalid` is reserved for exactly this.
+   */
+  push: {
+    contact: str('PUSH_CONTACT', 'mailto:mediawatcher@example.invalid')
+  },
+
   // Downloads
   downloads: {
     maxConcurrent: 2,

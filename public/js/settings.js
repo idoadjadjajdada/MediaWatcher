@@ -28,6 +28,7 @@ import {
   loadPicture, savePicture, clampPicture, PICTURE_MIN, PICTURE_MAX
 } from './picture.js';
 import * as offline from './offline.js';
+import * as push from './push.js';
 import { canInstall, isInstalled, prompt as promptInstall } from './install.js';
 
 /* --------------------------------------------------------------------------
@@ -670,6 +671,60 @@ function renderServer() {
     </section>`;
 }
 
+/**
+ * Being told when something happens.
+ *
+ * The launcher raises a toast on the machine the server runs on, which is the
+ * one place you are not when a download finishes. Three things have to be true
+ * before a notification can arrive and they fail differently, so the state
+ * says which one is missing rather than offering one dead switch.
+ */
+function renderNotifications() {
+  const state_ = state.settings?.push;
+  if (!state_) return '';
+
+  if (!state_.supported) {
+    return `
+      <section class="settings__group">
+        <h2 class="settings__heading">Notifications</h2>
+        <p class="settings__note">
+          ${state_.needsInstall
+    ? 'On iPhone and iPad this works once MediaWatcher has been added to the home screen — Safari only allows notifications from an installed app.'
+    : 'This browser cannot receive notifications.'}
+        </p>
+      </section>`;
+  }
+
+  const blocked = state_.permission === 'denied';
+
+  return `
+    <section class="settings__group">
+      <h2 class="settings__heading">Notifications</h2>
+      <p class="settings__note">
+        A finished or failed download, on this device, wherever you are. The
+        push itself carries nothing — it is an empty knock, and the app asks
+        this server what it was about — so no title from your library ever
+        passes through Google or Mozilla.
+      </p>
+      ${blocked ? `
+        <div class="settings__warn">
+          Notifications are blocked for this site. That has to be undone in your
+          browser's settings for this page; a site cannot ask again once refused.
+        </div>` : ''}
+      <div class="facts">
+        <div class="fact"><dt>This device</dt><dd>${state_.subscribed ? 'Subscribed' : 'Not subscribed'}</dd></div>
+        <div class="fact"><dt>Devices subscribed</dt><dd class="t-num">${state.settings?.pushCount ?? 0}</dd></div>
+      </div>
+      <div class="settings__actions">
+        ${state_.subscribed
+    ? '<button class="btn btn--secondary" data-action="settings-push-off">Turn off on this device</button>'
+    : `<button class="btn btn--primary" data-action="settings-push-on" ${blocked ? 'disabled' : ''}>Notify this device</button>`}
+        <button class="btn btn--ghost" data-action="settings-push-test"
+          ${state.settings?.pushCount > 0 ? '' : 'disabled'}>Send a test</button>
+      </div>
+    </section>`;
+}
+
 function renderStorage() {
   const storage = state.settings?.storage;
   if (!storage) return '<section class="settings__group"><h2 class="settings__heading">Storage</h2><div class="settings__loading">Loading…</div></section>';
@@ -767,6 +822,7 @@ export function renderSettings() {
       ${renderPerformance()}
       ${renderEncoders()}
       ${renderOffline()}
+      ${renderNotifications()}
       ${renderStorage()}
       ${renderDevices()}
       ${renderLogins()}
@@ -785,7 +841,7 @@ export function renderSettings() {
  */
 export async function loadSettings() {
   const [devices, logins, diagnostics, storage, saved, quota, warm, encoders, env, log, benchmark,
-    sourceStats, account] =
+    sourceStats, pushState, pushKey, account] =
     await Promise.all([
       api.getDevices().catch(() => []),
       api.getLoginHistory().catch(() => []),
@@ -799,6 +855,8 @@ export async function loadSettings() {
       api.getServerLog({ limit: 400 }).catch(() => null),
       api.getBenchmark().catch(() => null),
       api.getSourceStats().catch(() => null),
+      push.status().catch(() => null),
+      api.getPushKey().catch(() => null),
       // null means the call failed, which is itself worth showing: an
       // unreachable AllDebrid is the reason every download is about to fail.
       api.getDebridAccount().catch(() => null)
@@ -807,6 +865,7 @@ export async function loadSettings() {
     settings: {
       devices, logins, diagnostics, storage, offline: saved, quota, warm, encoders,
       env, log, benchmark, sourceStats, account,
+      push: pushState, pushCount: pushKey?.subscribers ?? 0,
       // Carried across a reload so following the log survives a refresh of the
       // page's data, which is the one time you are most likely to be doing it.
       logLevel: state.settings?.logLevel || '',
@@ -1035,6 +1094,43 @@ export async function cancelEnrolment() {
     toast('success', 'Cancelled');
   } catch (error) {
     toast('error', 'Could not cancel it', error.message);
+  }
+}
+
+export async function enablePush() {
+  try {
+    await push.subscribe();
+    toast('success', 'This device will be notified');
+    await loadSettings();
+  } catch (error) {
+    toast('error', 'Could not turn notifications on', error.message);
+  }
+}
+
+export async function disablePush() {
+  try {
+    await push.unsubscribe();
+    toast('success', 'Notifications off for this device');
+    await loadSettings();
+  } catch (error) {
+    toast('error', 'Could not turn them off', error.message);
+  }
+}
+
+/**
+ * Prove the chain works.
+ *
+ * Worth its own button: there are four places it can break — permission, the
+ * subscription, the push service and the worker — and the alternative to
+ * testing is finding out on the night it matters.
+ */
+export async function testPush() {
+  try {
+    const result = await api.testPush();
+    toast('info', `Sent to ${result.sent} device${result.sent === 1 ? '' : 's'}`,
+      'If nothing appears, the notification was blocked by the system rather than by this app.');
+  } catch (error) {
+    toast('error', 'Could not send it', error.message);
   }
 }
 

@@ -61,6 +61,7 @@ const SHELL = [
   '/js/track-prefs.js',
   '/js/device-prefs.js',
   '/js/offline.js',
+  '/js/push.js',
   '/js/adaptive.js',
   '/js/install.js',
   '/js/media-session.js',
@@ -193,4 +194,67 @@ self.addEventListener('fetch', (event) => {
 self.addEventListener('message', (event) => {
   const { type } = event.data || {};
   if (type === 'skip-waiting') self.skipWaiting();
+});
+
+/* --------------------------------------------------------------------------
+ * Notifications
+ *
+ * A push arrives with no payload at all — deliberately. Encrypting one needs
+ * the whole of RFC 8291 on the server, and it would mean the title of whatever
+ * you just downloaded passing through Google or Mozilla on its way here. So
+ * the push is an empty knock, and this asks the server what it was about.
+ *
+ * The cost is that a notification cannot be shown while the server is
+ * unreachable, which is the one case where there is nothing worth saying
+ * anyway: every event this raises is something the server just did.
+ * ----------------------------------------------------------------------- */
+
+/** The highest event id already shown, so a second knock repeats nothing. */
+let lastShownEvent = 0;
+
+self.addEventListener('push', (event) => {
+  event.waitUntil((async () => {
+    let events = [];
+    try {
+      const response = await fetch(`/api/notifications/pending?since=${lastShownEvent}`, {
+        credentials: 'include'
+      });
+      if (response.ok) events = (await response.json()).events || [];
+    } catch {
+      // Unreachable. Nothing useful to say, and a "something happened"
+      // notification with no detail is worse than silence.
+    }
+
+    if (events.length === 0) return;
+
+    for (const item of events) {
+      lastShownEvent = Math.max(lastShownEvent, item.id);
+      await self.registration.showNotification(item.title, {
+        body: item.body,
+        // Same tag replaces rather than stacks: three finished downloads
+        // should not be three rows to dismiss.
+        tag: item.tag || 'mediawatcher',
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-192.png',
+        data: { url: '/' }
+      });
+    }
+  })());
+});
+
+/**
+ * Tapping one opens the app — or focuses it, if it is already open somewhere.
+ *
+ * Focusing rather than opening matters on a phone: a second tab of the same
+ * app, with its own player, is not what tapping a notification should produce.
+ */
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of clients) {
+      if (client.url.includes(self.location.origin)) return client.focus();
+    }
+    return self.clients.openWindow(event.notification.data?.url || '/');
+  })());
 });

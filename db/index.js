@@ -112,6 +112,15 @@ const stmt = {
   `),
   stateDelete: db.prepare('DELETE FROM app_state WHERE key = ?'),
 
+  pushList: db.prepare('SELECT * FROM push_subscriptions'),
+  pushUpsert: db.prepare(`
+    INSERT INTO push_subscriptions (endpoint, device_id, created_at, last_ok)
+    VALUES (@endpoint, @device_id, @created_at, NULL)
+    ON CONFLICT(endpoint) DO UPDATE SET device_id = excluded.device_id
+  `),
+  pushDelete: db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?'),
+  pushTouch: db.prepare('UPDATE push_subscriptions SET last_ok = ? WHERE endpoint = ?'),
+
   progressGet: db.prepare('SELECT * FROM progress WHERE file_path = ?'),
   progressUpsert: db.prepare(`
     INSERT INTO progress (
@@ -260,6 +269,31 @@ export function readDiscover(key, ttlMs) {
 export function writeDiscover(key, data) {
   stmt.discoverUpsert.run({ key, data: JSON.stringify(data), updated_at: now() });
   return data;
+}
+
+/* --------------------------------------------------------------------------
+ * push_subscriptions
+ *
+ * The endpoint is a capability: anyone holding it can push to that browser. It
+ * is stored because it has to be, and never returned by any API.
+ * ----------------------------------------------------------------------- */
+
+export function listPushSubscriptions() {
+  return stmt.pushList.all();
+}
+
+export function insertPushSubscription({ endpoint, deviceId = null }) {
+  stmt.pushUpsert.run({ endpoint, device_id: deviceId, created_at: now() });
+  return endpoint;
+}
+
+export function deletePushSubscription(endpoint) {
+  return stmt.pushDelete.run(endpoint).changes > 0;
+}
+
+/** Stamp a successful push, so a subscription that never works is visible. */
+export function touchPushSubscription(endpoint) {
+  stmt.pushTouch.run(now(), endpoint);
 }
 
 /* --------------------------------------------------------------------------

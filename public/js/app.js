@@ -482,6 +482,9 @@ const ACTIONS = {
   'settings-benchmark': () => settings.runBenchmark(),
   'settings-reset-sources': () => settings.resetSourceStats(),
   'settings-enrol': () => settings.createEnrolment(),
+  'settings-push-on': () => settings.enablePush(),
+  'settings-push-off': () => settings.disablePush(),
+  'settings-push-test': () => settings.testPush(),
   'settings-enrol-cancel': () => settings.cancelEnrolment(),
   'dismiss-changes': async () => {
     // Marked seen on dismissal rather than on load: a banner that cleared

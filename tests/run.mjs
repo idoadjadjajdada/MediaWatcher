@@ -39,6 +39,7 @@ const SUITES = [
   { file: 'source-stats.test.mjs' },
   { file: 'season-pack.test.mjs' },
   { file: 'enrol-changes.test.mjs' },
+  { file: 'webpush.test.mjs' },
   { file: 'cache-limits.test.mjs' },
   { file: 'scanner-titles.test.mjs' },
   { file: 'downloads.test.mjs' },

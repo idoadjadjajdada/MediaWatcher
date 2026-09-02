@@ -22,6 +22,7 @@ import {
 import * as alldebrid from './alldebrid.js';
 import * as organizer from './organizer.js';
 import * as scanner from './scanner.js';
+import * as notifications from './notifications.js';
 import {
   nextRunnable, nextPosition, moveJob as planMove, canTransition, sortQueue
 } from './queueOrder.js';
@@ -487,6 +488,19 @@ async function runJob(jobId, request) {
     job = updateJob(jobId, { status: 'complete', progress: 1, file_path: finalPaths[0], error: null });
     log.info(`completed ${request.title} -> ${finalPaths[0]}`);
     events.emit('complete', { id: jobId, file_path: finalPaths[0], files: finalPaths });
+    /*
+     * To whatever phone asked to be told. Deliberately after the row is
+     * written rather than before: a notification that arrives ahead of the
+     * library knowing about the file sends someone to look at something that
+     * is not there yet.
+     */
+    notifications.notify({
+      title: 'Download finished',
+      body: finalPaths.length > 1
+        ? `${request.title} — ${finalPaths.length} episodes`
+        : request.title,
+      tag: `job-${jobId}`
+    });
     return job;
   } catch (error) {
     const cancelled = controller.signal.aborted || error.message === 'cancelled';
@@ -501,6 +515,14 @@ async function runJob(jobId, request) {
     log.error(`failed ${request.title}: ${error.message}`);
     updateJob(jobId, { status: 'error', error: error.message });
     events.emit('error', { id: jobId, error: error.message });
+    notifications.notify({
+      title: 'Download failed',
+      body: `${request.title} — ${error.message}`,
+      tag: `job-${jobId}`,
+      // The one thing here worth waking a phone for rather than waiting for
+      // the next time it is unlocked: it is not going to fix itself.
+      urgency: 'high'
+    });
     return null;
   } finally {
     active.delete(jobId);

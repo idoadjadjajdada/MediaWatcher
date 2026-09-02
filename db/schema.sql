@@ -160,3 +160,16 @@ CREATE TABLE IF NOT EXISTS app_state (
   value      TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- Devices that have asked to be told when something happens.
+--
+-- The endpoint IS the credential: anyone holding it can push to that browser,
+-- which is why it is never returned by any API. No encryption keys are stored
+-- because no push carries a payload — the worker wakes and asks this server
+-- what happened, so nothing about the library ever reaches a push service.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  endpoint   TEXT PRIMARY KEY,
+  device_id  TEXT,
+  created_at INTEGER NOT NULL,
+  last_ok    INTEGER
+);

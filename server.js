@@ -24,6 +24,7 @@ import diagnosticsRouter from './routes/diagnostics.js';
 import libraryRouter from './routes/library.js';
 import offlineRouter from './routes/offline.js';
 import adminRouter from './routes/admin.js';
+import notificationsRouter from './routes/notifications.js';
 import { onShutdown } from './services/lifecycle.js';
 import mediaRouter from './routes/media.js';
 import discoverRouter from './routes/discover.js';
@@ -188,6 +189,7 @@ app.use('/api/diagnostics', diagnosticsRouter);
 app.use('/api/library', libraryRouter);
 app.use('/api/offline', offlineRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/notifications', notificationsRouter);
 
 /* --------------------------------------------------------------------------
  * Fallbacks
