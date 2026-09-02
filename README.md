@@ -294,6 +294,28 @@ working transport controls, including next and previous episode for a show.
 receiver on the network. It works because everything needing ffmpeg is HLS —
 AirPlay will not accept an arbitrary progressive stream.
 
+### Skip Intro
+
+A **Skip intro** button appears when the app knows where a season's title
+sequence is. It finds out two ways, and neither needs anything from the files:
+every one of them titles its chapters "Chapter 1".
+
+**By watching you.** Every forward jump near the start of an episode is
+recorded. Two that agree, on different episodes, become a marker. One skip
+teaches nothing and skips that disagree teach nothing, because offering to jump
+into the middle of a scene is worse than never offering.
+
+**By comparing episodes.** The first time an episode of an unknown season is
+opened, two of its episodes are compared in the background. The titles are the
+same audio every week and almost nothing else is, so the longest stretch they
+share is the intro. Measured against chapter marks it never sees, this finds
+season one's titles at 1-30s and season two's at 149-179s — the latter after a
+cold open.
+
+A learned marker always beats a detected one: someone actually skipping is
+better evidence than two episodes sounding alike. `DELETE /api/intro` forgets a
+season if it ever gets it wrong.
+
 ### Resuming
 
 A saved position is offered, not taken: opening something you were part way
