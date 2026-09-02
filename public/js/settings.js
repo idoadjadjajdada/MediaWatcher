@@ -313,7 +313,53 @@ function renderPerformance() {
         </button>
         <button class="btn btn--secondary" data-action="settings-refresh">Refresh</button>
       </div>
+      ${renderBenchmark()}
     </section>`;
+}
+
+/**
+ * What this machine can keep up with.
+ *
+ * A realtime factor is the only number that answers the question anyone
+ * actually has, which is whether transcoding will hold or stall. Above 1.0 the
+ * encoder produces video faster than it is watched.
+ */
+function renderBenchmark() {
+  const state_ = state.settings?.benchmark;
+  const result = state_?.result;
+  const running = Boolean(state_?.running);
+
+  return `
+    <div class="settings__sub">
+      <h3 class="settings__subheading">This machine</h3>
+      <p class="settings__note">
+        Encodes a few seconds of the largest file in your library on each path
+        and times it. Above 1× means the encoder produces video faster than it
+        is watched; below it, playback stalls and no amount of buffering helps.
+      </p>
+      ${result?.ok ? `
+        <div class="facts">
+          ${result.runs.map((run) => `
+            <div class="fact">
+              <dt>${esc(run.label)}</dt>
+              <dd class="t-num${run.ok && run.speed < 1 ? ' is-slow' : ''}">
+                ${run.ok ? `${run.speed.toFixed(2)}×` : esc(run.error || 'failed')}
+              </dd>
+            </div>`).join('')}
+          <div class="fact"><dt>Hardware encoder</dt><dd class="t-num">${esc(result.encoder || 'none')}</dd></div>
+          <div class="fact"><dt>Measured</dt><dd class="t-num">${esc(formatWhen(result.at))}</dd></div>
+        </div>
+        <p class="settings__note">
+          ${esc(result.verdict)}
+          Measured against <code>${esc(result.sample.name)}</code>${result.sample.hdr ? ', which is HDR' : ''}.
+        </p>` : ''}
+      ${result && !result.ok ? `<div class="settings__warn">${esc(result.error)}</div>` : ''}
+      <div class="settings__actions">
+        <button class="btn btn--secondary" data-action="settings-benchmark" ${running ? 'disabled' : ''}>
+          ${running ? 'Measuring…' : 'Measure this machine'}
+        </button>
+      </div>
+    </div>`;
 }
 
 /* --------------------------------------------------------------------------
@@ -392,6 +438,123 @@ function renderEncoders() {
           ${pool ? `<div class="fact"><dt>Pooled segments</dt><dd class="t-num">${esc(formatBytes(pool.bytes))} · ${pool.files} files</dd></div>` : ''}
         </div>` : ''}
       <div id="encoder-list">${encoderRows(encoders)}</div>
+    </section>`;
+}
+
+/* --------------------------------------------------------------------------
+ * The server itself
+ *
+ * Three things that used to require being at the machine: reading the log,
+ * changing a setting, and restarting. Over the tunnel none of those were
+ * available, which is exactly when they are wanted.
+ * ----------------------------------------------------------------------- */
+
+/** Edits not yet saved, by key. Kept out of `state` so a re-render cannot lose them. */
+const envDraft = new Map();
+
+function renderEnv() {
+  const env = state.settings?.env;
+  if (!env) return '<div class="settings__loading">Loading…</div>';
+
+  const value = (entry) => (envDraft.has(entry.key) ? envDraft.get(entry.key) : entry.value);
+
+  return `
+    <div class="env">
+      ${env.entries.map((entry) => `
+        <label class="env__row${envDraft.has(entry.key) ? ' is-edited' : ''}">
+          <span class="env__key">
+            ${esc(entry.key)}
+            ${entry.required ? '<span class="env__flag">required</span>' : ''}
+            ${entry.documented ? '' : '<span class="env__flag env__flag--warn">not a known setting</span>'}
+          </span>
+          <input class="env__value" type="${entry.secret ? 'password' : 'text'}"
+            id="env-${esc(entry.key)}" data-action="settings-env-edit" data-key="${esc(entry.key)}"
+            value="${esc(value(entry))}" autocomplete="off" spellcheck="false">
+        </label>`).join('')}
+    </div>
+    ${env.missing.length > 0 ? `
+      <p class="settings__note">
+        Never set, and documented in <code>.env.example</code>:
+        ${env.missing.map((key) => `<code>${esc(key)}</code>`).join(' ')}
+      </p>` : ''}`;
+}
+
+/**
+ * The log, as lines rather than as one blob.
+ *
+ * Levels are coloured the way the launcher colours them, because they are the
+ * same stream and reading them should not be a different skill in two places.
+ */
+function logLines(log) {
+  if (!log) return '<div class="settings__loading">Loading…</div>';
+  if (log.lines.length === 0) return '<div class="settings__empty">Nothing logged yet.</div>';
+
+  return `<div class="logview">${log.lines.map((line) => `
+    <div class="logline logline--${esc(line.level)}">
+      <span class="logline__time t-num">${esc(new Date(line.at).toLocaleTimeString())}</span>
+      <span class="logline__scope">${esc(line.scope)}</span>
+      <span class="logline__text">${esc(line.text)}</span>
+    </div>`).join('')}</div>`;
+}
+
+function renderServer() {
+  const log = state.settings?.log;
+  const env = state.settings?.env;
+  const dirty = envDraft.size > 0;
+
+  return `
+    <section class="settings__group">
+      <h2 class="settings__heading">Server</h2>
+
+      <div class="settings__sub">
+        <h3 class="settings__subheading">Log</h3>
+        <p class="settings__note">
+          The last few thousand lines, in memory. Anything that looks like a
+          key is redacted before it is stored, because this is reachable from
+          the tunnel and the console on the machine is not.
+        </p>
+        <div class="settings__actions">
+          ${['', 'error', 'warn', 'info'].map((level) => `
+            <button class="btn btn--ghost${(state.settings?.logLevel || '') === level ? ' is-active' : ''}"
+              data-action="settings-log-level" data-level="${level}">
+              ${level === '' ? 'Everything' : level[0].toUpperCase() + level.slice(1)}
+            </button>`).join('')}
+          <button class="btn btn--ghost${state.settings?.logFollow ? ' is-active' : ''}"
+            data-action="settings-log-follow">${state.settings?.logFollow ? 'Following' : 'Follow'}</button>
+        </div>
+        <div id="log-lines">${logLines(log)}</div>
+      </div>
+
+      <div class="settings__sub">
+        <h3 class="settings__subheading">Settings file</h3>
+        <p class="settings__note">
+          <code>${esc(env?.path || '.env')}</code>. Secrets are masked; leaving one
+          masked keeps whatever is already there. Nothing here takes effect
+          until the server restarts — every value is read once at boot.
+        </p>
+        ${renderEnv()}
+      </div>
+
+      <div class="settings__sub">
+        <h3 class="settings__subheading">Confirm</h3>
+        <p class="settings__note">
+          Saving settings and restarting both need your password again. A
+          signed-in device is a cookie on a phone that might be sitting
+          unlocked on a table; neither of these should rest on that alone.
+        </p>
+        <label class="env__row">
+          <span class="env__key">Password</span>
+          <input class="env__value" type="password" id="admin-password"
+            autocomplete="current-password" placeholder="Your MediaWatcher password">
+        </label>
+        <div class="settings__actions">
+          <button class="btn btn--primary" data-action="settings-env-save" ${dirty ? '' : 'disabled'}>
+            ${dirty ? `Save ${envDraft.size} change${envDraft.size === 1 ? '' : 's'}` : 'Save settings'}
+          </button>
+          ${dirty ? '<button class="btn btn--ghost" data-action="settings-env-discard">Discard</button>' : ''}
+          <button class="btn btn--danger" data-action="settings-restart">Restart the server</button>
+        </div>
+      </div>
     </section>`;
 }
 
@@ -495,6 +658,7 @@ export function renderSettings() {
       ${renderStorage()}
       ${renderDevices()}
       ${renderLogins()}
+      ${renderServer()}
       ${renderDiagnostics()}
     </div>`;
 }
@@ -507,18 +671,29 @@ export function renderSettings() {
  * their own data arrives rather than blocking the whole page.
  */
 export async function loadSettings() {
-  const [devices, logins, diagnostics, storage, saved, quota, warm, encoders] = await Promise.all([
-    api.getDevices().catch(() => []),
-    api.getLoginHistory().catch(() => []),
-    api.getDiagnostics().catch(() => null),
-    api.getStorage().catch(() => null),
-    offline.listSaved().catch(() => []),
-    offline.quota().catch(() => null),
-    api.getWarmStatus().catch(() => null),
-    api.getEncoders().catch(() => null)
-  ]);
+  const [devices, logins, diagnostics, storage, saved, quota, warm, encoders, env, log, benchmark] =
+    await Promise.all([
+      api.getDevices().catch(() => []),
+      api.getLoginHistory().catch(() => []),
+      api.getDiagnostics().catch(() => null),
+      api.getStorage().catch(() => null),
+      offline.listSaved().catch(() => []),
+      offline.quota().catch(() => null),
+      api.getWarmStatus().catch(() => null),
+      api.getEncoders().catch(() => null),
+      api.getEnv().catch(() => null),
+      api.getServerLog({ limit: 400 }).catch(() => null),
+      api.getBenchmark().catch(() => null)
+    ]);
   setState({
-    settings: { devices, logins, diagnostics, storage, offline: saved, quota, warm, encoders }
+    settings: {
+      devices, logins, diagnostics, storage, offline: saved, quota, warm, encoders,
+      env, log, benchmark,
+      // Carried across a reload so following the log survives a refresh of the
+      // page's data, which is the one time you are most likely to be doing it.
+      logLevel: state.settings?.logLevel || '',
+      logFollow: Boolean(state.settings?.logFollow)
+    }
   });
 }
 
@@ -570,6 +745,163 @@ export async function killEncoder(id) {
     await pollEncoders();
   } catch (error) {
     toast('error', 'Could not stop that encoder', error.message);
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * The server section
+ * ----------------------------------------------------------------------- */
+
+const LOG_POLL_MS = 3000;
+let logTimer = null;
+
+async function fetchLog() {
+  const log = await api.getServerLog({ limit: 400, level: state.settings?.logLevel || '' })
+    .catch(() => null);
+  if (!log) return;
+  state.settings.log = log;
+
+  const host = document.getElementById('log-lines');
+  if (!host) return;
+  host.innerHTML = logLines(log);
+  // Following means the newest line, which is at the bottom.
+  host.scrollTop = host.scrollHeight;
+}
+
+/** Follow the log, or stop. Nothing polls unless you asked it to. */
+export function toggleLogFollow() {
+  const following = !state.settings?.logFollow;
+  state.settings.logFollow = following;
+
+  if (logTimer) { clearInterval(logTimer); logTimer = null; }
+  if (following) {
+    logTimer = setInterval(() => {
+      // Navigated away: stop rather than keep asking from a page nobody has open.
+      if (!document.getElementById('log-lines')) return stopLogFollow();
+      return fetchLog();
+    }, LOG_POLL_MS);
+  }
+  setState({});
+}
+
+export function stopLogFollow() {
+  if (logTimer) { clearInterval(logTimer); logTimer = null; }
+  if (state.settings) state.settings.logFollow = false;
+}
+
+export async function setLogLevel(level) {
+  state.settings.logLevel = level || '';
+  await fetchLog();
+  setState({});
+}
+
+/** Record an edit without re-rendering: re-rendering mid-type loses the caret. */
+export function editEnv(key, value) {
+  const entry = state.settings?.env?.entries.find((row) => row.key === key);
+  // Back to what it was, including a secret returned to its mask, is not an edit.
+  if (entry && entry.value === value) envDraft.delete(key);
+  else envDraft.set(key, value);
+
+  // The Save button's label counts the edits, so it does have to change — but
+  // only it, not the inputs around it.
+  const save = document.querySelector('[data-action="settings-env-save"]');
+  if (save) {
+    save.disabled = envDraft.size === 0;
+    save.textContent = envDraft.size === 0
+      ? 'Save settings'
+      : `Save ${envDraft.size} change${envDraft.size === 1 ? '' : 's'}`;
+  }
+}
+
+const passwordField = () => document.getElementById('admin-password');
+
+export function discardEnvEdits() {
+  envDraft.clear();
+  setState({});
+}
+
+export async function saveEnv() {
+  if (envDraft.size === 0) return;
+  const password = passwordField()?.value || '';
+  if (!password) {
+    toast('error', 'Password needed', 'Enter your password below to save settings.');
+    return;
+  }
+
+  try {
+    const result = await api.saveEnv(Object.fromEntries(envDraft), password);
+    envDraft.clear();
+    const field = passwordField();
+    if (field) field.value = '';
+    state.settings.env = await api.getEnv().catch(() => state.settings.env);
+    setState({});
+    toast('success', `Saved ${result.applied.length} setting${result.applied.length === 1 ? '' : 's'}`,
+      result.restartRequired ? 'Restart the server for it to take effect.' : '');
+  } catch (error) {
+    toast('error', 'Could not save', error.message);
+  }
+}
+
+/**
+ * Restart, and then wait for it to come back.
+ *
+ * The waiting is the part worth doing properly: the page cannot tell a server
+ * that is restarting from one that has died, and neither can you, so it polls
+ * until health answers and says which happened.
+ */
+export async function restartServer() {
+  const password = passwordField()?.value || '';
+  if (!password) {
+    toast('error', 'Password needed', 'Enter your password below to restart.');
+    return;
+  }
+
+  try {
+    await api.restartServer(password);
+  } catch (error) {
+    // 409 is "nothing is supervising this, it would not come back" — a refusal
+    // worth reading rather than a failure worth retrying.
+    toast('error', 'Not restarting', error.message);
+    return;
+  }
+
+  const field = passwordField();
+  if (field) field.value = '';
+  toast('info', 'Restarting…', 'Waiting for the server to come back.');
+
+  const deadline = Date.now() + 60000;
+  const poll = async () => {
+    if (Date.now() > deadline) {
+      toast('error', 'It has not come back', 'Check the launcher on the machine itself.');
+      return;
+    }
+    try {
+      await api.health();
+      toast('success', 'Back up');
+      await loadSettings();
+    } catch {
+      setTimeout(poll, 1500);
+    }
+  };
+  // Long enough that the poll does not catch the server it is about to leave.
+  setTimeout(poll, 2500);
+}
+
+export async function runBenchmark() {
+  state.settings.benchmark = { running: true, result: state.settings?.benchmark?.result || null };
+  setState({});
+  toast('info', 'Measuring…', 'A few short encodes. This takes about a minute.');
+
+  try {
+    const result = await api.runBenchmark();
+    state.settings.benchmark = { running: false, result };
+    setState({});
+    if (result.ok) toast('success', 'Measured', result.verdict);
+    else toast('error', 'Could not measure', result.error);
+  } catch (error) {
+    state.settings.benchmark = { running: false, result: null };
+    setState({});
+    toast('error', 'Could not measure', error.message);
   }
 }
 

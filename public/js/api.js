@@ -295,6 +295,33 @@ export const getLoginHistory = (limit = 100) => get(`/api/diagnostics/logins?${q
 /** Whether this install is actually healthy, and what it is using. */
 export const getDiagnostics = () => get('/api/diagnostics');
 
+/* --------------------------------------------------------------------------
+ * Operating the server from somewhere else
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Recent log lines. `since` is the sequence number of the last line held, so
+ * following the log costs one small request per poll rather than the buffer.
+ */
+export const getServerLog = ({ since = 0, limit = 500, level = '' } = {}) =>
+  get(`/api/admin/log?${q({ since, limit, level })}`);
+
+/** Every setting, with the secrets masked. */
+export const getEnv = () => get('/api/admin/env');
+
+/** Change some. A value still masked means "leave that one alone". */
+export const saveEnv = (changes, password) => put('/api/admin/env', { changes, password });
+
+/** Stop and come back. Only works where something is supervising the process. */
+export const restartServer = (password, force = false) =>
+  post('/api/admin/restart', { password, force });
+
+/** The last measurement of this machine, and whether one is running. */
+export const getBenchmark = () => get('/api/admin/benchmark');
+
+/** Measure now. Takes about a minute and answers with the result. */
+export const runBenchmark = () => post('/api/admin/benchmark', {});
+
 /** Every ffmpeg process running right now, with the budget it sits in. */
 export const getEncoders = () => get('/api/diagnostics/encoders');
 
@@ -363,6 +390,7 @@ export default {
   getIntro, reportSkip, forgetIntro,
   getTrackPrefs, saveTrackPrefs, forgetTrackPrefs,
   getDevices, revokeDevice, getLoginHistory, getDiagnostics, getEncoders, killEncoder,
+  getServerLog, getEnv, saveEnv, restartServer, getBenchmark, runBenchmark,
   getMissingEpisodes, getStorage, warmLibrary, getWarmStatus,
   getOfflineInfo, offlineFileUrl
 };

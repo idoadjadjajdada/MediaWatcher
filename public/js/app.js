@@ -479,6 +479,13 @@ const ACTIONS = {
   'settings-revoke': (el) => settings.revokeDevice(el.dataset.id),
   'settings-refresh': () => settings.refreshDiagnostics(),
   'settings-kill-encoder': (el) => settings.killEncoder(el.dataset.id),
+  'settings-benchmark': () => settings.runBenchmark(),
+  'settings-log-level': (el) => settings.setLogLevel(el.dataset.level),
+  'settings-log-follow': () => settings.toggleLogFollow(),
+  'settings-env-edit': (el) => settings.editEnv(el.dataset.key, el.value),
+  'settings-env-save': () => settings.saveEnv(),
+  'settings-env-discard': () => settings.discardEnvEdits(),
+  'settings-restart': () => settings.restartServer(),
   'settings-install': () => settings.install(),
   'settings-warm': () => settings.warmLibrary(),
   'settings-unsave': (el) => settings.unsave(el.dataset.path),
@@ -863,8 +870,12 @@ function onStateChange() {
      * a page nobody is looking at, which is exactly the kind of background
      * traffic that makes a phone's battery the app's problem.
      */
-    if (state.currentPage === 'settings') settings.startEncoderWatch();
-    else settings.stopEncoderWatch();
+    if (state.currentPage === 'settings') {
+      settings.startEncoderWatch();
+    } else {
+      settings.stopEncoderWatch();
+      settings.stopLogFollow();
+    }
   }
 
   // Progress only loaded at boot, so Continue Watching and the watched marks

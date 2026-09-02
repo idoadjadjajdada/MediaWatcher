@@ -213,7 +213,14 @@ function Start-MwServer {
   Write-MwQueueNotice $Queue "starting MediaWatcher (node server.js, LOG_LEVEL=$LogLevel)"
   return Start-StreamedCommand -FilePath 'node' -Arguments 'server.js' `
     -WorkingDirectory $Config.Root -Queue $Queue -Tag 'server' `
-    -Environment @{ LOG_LEVEL = $LogLevel }
+    -Environment @{
+      LOG_LEVEL = $LogLevel
+      # Tells the server something is watching it, which is what makes
+      # restarting itself from the Settings page a sensible thing to offer. A
+      # server started from a bare `npm start` has nothing to bring it back and
+      # says so instead.
+      MW_SUPERVISED = '1'
+    }
 }
 
 function Stop-MwHandle {

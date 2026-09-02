@@ -25,6 +25,36 @@ const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = String(process.env.LOG_LEVEL || 'info').toLowerCase();
 const THRESHOLD = LEVELS[LOG_LEVEL] ?? LEVELS.info;
 
+/*
+ * The last few thousand lines, in memory.
+ *
+ * The log existed only in whatever window the server was started from, so
+ * anything that happened before you opened the launcher — or anything at all,
+ * from a phone on the other side of the tunnel — was gone. This is the same
+ * stream the console gets, kept so it can be read from somewhere other than
+ * the machine it happened on.
+ *
+ * Deliberately a ring in memory rather than a file: a file is a different
+ * feature with rotation, permissions and a disk budget attached, and the
+ * question this answers is "what has this server been doing lately".
+ */
+const LOG_BUFFER_LINES = 2000;
+const buffer = [];
+let sequence = 0;
+
+/** Anything that looks like a key, whoever logged it. */
+const SECRET = /\b([A-Za-z0-9_-]{24,})\b/g;
+
+/**
+ * Redact before storing, not before printing.
+ *
+ * The console is on the machine that owns the keys; this buffer is served over
+ * the tunnel to whoever is signed in. A URL with an API key in its query
+ * string is the realistic way one ends up in a log line, and it should not
+ * become readable from a phone.
+ */
+const redact = (text) => text.replace(SECRET, (match) => `${match.slice(0, 4)}…${match.slice(-2)}`);
+
 function emit(level, scope, args) {
   if (LEVELS[level] > THRESHOLD) return;
   // Local time, not UTC: this is a desktop app and the log is read next to a clock.
@@ -34,6 +64,31 @@ function emit(level, scope, args) {
   const prefix = `${stamp} ${level.toUpperCase().padEnd(5)} [${scope}]`;
   const sink = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
   sink(prefix, ...args);
+
+  sequence += 1;
+  buffer.push({
+    seq: sequence,
+    at: now.getTime(),
+    level,
+    scope,
+    text: redact(args.map((arg) => (
+      arg instanceof Error ? (arg.stack || arg.message) : String(arg)
+    )).join(' '))
+  });
+  if (buffer.length > LOG_BUFFER_LINES) buffer.splice(0, buffer.length - LOG_BUFFER_LINES);
+}
+
+/**
+ * Recent lines, oldest first.
+ *
+ * `since` is a sequence number rather than a timestamp so a client can ask for
+ * "everything after what I already have" without worrying about two lines
+ * sharing a millisecond.
+ */
+export function recentLogs({ limit = 500, since = 0, level = null } = {}) {
+  const threshold = LEVELS[level] ?? LEVELS.debug;
+  const matching = buffer.filter((line) => line.seq > since && LEVELS[line.level] <= threshold);
+  return matching.slice(-Math.max(1, Math.min(limit, LOG_BUFFER_LINES)));
 }
 
 /** Create a logger bound to a scope name, e.g. createLogger('scanner'). */

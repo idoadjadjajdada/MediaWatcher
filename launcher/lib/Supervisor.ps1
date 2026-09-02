@@ -19,6 +19,10 @@
 #   supervisor stops and says so, leaving the last error on screen where it
 #   can be read.
 
+# The exit code the server uses when it wants to come back. 75 is EX_TEMPFAIL,
+# "try again"; it only has to be a code a crash does not produce.
+$script:MwRestartExitCode = 75
+
 $script:MwRestartDefaults = @{
   # How many restarts are allowed inside the window before giving up.
   MaxAttempts = 5
@@ -81,6 +85,21 @@ function Get-MwRestartDecision {
   # The one case that must never be second-guessed.
   if ($State.UserStopped) {
     return @{ Restart = $false; Reason = 'stopped on request'; DelaySeconds = 0; Failures = 0 }
+  }
+
+  # A restart the server asked for is not a failure. It exits with this code
+  # after shutting down cleanly - from the Settings page, usually because a
+  # setting was changed and cannot take effect until it starts again - so it
+  # comes straight back and costs nothing from the crash-loop budget. Backing
+  # off here would mean a config change taking a minute to apply, and counting
+  # it would mean five of them exhausting the supervisor.
+  if ($ExitCode -eq $script:MwRestartExitCode) {
+    return @{
+      Restart = $true
+      Reason = 'restart requested by the server'
+      DelaySeconds = 0
+      Failures = [int]$State.Failures
+    }
   }
 
   # A run that lasted a while was working; whatever killed it is a new problem

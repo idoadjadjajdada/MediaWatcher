@@ -93,6 +93,16 @@ const stmt = {
       updated_at = excluded.updated_at
   `),
 
+  stateGet: db.prepare('SELECT * FROM app_state WHERE key = ?'),
+  stateUpsert: db.prepare(`
+    INSERT INTO app_state (key, value, updated_at)
+    VALUES (@key, @value, @updated_at)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `),
+  stateDelete: db.prepare('DELETE FROM app_state WHERE key = ?'),
+
   progressGet: db.prepare('SELECT * FROM progress WHERE file_path = ?'),
   progressUpsert: db.prepare(`
     INSERT INTO progress (
@@ -241,6 +251,35 @@ export function readDiscover(key, ttlMs) {
 export function writeDiscover(key, data) {
   stmt.discoverUpsert.run({ key, data: JSON.stringify(data), updated_at: now() });
   return data;
+}
+
+/* --------------------------------------------------------------------------
+ * app_state
+ *
+ * Durable, not a cache. Nothing here can be recomputed by asking a third party
+ * again, so there is no TTL and no eviction - a benchmark of this machine and
+ * the point someone last caught up to are facts about this install.
+ * ----------------------------------------------------------------------- */
+
+/** The stored value, or null. A corrupt row reads as absent rather than throwing. */
+export function readState(key) {
+  const row = stmt.stateGet.get(key);
+  if (!row) return null;
+  try {
+    return JSON.parse(row.value);
+  } catch {
+    log.warn(`corrupt app_state row for "${key}", treating it as unset`);
+    return null;
+  }
+}
+
+export function writeState(key, value) {
+  stmt.stateUpsert.run({ key, value: JSON.stringify(value), updated_at: now() });
+  return value;
+}
+
+export function clearState(key) {
+  return stmt.stateDelete.run(key).changes > 0;
 }
 
 /* --------------------------------------------------------------------------

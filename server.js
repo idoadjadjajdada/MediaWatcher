@@ -23,6 +23,8 @@ import trackPrefsRouter from './routes/trackPrefs.js';
 import diagnosticsRouter from './routes/diagnostics.js';
 import libraryRouter from './routes/library.js';
 import offlineRouter from './routes/offline.js';
+import adminRouter from './routes/admin.js';
+import { onShutdown } from './services/lifecycle.js';
 import mediaRouter from './routes/media.js';
 import discoverRouter from './routes/discover.js';
 import torrentsRouter from './routes/torrents.js';
@@ -185,6 +187,7 @@ app.use('/api/track-prefs', trackPrefsRouter);
 app.use('/api/diagnostics', diagnosticsRouter);
 app.use('/api/library', libraryRouter);
 app.use('/api/offline', offlineRouter);
+app.use('/api/admin', adminRouter);
 
 /* --------------------------------------------------------------------------
  * Fallbacks
@@ -253,7 +256,15 @@ server.on('error', (error) => {
 
 let shuttingDown = false;
 
-function shutdown(signal) {
+/*
+ * `code` is how a deliberate restart is told apart from a crash.
+ *
+ * The launcher restarts the server whenever it dies, backing off each time and
+ * giving up after five failures - correct for a server that cannot stay up,
+ * and exactly wrong for one that was asked to restart. Exiting with
+ * RESTART_EXIT_CODE says which of the two this is.
+ */
+function shutdown(signal, code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info(`${signal} received, shutting down`);
@@ -264,14 +275,18 @@ function shutdown(signal) {
   hls.shutdownAll();
   server.close(() => {
     closeDatabase();
-    process.exit(0);
+    process.exit(code);
   });
   // Don't hang forever on a stuck video stream.
   setTimeout(() => {
     closeDatabase();
-    process.exit(0);
+    process.exit(code);
   }, 5000).unref();
 }
+
+// A route can now ask for this, which is what makes a restart from a phone
+// possible at all.
+onShutdown(shutdown);
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));

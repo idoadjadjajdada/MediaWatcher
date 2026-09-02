@@ -36,6 +36,28 @@ Describe-Group 'Get-MwRestartDecision - an ordinary crash' {
   Assert-Contains $decision.Reason 'attempt 1 of 5' 'the reason names the attempt'
 }
 
+Describe-Group 'Get-MwRestartDecision - a restart the server asked for' {
+  # Exit 75 is the server shutting down cleanly and asking to come back, which
+  # is what the Settings page does after a config change. Treating it as a
+  # crash would make that take a minute and spend a life from the budget.
+  $state = New-MwSupervisorState
+  $state.StartedAt = (Get-Date).AddSeconds(-10)
+  $state.Failures = 3
+
+  $decision = Get-MwRestartDecision -State $state -ExitCode 75
+  Assert-Equal $true $decision.Restart 'restarts it'
+  Assert-Equal 0 $decision.DelaySeconds 'immediately, with no backoff'
+  Assert-Equal 3 $decision.Failures 'and does not count it as a failure'
+  Assert-Contains $decision.Reason 'requested by the server' 'the reason says who asked'
+
+  # A stop you asked for still wins: pressing Stop must never be undone,
+  # whatever the process claims on its way out.
+  $stopped = New-MwSupervisorState
+  $stopped.UserStopped = $true
+  Assert-Equal $false (Get-MwRestartDecision -State $stopped -ExitCode 75).Restart `
+    'a requested stop still wins over a requested restart'
+}
+
 Describe-Group 'Get-MwRestartDecision - backing off' {
   # A repeat means the problem is not transient, so each wait is longer.
   Assert-Equal 2  (Get-MwRestartDelay -Failures 0) 'first'

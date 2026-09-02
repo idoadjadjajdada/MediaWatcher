@@ -145,3 +145,15 @@ CREATE TABLE IF NOT EXISTS login_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_login_events_at ON login_events(at DESC);
+
+-- Small durable facts that belong to the app rather than to any library item:
+-- the last benchmark, when someone last looked at what changed, how a search
+-- source has been behaving. One row each, JSON in `value`.
+--
+-- Separate from discover_cache, which is a cache with a TTL and is expected to
+-- be thrown away. Nothing here can be recomputed by asking TMDB again.
+CREATE TABLE IF NOT EXISTS app_state (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);

@@ -152,3 +152,59 @@
    whole panel exists to show, so it is the only thing here that changes
    colour. */
 .encoder__speed.is-slow { color: #e5544b; }
+
+/* ---- a subsection inside a group ----
+   Server holds three unrelated things and Performance holds two; without a
+   level between the group and the rows they read as one long list. */
+.settings__sub { margin-top: var(--space-6); }
+.settings__subheading { font-size: 13px; font-weight: 700; margin-bottom: var(--space-2); }
+
+/* ---- the settings file ----
+   A key and a value per row, keys narrow and monospaced so the column of them
+   scans as a list rather than as prose. */
+.env { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); }
+.env__row {
+  display: flex; align-items: center; gap: var(--space-4);
+  padding: var(--space-2) 0; border-bottom: 1px solid var(--line-2, var(--line));
+}
+.env__key {
+  flex: none; width: 15em; font-size: 12px; color: var(--fg-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.env__flag {
+  display: inline-block; margin-left: var(--space-2); padding: 0 4px; border-radius: 3px;
+  background: var(--surface-2); font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.env__flag--warn { color: #e5b04b; }
+.env__value {
+  flex: 1; min-width: 0; padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-2); color: var(--fg); font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.env__value:focus { outline: none; border-color: var(--fg-3); }
+/* An edited row is worth seeing before you press Save, not after. */
+.env__row.is-edited .env__value { border-color: #6fb6ff; }
+
+/* ---- the log ----
+   Fixed height and its own scroll: the whole point is following the newest
+   lines, and a list that grows the page pushes everything else off screen. */
+.logview {
+  max-height: 22rem; overflow-y: auto; margin-top: var(--space-3);
+  padding: var(--space-3); border-radius: 8px; background: var(--surface-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+}
+.logline { display: flex; gap: var(--space-3); padding: 1px 0; }
+.logline__time { flex: none; color: var(--fg-3); }
+.logline__scope { flex: none; width: 8em; color: var(--fg-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logline__text { flex: 1; min-width: 0; word-break: break-word; }
+/* The same colours the launcher uses, because it is the same stream. */
+.logline--error .logline__text { color: #e5544b; }
+.logline--warn  .logline__text { color: #e5b04b; }
+.logline--debug .logline__text { color: var(--fg-3); }
+
+/* Shared with the encoder panel: below realtime is the one number that means
+   something is wrong. */
+.fact dd.is-slow { color: #e5544b; }
