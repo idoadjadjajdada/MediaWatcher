@@ -17,17 +17,18 @@ Effort: **S** an afternoon, **M** a day, **L** its own spec and plan.
 ~~Subtitle download~~ · ~~Remember audio + subtitle choice per show~~ ·
 ~~Resume prompt~~ · ~~Shortcut overlay~~  ← all built
 
-**Mobile** — Lock-screen controls · Install to home screen (PWA) · AirPlay ·
-Save for offline
+**Mobile** — ~~Lock-screen controls~~ · ~~Install to home screen (PWA)~~ ·
+~~AirPlay~~ · ~~Save for offline~~  ← all built
 
-**Library** — Missing episodes · Storage view · ~~Bulk subtitle fetch~~
+**Library** — ~~Missing episodes~~ · ~~Storage view~~ · ~~Bulk subtitle fetch~~
 
-**Launcher** — Tailscale panel · Cache management · Run as a Windows service
-(replaces "Start with Windows") · Auto-restart on crash · Download
-notifications · Throughput graph
+**Launcher** — ~~Tailscale panel~~ · ~~Cache management~~ · ~~Run as a Windows
+service~~ · ~~Auto-restart on crash~~ · ~~Download notifications~~ ·
+~~Throughput graph~~  ← all built
 
-**Settings** — Web settings page · Per-device defaults · Playback defaults ·
-Diagnostics page · Devices in the web UI · Login history · Appearance
+**Settings** — ~~Web settings page~~ · ~~Per-device defaults~~ · ~~Playback
+defaults~~ · ~~Diagnostics page~~ · ~~Devices in the web UI~~ · ~~Login
+history~~ · ~~Appearance~~  ← all built
 
 ---
 
@@ -43,24 +44,26 @@ and every download is still manual, one title at a time.
 - [ ] **Download quality profiles** — "1080p x265 under 4 GB, never HDR".
       `qualityRanker.js` already scores releases; this makes it a rule. **M**
 - [ ] **Auto-upgrade** — a better release replaces the one you have. **M**
-- [x] **Queue management** — reorder, pause, retry, prioritise. **M**
+- [x] ~~**Queue management**~~ — built. Reorder, pause, retry, prioritise. **M**
 - [ ] **Paste a magnet** — add a link directly, skipping search. **S**
 - [ ] **Retry with another source** — a failed download tries the next best
       release instead of stopping. **S**
 
 ## Streaming & quality
 
-- [x] **Adaptive bitrate** — several renditions so the player drops quality by
+- [x] ~~**Adaptive bitrate**~~ — built, as client-side stepping rather than a
+      multi-rendition ladder: every stream is encoded on demand here, so a
+      three-rung ladder would mean three ffmpeg processes per viewer.
       itself on bad wifi instead of stalling. The natural completion of the
       HLS work. **L**
 - [ ] **Multi-audio in the playlist** — switch language mid-stream instead of
       restarting the encoder. **M**
-- [x] **HDR passthrough** — stop tone-mapping for displays that can actually
+- [x] ~~**HDR passthrough**~~ — built. Stop tone-mapping for displays that can actually
       show HDR. Everything is flattened to SDR today, including on your
       iPhone, which can display it. **M**
-- [x] **Pre-transcode on download** — warm the cache when a download finishes
+- [x] ~~**Pre-transcode on download**~~ — built. Warm the cache when a download finishes
       so first play is instant. **M**
-- [x] **Transcode priority** — background conversions must never starve live
+- [x] ~~**Transcode priority**~~ — built. Background conversions must never starve live
       playback of GPU. **M**
 - [ ] **Stereo downmix with dialogue lift** — for headphones on a 5.1 source,
       where the centre channel is what you want. **S**
@@ -120,7 +123,7 @@ and every download is still manual, one title at a time.
 - [x] **Automatic intro detection** — find intros by black frames and silence
       rather than waiting for you to skip one. Complements the learned Skip
       Intro; catches season one, episode one. **L**
-- [x] **Pre-generate seek thumbnails** — build them when a file is added, so
+- [x] ~~**Pre-generate seek thumbnails**~~ — built. Build them when a file is added, so
       scrubbing is instant the first time too. **S**
 
 ## Multi-user & sharing

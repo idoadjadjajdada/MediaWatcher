@@ -61,6 +61,7 @@ const SHELL = [
   '/js/track-prefs.js',
   '/js/device-prefs.js',
   '/js/offline.js',
+  '/js/adaptive.js',
   '/js/install.js',
   '/js/media-session.js',
   '/js/hls-player.js',

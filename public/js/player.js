@@ -33,6 +33,7 @@ import {
 } from './track-prefs.js';
 import { loadDevicePrefs } from './device-prefs.js';
 import * as offline from './offline.js';
+import * as adaptive from './adaptive.js';
 
 const SAVE_INTERVAL_MS = 5000;
 const IDLE_MS = 2600;
@@ -316,6 +317,9 @@ async function openInner(filePath) {
     // Set when this file has been saved for offline: playback reads from the
     // Cache instead of the server, so it works with no network at all.
     offlineSrc,
+    // Stall tracking, so a connection that cannot keep up drops a rung rather
+    // than buffering forever at a level it will never sustain.
+    adaptive: adaptive.newAdaptiveState(api.getQuality()),
     // The parsed ASS document and its animation-frame handle, when the active
     // track is one the overlay renderer owns rather than a <track> element.
     ass: null,
@@ -418,6 +422,7 @@ export async function close({ save = true, keepPage = false } = {}) {
   clearInterval(ctx.hlsTimer);
   clearInterval(ctx.statsTimer);
   clearTimeout(ctx.resumedTimer);
+  clearTimeout(ctx.resumedFade);
   clearTimeout(ctx.idleTimer);
   clearTimeout(ctx.thumbRetry);
   // An animation-frame loop is not a timer and survives everything above it,
@@ -1107,6 +1112,9 @@ function reportPossibleIntroSkip(from, to) {
 /** How long the "resumed from" pill stays before it gets out of the way. */
 const RESUMED_PILL_MS = 9000;
 
+/** Length of its fade. Must match the transition in player.css. */
+const RESUMED_FADE_MS = 400;
+
 /*
  * Width of the seek bar's thumb, matching `.range::-webkit-slider-thumb` in
  * player.css. A range input keeps its thumb inside the track, so the value it
@@ -1123,21 +1131,58 @@ function showResumedPill(at) {
   if (!card || !time) return;
 
   time.textContent = formatTime(at);
+
+  // Undo whatever the last dismissal left behind, in either order it happened.
+  clearTimeout(ctx.resumedFade);
+  card.classList.remove('is-leaving');
+  card.style.display = '';
   card.hidden = false;
 
   clearTimeout(ctx.resumedTimer);
-  ctx.resumedTimer = setTimeout(() => { card.hidden = true; }, RESUMED_PILL_MS);
+  // It goes on its own if it is ignored. Nobody should have to dismiss a label.
+  ctx.resumedTimer = setTimeout(() => hideResumedPill(), RESUMED_PILL_MS);
+}
+
+/**
+ * Fade the pill out and take it out of the layout.
+ *
+ * `hidden` alone was doing this job, and it is one CSS rule away from doing
+ * nothing at all: the UA stylesheet's [hidden] is weaker than the class that
+ * sets `display: flex`, so any stylesheet without the matching
+ * `.player__resumed[hidden]` override left the pill on screen with a close
+ * button that appeared broken. The inline `display` is not a belt-and-braces
+ * flourish - it is the only part of this that cannot be undone by a stylesheet.
+ */
+function hideResumedPill() {
+  const card = el('resume-card');
+  if (!card || card.hidden) return;
+
+  if (ctx) clearTimeout(ctx.resumedTimer);
+  card.classList.add('is-leaving');
+
+  const finish = () => {
+    card.classList.remove('is-leaving');
+    card.hidden = true;
+    card.style.display = 'none';
+  };
+
+  // A timeout rather than `transitionend`: the event does not fire when the
+  // element is display:none'd early, when the tab is in the background, or
+  // under prefers-reduced-motion, and a pill that never finishes leaving is
+  // the bug being fixed.
+  if (ctx) ctx.resumedFade = setTimeout(finish, RESUMED_FADE_MS);
+  else setTimeout(finish, RESUMED_FADE_MS);
 }
 
 /** Dismiss the pill, or take the offer to start from the beginning. */
 export function answerResume(choice) {
-  if (!ctx) return;
-
   const card = el('resume-card');
-  if (card) card.hidden = true;
-  clearTimeout(ctx.resumedTimer);
+  // Deliberately ahead of the ctx check: dismissing is a UI action that must
+  // work even if the player state has been torn down under it.
+  hideResumedPill();
 
-  if (choice !== 'restart') return;
+  if (!ctx || choice !== 'restart') return;
+  if (card) card.style.display = 'none';
 
   seekTo(0);
   ctx.video.play().catch(() => {});
@@ -1747,6 +1792,38 @@ export async function setAudioTrack(index) {
 export async function setQuality(level) {
   if (!ctx || level === api.getQuality()) return;
   api.setQuality(level);
+  // Choosing by hand ends the automatic stepping. An explicit choice is not a
+  // suggestion to be second-guessed thirty seconds later.
+  adaptive.pin(ctx.adaptive, level);
+  buildMenu();
+  await reloadStream();
+}
+
+/**
+ * React to the connection.
+ *
+ * Called when playback stalls. Everything about when to act lives in
+ * adaptive.js; this is the part that owns the stream, so it is what reloads.
+ * A saved offline copy is exempt: it is coming off local storage, and a stall
+ * there is not a bandwidth problem.
+ */
+async function considerQualityChange() {
+  if (!ctx || ctx.offlineSrc) return;
+
+  adaptive.recordStall(ctx.adaptive);
+  const decision = adaptive.decide(ctx.adaptive, {
+    buffering: ctx.node?.classList.contains('is-buffering')
+  });
+  if (!decision) return;
+
+  adaptive.applyDecision(ctx.adaptive, decision);
+  api.setQuality(decision.level);
+
+  toast(
+    'info',
+    decision.direction === 'down' ? 'Lowering quality' : 'Raising quality',
+    decision.reason
+  );
   buildMenu();
   await reloadStream();
 }
@@ -2068,7 +2145,17 @@ function attach() {
     });
   });
   video.addEventListener('volumechange', setVolumeUi);
-  video.addEventListener('waiting', () => node.classList.add('is-buffering'));
+  video.addEventListener('waiting', () => {
+    node.classList.add('is-buffering');
+    /*
+     * `waiting` is the honest signal that the stream ran out of data, which is
+     * exactly what "the connection cannot keep up" looks like from here.
+     * Seeking fires it too, so the rules in adaptive.js require two inside a
+     * short window before anything happens - one is a hiccup, and a switch
+     * that fires on every hiccup is worse than the hiccup.
+     */
+    if (!ctx?.scrubbing) considerQualityChange().catch(() => {});
+  });
   video.addEventListener('playing', () => {
     node.classList.remove('is-buffering');
     // Playing again means the last failure is behind us; give a later one its
