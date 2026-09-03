@@ -18,6 +18,7 @@ import express from 'express';
 import config, { createLogger } from '../config/index.js';
 import { isInsideLibrary } from '../services/organizer.js';
 import * as transcoder from '../services/transcoder.js';
+import * as subtitleSync from '../services/subtitleSync.js';
 import * as scanner from '../services/scanner.js';
 import * as opensubtitles from '../services/opensubtitles.js';
 import { fetchForFile, fetchForFiles } from '../services/subtitleFetch.js';
@@ -94,8 +95,110 @@ export function srtToVtt(input) {
   return `WEBVTT\n\n${body}\n`;
 }
 
+/**
+ * Cue timings out of WebVTT or SRT, in seconds.
+ *
+ * Only the timings — the text is irrelevant to everything that uses this, and
+ * skipping it means the parser has no opinion about markup, positioning cues,
+ * or the many ways a subtitle file can be malformed in its content while being
+ * perfectly readable in its timing.
+ */
+export function parseCueTimings(text) {
+  const cues = [];
+  /*
+   * Hours are optional. WebVTT allows MM:SS.mmm and ffmpeg writes exactly that
+   * for anything under an hour, so a pattern that insists on H:MM:SS silently
+   * matches nothing for the first hour of every file — which reads as "this
+   * track has no cues" rather than as a parser that cannot see them.
+   */
+  const stamp = String.raw`(?:(\d{1,3}):)?(\d{1,2}):(\d{2})[.,](\d{1,3})`;
+  const pattern = new RegExp(String.raw`${stamp}\s*-->\s*${stamp}`, 'g');
+
+  for (const match of String(text || '').matchAll(pattern)) {
+    const at = (h, m, sec, ms) =>
+      (Number(h || 0) * 3600) + (Number(m) * 60) + Number(sec) + (Number(String(ms).padEnd(3, '0')) / 1000);
+    const start = at(match[1], match[2], match[3], match[4]);
+    const end = at(match[5], match[6], match[7], match[8]);
+    // A cue that ends before it starts is a broken line, not a negative cue.
+    if (end >= start) cues.push({ start, end });
+  }
+
+  return cues;
+}
+
 /** Did the caller ask for ASS rather than the WebVTT a <track> would want? */
 const assRequested = (req) => req.query.raw === '1' || req.query.raw === 'true';
+
+/**
+ * GET /api/subs/sync?path=&lang=&embedded=
+ *
+ * Whether the track that would be chosen for this file is actually in time
+ * with it. A subtitle cut for a different release is out from the first line,
+ * and the way anyone finds out today is by watching two minutes of dialogue
+ * arrive at the wrong moment.
+ *
+ * Costs an audio decode of the first ten minutes, so it is asked for, never
+ * automatic on opening a file.
+ */
+router.get('/sync', async (req, res, next) => {
+  try {
+    const requested = req.query.path;
+    if (!requested || typeof requested !== 'string') {
+      return res.status(400).json({ error: 'path is required' });
+    }
+
+    const videoPath = path.resolve(requested);
+    if (!isInsideLibrary(videoPath)) {
+      log.warn(`refused subtitle sync check outside library: ${requested}`);
+      return res.status(403).json({ error: 'path is outside the library' });
+    }
+
+    const text = await subtitleTextFor(videoPath, req);
+    if (!text) return res.status(404).json({ error: 'no subtitles found for this file' });
+
+    const cues = parseCueTimings(text);
+    const audioIndex = Number.isInteger(Number(req.query.audio)) ? Number(req.query.audio) : 0;
+    return res.json(await subtitleSync.check(videoPath, cues, { audioIndex }));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * The text of whichever track the sync check should look at.
+ *
+ * Deliberately the same choice the player would make, so the answer is about
+ * the track someone is actually going to watch with rather than about whatever
+ * happened to be first in the container.
+ */
+async function subtitleTextFor(videoPath, req) {
+  const external = findSubtitles(videoPath);
+  const wanted = req.query.lang ? String(req.query.lang).toLowerCase() : null;
+
+  if (req.query.embedded === undefined) {
+    const choice = wanted ? external.find((entry) => entry.lang === wanted) : external[0];
+    if (choice) {
+      const text = readText(choice.file);
+      // ASS carries its timings in the same shape once the format markers are
+      // ignored, and parseCueTimings only reads timings.
+      return choice.ext === '.srt' ? srtToVtt(text) : text;
+    }
+  }
+
+  const info = await transcoder.probe(videoPath);
+  const embedded = (info?.subtitles || []).filter((track) => !BITMAP_CODECS.has(track.codec));
+  if (embedded.length === 0) return null;
+
+  const index = req.query.embedded !== undefined
+    ? Number(req.query.embedded)
+    : (wanted ? embedded.find((track) => track.language === wanted) : null)?.index
+      ?? (embedded.find((track) => track.default) || embedded[0]).index;
+
+  const { stream } = transcoder.extractSubtitle(videoPath, index, 'webvtt');
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8');
+}
 
 router.get('/', async (req, res, next) => {
   try {

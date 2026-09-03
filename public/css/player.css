@@ -647,3 +647,19 @@ html.is-player-open body { overflow: hidden; }
 .player__mode { border-radius: var(--radius-pill); }
 /* The volume slider reads as a pill at this height. */
 .range--vol::-webkit-slider-runnable-track { border-radius: var(--radius-pill); }
+
+/* ---- subtitle timing ----
+   Three states, and only two of them are worth colouring: "in time" is
+   reassurance and "cannot tell" is a shrug, while a real mismatch is the one
+   thing here anyone has to act on. */
+.subsync {
+  margin: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  line-height: 1.35;
+  max-width: 22rem;
+}
+.subsync--good { color: #4ac97e; }
+.subsync--bad { color: #e5b04b; }

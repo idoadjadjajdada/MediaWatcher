@@ -353,6 +353,15 @@ export const getBenchmark = () => get('/api/admin/benchmark');
 /** Measure now. Takes about a minute and answers with the result. */
 export const runBenchmark = () => post('/api/admin/benchmark', {});
 
+/**
+ * Whether the subtitle track chosen for this file is actually in time with it.
+ *
+ * Costs an audio decode of the first ten minutes, so it is asked for rather
+ * than run on opening a file.
+ */
+export const checkSubtitleSync = (filePath, { lang = '', embedded = '', audio = 0 } = {}) =>
+  get(`/api/subs/sync?${q({ path: filePath, lang, embedded, audio })}`);
+
 /* --------------------------------------------------------------------------
  * Notifications
  * ----------------------------------------------------------------------- */
@@ -444,7 +453,7 @@ export default {
   getDevices, revokeDevice, getLoginHistory, createEnrolment, cancelEnrolments, qrUrl, createEnrolment, cancelEnrolments, qrUrl, getDiagnostics, getEncoders, killEncoder,
   getServerLog, getEnv, saveEnv, restartServer, getBenchmark, runBenchmark,
   getSourceStats, resetSourceStats, getDebridAccount, inspectTorrent,
-  getPushKey, subscribePush, unsubscribePush, testPush,
+  getPushKey, subscribePush, unsubscribePush, testPush, checkSubtitleSync,
   getMissingEpisodes, getStorage, warmLibrary, getWarmStatus, getChanges, markChangesSeen,
   getOfflineInfo, offlineFileUrl
 };

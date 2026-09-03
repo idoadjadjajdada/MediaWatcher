@@ -838,6 +838,7 @@ function buildSubsPopover() {
       </button>`).join('')}
     ${ctx.tracks.length === 0 ? '<div class="player__menu-label">None found</div>' : ''}
     ${buildFetchSection()}
+    ${ctx.tracks.length > 0 ? buildSyncSection() : ''}
     ${ctx.tracks.length > 0 ? buildStyleSection() : ''}
     ${buildAudioTrackSection()}`;
 }
@@ -1648,6 +1649,62 @@ export function setSubtitleColour(colour) {
 
 export function resetSubtitleStyle() {
   setSubtitleStyle(normaliseStyle({}));
+}
+
+/* --------------------------------------------------------------------------
+ * Is this track in time?
+ *
+ * A subtitle cut for a different release is out from the first line, and the
+ * way anyone finds out is by watching two minutes of dialogue arrive at the
+ * wrong moment. Asked for rather than automatic: it costs an audio decode of
+ * the opening ten minutes, and most tracks are fine.
+ * ----------------------------------------------------------------------- */
+
+/** The last answer, so the menu can show it after a rebuild. */
+let syncResult = null;
+
+export async function checkSubtitleTiming() {
+  if (!ctx) return;
+
+  syncResult = { state: 'checking', message: 'Listening to the first few minutes…' };
+  buildSubsPopover();
+
+  try {
+    // The track actually showing, so the answer is about what is on screen
+    // rather than about whatever happens to be first in the container.
+    const track = ctx.activeTrack || null;
+    syncResult = await api.checkSubtitleSync(ctx.filePath, {
+      lang: track?.lang || '',
+      embedded: track?.source === 'embedded' ? track.index : '',
+      audio: ctx.audioIndex || 0
+    });
+  } catch (error) {
+    syncResult = { state: 'error', message: error.message };
+  }
+
+  buildSubsPopover();
+}
+
+/** Forget the answer when the track changes: it was about the old one. */
+export function clearSubtitleTiming() {
+  syncResult = null;
+}
+
+function buildSyncSection() {
+  if (!syncResult) {
+    return `
+      <div class="player__menu-label">Timing</div>
+      <button class="player__menu-item" data-action="subtitle-check-sync">Check against the audio</button>`;
+  }
+
+  const tone = syncResult.state === 'ok' ? 'good'
+    : syncResult.state === 'out' || syncResult.state === 'unmatched' ? 'bad' : 'plain';
+
+  return `
+    <div class="player__menu-label">Timing</div>
+    <div class="subsync subsync--${tone}">${esc(syncResult.message)}</div>
+    ${syncResult.state === 'checking' ? '' : `
+      <button class="player__menu-item" data-action="subtitle-check-sync">Check again</button>`}`;
 }
 
 /** The appearance controls, appended to the subtitles menu. */

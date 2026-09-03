@@ -466,7 +466,13 @@ const ACTIONS = {
   'select-season': (el) => player.selectSeason(el.dataset.season),
   'play-episode': (el) => { player.closeEpisodes(); player.open(el.dataset.path); },
   'picture-reset': () => player.setPicture({ brightness: 100, contrast: 100 }),
-  'set-subtitle': (el) => player.setSubtitle(el.dataset.track),
+  'set-subtitle': (el) => {
+    // The timing answer was about the track that was showing, so it stops
+    // being true the moment a different one is chosen.
+    player.clearSubtitleTiming();
+    player.setSubtitle(el.dataset.track);
+  },
+  'subtitle-check-sync': () => player.checkSubtitleTiming(),
   'fetch-subtitles': () => player.fetchSubtitles(),
   'fetch-season-subs': (el) => fetchSeasonSubtitles(el),
   'subs-unavailable': () => views.toast('info', 'Subtitle download is not set up',
