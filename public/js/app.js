@@ -530,6 +530,7 @@ const ACTIONS = {
   'resume-restart': () => player.answerResume('restart'),
   'resume-dismiss': () => player.answerResume('dismiss'),
   'airplay': () => player.showAirplayPicker(),
+  'cast': () => player.castToDevice(),
   'skip-intro': () => player.skipIntro(),
   'prev-episode': () => player.playPrevious(),
   'next-episode': () => player.playNextEpisode(),

@@ -14,6 +14,7 @@
  * reads from it, so neither mode needs special-casing anywhere else.
  */
 import * as api from './api.js';
+import * as cast from './cast.js';
 import {
   state, setState, locateFile, nextEpisode, previousEpisode, episodeRows, seasonNumbers
 } from './state.js';
@@ -1652,6 +1653,55 @@ export function resetSubtitleStyle() {
 }
 
 /* --------------------------------------------------------------------------
+ * Chromecast
+ *
+ * Not the same shape as AirPlay. AirPlay hands over the stream from a device
+ * that is already signed in; a Chromecast is told a URL and fetches it itself,
+ * from a device with no cookie that cannot join a tailnet. So the server signs
+ * a link to a LAN address, and this hands it over and then stops being the
+ * thing playing.
+ * ----------------------------------------------------------------------- */
+
+/** Show the button only once both halves are known to work. */
+async function offerCasting() {
+  const button = el('cast-btn');
+  if (!button) return;
+
+  try {
+    button.hidden = !(await cast.isAvailable());
+  } catch {
+    button.hidden = true;
+  }
+}
+
+export async function castToDevice() {
+  if (!ctx) return;
+
+  try {
+    const result = await cast.cast(ctx.filePath, {
+      title: ctx.title || '',
+      subtitle: ctx.subtitle || '',
+      poster: ctx.poster || '',
+      // Where the viewer actually is: casting mid-film is the common case.
+      currentTime: ctx.video?.currentTime || 0
+    });
+
+    /*
+     * Pause here rather than keep playing. Two copies of the same scene, a few
+     * seconds apart, in the same room, is the worst possible outcome of
+     * pressing this button.
+     */
+    ctx.video?.pause();
+    toast('success', `Casting to ${result.device}`,
+      result.mode === 'transcode' ? 'Re-encoding for the receiver.' : '');
+  } catch (error) {
+    // Choosing no device is a normal way to end this, not a failure.
+    if (/cancel/i.test(error.message)) return;
+    toast('error', 'Could not cast', error.message);
+  }
+}
+
+/* --------------------------------------------------------------------------
  * Is this track in time?
  *
  * A subtitle cut for a different release is out from the first line, and the
@@ -2448,6 +2498,11 @@ function attach() {
       if (button) button.hidden = event.availability !== 'available';
     });
   }
+
+  // Asked once per open rather than at boot: it costs a request to the server
+  // and a script from gstatic, and neither is worth doing for someone who
+  // never opens the player.
+  offerCasting();
 
   ctx.hlsTimer = setInterval(() => {
     if (ctx?.info?.hls_session) api.touchHlsSession(ctx.info.hls_session).catch(() => {});

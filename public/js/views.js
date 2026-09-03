@@ -53,7 +53,9 @@ const ICONS = {
   trash: '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/>',
   // A screen with an upward arrow: sending this picture somewhere else.
   airplay: '<path d="M5 17H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1"/><path d="M12 15l5 6H7l5-6z" fill="currentColor" stroke="none"/>',
-  inbox: '<path d="M3 12h5l2 3h4l2-3h5"/><path d="M5 5h14l2 7v7H3v-7z"/>'
+  inbox: '<path d="M3 12h5l2 3h4l2-3h5"/><path d="M5 5h14l2 7v7H3v-7z"/>',
+  // The Cast glyph: a screen with the three arcs of a signal in its corner.
+  cast: '<path d="M2 16.1A5 5 0 0 1 5.9 20"/><path d="M2 12.05A9 9 0 0 1 9.95 20"/><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/>'
 };
 
 export function icon(name, className = '') {
@@ -1016,6 +1018,11 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
             </div>
             <button class="player__btn" data-action="airplay" id="airplay-btn"
               aria-label="AirPlay" title="AirPlay" hidden>${icon('airplay', 'icon')}</button>
+            <!-- Hidden until the SDK loads and the server says it is reachable:
+                 a cast button that cannot work is worse than no button, because
+                 the device spins and fails with nothing to explain why. -->
+            <button class="player__btn" data-action="cast" id="cast-btn"
+              aria-label="Cast" title="Cast to a Chromecast" hidden>${icon('cast', 'icon')}</button>
             <button class="player__btn" data-action="toggle-fullscreen" aria-label="Fullscreen">${icon('fullscreen', 'icon')}</button>
           </div>
         </div>

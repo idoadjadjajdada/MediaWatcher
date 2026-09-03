@@ -353,6 +353,18 @@ export const getBenchmark = () => get('/api/admin/benchmark');
 /** Measure now. Takes about a minute and answers with the result. */
 export const runBenchmark = () => post('/api/admin/benchmark', {});
 
+/** Can this install cast, and to what address. */
+export const getCastStatus = () => get('/api/cast/status');
+
+/**
+ * A link a Chromecast can fetch, signed by the server.
+ *
+ * The capabilities passed are the *receiver's*, not this browser's: what
+ * matters is what the device across the room can decode.
+ */
+export const getCastMedia = (filePath, caps = {}) =>
+  get(`/api/cast/media?${q({ path: filePath, hevc: caps.hevc ? 1 : '', ac3: caps.ac3 ? 1 : '' })}`);
+
 /**
  * Whether the subtitle track chosen for this file is actually in time with it.
  *
@@ -454,6 +466,7 @@ export default {
   getServerLog, getEnv, saveEnv, restartServer, getBenchmark, runBenchmark,
   getSourceStats, resetSourceStats, getDebridAccount, inspectTorrent,
   getPushKey, subscribePush, unsubscribePush, testPush, checkSubtitleSync,
+  getCastStatus, getCastMedia,
   getMissingEpisodes, getStorage, warmLibrary, getWarmStatus, getChanges, markChangesSeen,
   getOfflineInfo, offlineFileUrl
 };

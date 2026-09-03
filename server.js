@@ -25,6 +25,7 @@ import libraryRouter from './routes/library.js';
 import offlineRouter from './routes/offline.js';
 import adminRouter from './routes/admin.js';
 import notificationsRouter from './routes/notifications.js';
+import castRouter from './routes/cast.js';
 import { onShutdown } from './services/lifecycle.js';
 import mediaRouter from './routes/media.js';
 import discoverRouter from './routes/discover.js';
@@ -74,7 +75,16 @@ app.use(helmet({
     useDefaults: false,
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
+      /*
+       * The Cast sender SDK is served from gstatic and cannot be bundled — it
+       * is the only way to talk to a Chromecast from a page, and Google does
+       * not publish it for self-hosting. Allowed only when casting is actually
+       * switched on, so an install that does not cast keeps a CSP with no
+       * third-party script origin in it at all.
+       */
+      scriptSrc: config.cast.enabled
+        ? ["'self'", 'https://www.gstatic.com']
+        : ["'self'"],
       // Inline styles carry backdrop images and progress-bar widths.
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", 'data:', 'blob:', 'https://image.tmdb.org'],
@@ -190,6 +200,7 @@ app.use('/api/library', libraryRouter);
 app.use('/api/offline', offlineRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/cast', castRouter);
 
 /* --------------------------------------------------------------------------
  * Fallbacks
@@ -217,6 +228,14 @@ app.use(errorHandler(log));
 
 const server = app.listen(config.port, config.host, () => {
   log.info(`MediaWatcher listening on http://${config.host}:${config.port}`);
+  if (config.host !== '127.0.0.1') {
+    /*
+     * Worth saying out loud every time. The gate is what makes this safe, and
+     * a server on the LAN is reachable by everything on the LAN — which is the
+     * point when casting, and a surprise otherwise.
+     */
+    log.warn(`listening on ${config.host}, not just loopback — every device on this network can reach the gate`);
+  }
   log.info(`library: ${config.libraryPath}`);
   log.info(`temp:    ${config.tempPath}`);
 

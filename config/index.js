@@ -223,7 +223,17 @@ const tempPath = resolvePath(str('TEMP_PATH'), './temp');
 const config = {
   rootDir: ROOT_DIR,
   port: int('PORT', 3000),
-  host: '127.0.0.1',
+  /*
+   * Loopback unless told otherwise.
+   *
+   * Everything about this server assumes it is not on a network: remote access
+   * is a Tailscale tunnel, and the gate exists because that tunnel makes every
+   * request look local. Listening on the LAN is a real change to what is
+   * exposed and is deliberately a decision rather than a side effect — the one
+   * thing that needs it is Chromecast, which fetches media itself from a
+   * device that cannot join a tailnet.
+   */
+  host: str('BIND_HOST', '127.0.0.1'),
   logLevel: LOG_LEVEL,
 
   // Remote playback caps. The host serves at ~800 Mbps symmetric, so none of
@@ -478,6 +488,20 @@ const config = {
    */
   push: {
     contact: str('PUSH_CONTACT', 'mailto:mediawatcher@example.invalid')
+  },
+
+  /*
+   * Chromecast.
+   *
+   * Off unless the server is actually listening somewhere a Chromecast can
+   * reach, because a cast button that cannot work is worse than no button:
+   * the device spins and fails with nothing to explain why.
+   */
+  cast: {
+    enabled: str('CAST_ENABLED', '0') === '1' && str('BIND_HOST', '127.0.0.1') !== '127.0.0.1',
+    // Override when the automatic pick is wrong — several interfaces, a VPN
+    // adapter, a machine with a fixed name on the LAN.
+    host: str('CAST_HOST')
   },
 
   // Downloads

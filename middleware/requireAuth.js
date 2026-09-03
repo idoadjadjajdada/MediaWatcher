@@ -10,6 +10,7 @@ import { createLogger } from '../config/index.js';
 import { COOKIE_NAME, parseCookies, resolveToken, verifyAdminKey } from '../services/auth.js';
 import { touchDevice } from '../db/devices.js';
 import { classifyOrigin } from '../services/network.js';
+import * as castLink from '../services/castLink.js';
 
 const log = createLogger('auth');
 
@@ -45,6 +46,22 @@ export default function requireAuth(req, res, next) {
    */
   if (verifyAdminKey(req.headers['x-mediawatcher-key'])) {
     req.device = null;
+    return next();
+  }
+
+  /*
+   * A Chromecast fetches media itself, from a device that holds no cookie and
+   * cannot be given one. It carries a link this server signed instead: an HMAC
+   * over the one path it may fetch and an expiry.
+   *
+   * This is not a hole in the gate. The signature names a single path, so it
+   * admits a request for that file and nothing else; it expires on its own;
+   * and it can only be minted by something already signed in. It is a
+   * capability for one file, not a way in.
+   */
+  if (castLink.verify(req)) {
+    req.device = null;
+    req.castLink = true;
     return next();
   }
 

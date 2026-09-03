@@ -41,6 +41,7 @@ const SUITES = [
   { file: 'enrol-changes.test.mjs' },
   { file: 'webpush.test.mjs' },
   { file: 'subtitle-sync.test.mjs' },
+  { file: 'cast-link.test.mjs' },
   { file: 'cache-limits.test.mjs' },
   { file: 'scanner-titles.test.mjs' },
   { file: 'downloads.test.mjs' },
