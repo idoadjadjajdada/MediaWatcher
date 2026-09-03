@@ -642,6 +642,29 @@ Beyond starting and stopping the server:
   point a phone at, cache sizes with sweep and clear, and installing the server
   as a Windows service. Installing needs administrator rights.
 
+### Playback speed
+
+A slider from 0.25x to 5x, in the speed menu, over a ladder of stops rather
+than a continuous range. The reason is 1.00x: it is the most-used value and the
+only one that has to be exactly right, and on a continuous slider it is a pixel
+you have to find. Every stop is a value someone would actually pick, so
+dragging cannot leave you at 1.03x wondering why the audio sounds slightly off.
+**Normal** puts it back.
+
+The spacing is uneven on purpose — fine near 1x where a tenth is audible,
+coarse at the ends where it is not. A linear slider over that range would spend
+four fifths of its travel above 2x, which is the part nobody adjusts carefully.
+
+**Pitch follows speed**, the O|I switch below it, decides what the audio does.
+Off — the default, and what every browser does on its own — voices keep their
+pitch at any rate. On, it behaves like a tape: slower is deeper, faster is
+higher. Worth having as a choice because pitch correction is not free: it
+stretches and overlaps windows of audio, which smears transients and gives
+music a watery quality.
+
+Browsers clamp very high rates and some mute audio above 2x, so the top of the
+slider is worth more to skimming than to listening.
+
 ### Resuming
 
 A saved position is offered, not taken: opening something you were part way

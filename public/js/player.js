@@ -840,7 +840,67 @@ function markIdle(after) {
  * Subtitles + settings menu
  * ----------------------------------------------------------------------- */
 
-const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
+/**
+ * Every speed the slider can land on, slowest first.
+ *
+ * A ladder rather than a continuous range, and the reason is 1.00x. It is by
+ * far the most-used value and the only one that has to be exactly right, and
+ * on a continuous slider it is a pixel you have to find. Here every stop is a
+ * value someone would actually choose, so dragging cannot leave you at 1.03x
+ * wondering why the audio sounds slightly wrong.
+ *
+ * The spacing is deliberately uneven: fine near 1x where a tenth is audible,
+ * coarse at the ends where it is not. That is also what a linear slider gets
+ * wrong — over 0.25 to 5 it spends four fifths of its travel above 2x, which
+ * is the part nobody adjusts carefully.
+ *
+ * The count either side is chosen so 1x lands near the middle of the track. It
+ * is not the midpoint in ratio terms and it does not need to be; a thumb
+ * sitting well left of centre at normal speed reads as a bug even when the
+ * arithmetic behind it is fine.
+ */
+export const SPEEDS = [
+  0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95,
+  1,
+  1.05, 1.1, 1.2, 1.25, 1.4, 1.5, 1.75, 2, 2.5, 3, 4, 5
+];
+
+/** Where 1x sits, for the reset and for the default. */
+export const NORMAL_SPEED_INDEX = SPEEDS.indexOf(1);
+
+/**
+ * The stop nearest a given rate.
+ *
+ * Nearest in ratio rather than in difference: 0.5x is as far from 1x as 2x is,
+ * and measuring the gap arithmetically would call 2x the closer of the two.
+ */
+export function speedIndexFor(rate) {
+  const wanted = Number(rate);
+  if (!Number.isFinite(wanted) || wanted <= 0) return NORMAL_SPEED_INDEX;
+
+  let best = 0;
+  let bestDistance = Infinity;
+  for (let index = 0; index < SPEEDS.length; index += 1) {
+    const distance = Math.abs(Math.log(SPEEDS[index] / wanted));
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = index;
+    }
+  }
+  return best;
+}
+
+/** A rate, from a slider position. Out-of-range positions clamp rather than throw. */
+export const speedAtIndex = (index) =>
+  SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, Math.round(Number(index) || 0)))];
+
+/**
+ * How a rate reads. 1.5x rather than 1.50x, but 1.05x rather than 1.1x.
+ *
+ * Trailing zeros on a speed look like precision that is not there, and the
+ * ladder has both one- and two-decimal stops on it.
+ */
+export const formatSpeed = (rate) => `${Number(rate).toFixed(2).replace(/\.?0+$/, '')}\u00d7`;
 
 function buildSubsPopover() {
   el('popover-subs').innerHTML = `
@@ -1283,8 +1343,20 @@ function buildSpeedPopover() {
 
   el('popover-speed').innerHTML = `
     <div class="player__menu-label">Playback speed</div>
-    ${SPEEDS.map((speed) => `
-      <button class="player__menu-item${ctx.speed === speed ? ' is-active' : ''}" data-action="set-speed" data-speed="${speed}">${speed}&times;</button>`).join('')}
+    <div class="speed">
+      <div class="speed__row">
+        <button class="speed__reset" id="speed-reset" data-action="reset-speed"
+          ${ctx.speed === 1 ? 'disabled' : ''} title="Back to normal speed">Normal</button>
+        <span class="speed__value t-num" id="speed-value">${formatSpeed(ctx.speed)}</span>
+      </div>
+      <input class="range range--speed" id="speed" type="range"
+        min="0" max="${SPEEDS.length - 1}" step="1" value="${speedIndexFor(ctx.speed)}"
+        aria-label="Playback speed" aria-valuetext="${formatSpeed(ctx.speed)}">
+      <div class="speed__ends">
+        <span>${formatSpeed(SPEEDS[0])}</span>
+        <span>${formatSpeed(SPEEDS[SPEEDS.length - 1])}</span>
+      </div>
+    </div>
     ${pitchControlAvailable() ? `
       <button class="player__menu-item player__menu-item--switch" data-action="toggle-pitch"
         role="switch" aria-checked="${ctx.pitchFollowsSpeed}"
@@ -1301,7 +1373,7 @@ function buildSpeedPopover() {
       <button class="player__menu-item${quality === value ? ' is-active' : ''}" data-action="set-quality" data-quality="${value}">${label}</button>`).join('')}
     ${buildStatsSection()}`;
   const rate = el('rate-btn');
-  if (rate) rate.innerHTML = `${ctx.speed}&times;`;
+  if (rate) rate.textContent = formatSpeed(ctx.speed);
 }
 
 function buildPicturePopover() {
@@ -1845,13 +1917,48 @@ function applyAudioOffset(value) {
   setState({ player: { ...state.player, audioOffset: value } });
 }
 
+/**
+ * Set the rate.
+ *
+ * Snapped to the ladder, so every route in - the slider, a keyboard, an old
+ * call passing 1.5 - lands on a value the slider can also represent. Without
+ * that the control and the actual rate could disagree, which is worse than
+ * either being wrong on its own.
+ */
 export function setSpeed(speed) {
   if (!ctx) return;
-  ctx.speed = Number(speed);
+
+  ctx.speed = speedAtIndex(speedIndexFor(speed));
   ctx.video.playbackRate = ctx.speed;
   // Re-applied on every change: a browser is entitled to reset the flag when
   // the rate moves, and some do.
   applyPitchMode();
+
+  /*
+   * The readout and the button are updated in place while the popover itself
+   * is left alone. Rebuilding it would replace the slider mid-drag, and the
+   * browser stops sending input events to an element that is no longer in the
+   * document — so the first nudge would work and the drag would then die.
+   */
+  const value = el('speed-value');
+  if (value) value.textContent = formatSpeed(ctx.speed);
+  const rate = el('rate-btn');
+  if (rate) rate.textContent = formatSpeed(ctx.speed);
+  const reset = el('speed-reset');
+  if (reset) reset.disabled = ctx.speed === 1;
+
+  const slider = el('speed');
+  // Only when the change came from somewhere else: writing back to the input
+  // someone is dragging fights them.
+  if (slider && document.activeElement !== slider) {
+    const index = String(speedIndexFor(ctx.speed));
+    if (slider.value !== index) slider.value = index;
+  }
+}
+
+/** Back to 1x, which is the one value worth a button of its own. */
+export function resetSpeed() {
+  setSpeed(1);
   buildMenu();
 }
 
@@ -2402,6 +2509,16 @@ function attach() {
 
   // Bound on the panel, not the inputs: setPicture rebuilds the panel, which
   // would replace listeners attached to the sliders themselves mid-drag.
+  /*
+   * On the panel rather than the input, for the same reason as the picture
+   * sliders below: anything that rebuilds the popover would replace the
+   * element a listener was attached to, half way through a drag.
+   */
+  el('popover-speed').addEventListener('input', (event) => {
+    if (event.target.id !== 'speed') return;
+    setSpeed(speedAtIndex(event.target.value));
+  });
+
   el('popover-picture').addEventListener('input', (event) => {
     const input = event.target;
     if (input.id !== 'brightness' && input.id !== 'contrast') return;
@@ -2774,7 +2891,7 @@ function playNextImmediate() {
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
   skip, setSubtitle, setSpeed, setQuality, setAudioTrack, toggleStats,
-  togglePitchMode, pitchControlAvailable,
+  togglePitchMode, pitchControlAvailable, resetSpeed,
   answerResume, toggleShortcuts, showAirplayPicker, skipIntro,
   togglePopover, closePopovers, setPicture,
   playNext, cancelNext

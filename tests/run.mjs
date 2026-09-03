@@ -45,6 +45,7 @@ const SUITES = [
   { file: 'encode-farm.test.mjs' },
   { file: 'warm-policy.test.mjs' },
   { file: 'pitch.test.mjs' },
+  { file: 'speed.test.mjs' },
   { file: 'cache-limits.test.mjs' },
   { file: 'scanner-titles.test.mjs' },
   { file: 'downloads.test.mjs' },

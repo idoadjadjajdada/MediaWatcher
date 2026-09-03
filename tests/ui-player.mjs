@@ -456,6 +456,76 @@ if (!(await openFirst('movie'))) {
   check('a movie has no episode arrow', (await page.$eval('#ep-arrow', (el) => el.hidden)) === true);
 }
 
+console.log('\nspeed');
+/*
+ * The slider replaced five fixed buttons. What matters is that dragging it
+ * reaches the element - not just the readout - and that the two never
+ * disagree, which is the failure a slider driven by a rebuild would have.
+ */
+if (!(await openFirst('movie')) && !(await openFirst('episode'))) {
+  console.log('  [skip] nothing playable in the library');
+} else {
+  await page.evaluate(async () => {
+    const player = await import('/js/player.js');
+    player.setSpeed(1);
+  });
+  await page.waitForTimeout(250);
+
+  const readSpeed = () => page.evaluate(() => {
+    const slider = document.getElementById('speed');
+    return {
+      present: Boolean(slider),
+      position: slider ? Number(slider.value) : null,
+      max: slider ? Number(slider.max) : null,
+      readout: document.getElementById('speed-value')?.textContent?.trim(),
+      button: document.getElementById('rate-btn')?.textContent?.trim(),
+      rate: document.querySelector('video')?.playbackRate,
+      resetDisabled: document.getElementById('speed-reset')?.disabled
+    };
+  });
+
+  let speed = await readSpeed();
+  check('the speed control is a slider', speed.present);
+  check('and it starts at normal speed', speed.rate === 1 && speed.readout === '1×', speed);
+  check('with the reset dimmed', speed.resetDisabled === true, speed);
+
+  // Driven the way a person drives it: set the input and fire the event the
+  // panel listens for, rather than calling setSpeed.
+  const drag = (position) => page.evaluate((value) => {
+    const slider = document.getElementById('speed');
+    slider.value = String(value);
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+  }, position);
+
+  await drag(0);
+  await page.waitForTimeout(200);
+  speed = await readSpeed();
+  check('dragging to the bottom reaches a quarter speed', speed.rate === 0.25, speed);
+  check('and the readout agrees', speed.readout === '0.25×', speed);
+  check('and so does the control bar', speed.button === '0.25×', speed);
+
+  await drag(speed.max);
+  await page.waitForTimeout(200);
+  speed = await readSpeed();
+  check('dragging to the top reaches five times', speed.rate === 5, speed);
+  check('and the readout agrees', speed.readout === '5×', speed);
+
+  // The whole point of a ladder: 1x is a stop you can land on exactly.
+  await page.evaluate(async () => {
+    const player = await import('/js/player.js');
+    player.resetSpeed();
+  });
+  await page.waitForTimeout(250);
+  speed = await readSpeed();
+  check('reset lands exactly on 1x', speed.rate === 1, speed);
+  check('and moves the slider with it',
+    speed.position === (await page.evaluate(async () => {
+      const player = await import('/js/player.js');
+      return player.NORMAL_SPEED_INDEX;
+    })), speed);
+  check('and dims the reset again', speed.resetDisabled === true, speed);
+}
+
 console.log('\npitch');
 /*
  * The O|I switch has to reach the element, not just the menu. `preservesPitch`

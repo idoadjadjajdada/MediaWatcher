@@ -686,3 +686,22 @@ html.is-player-open body { overflow: hidden; }
 .switchmark:not(.is-on) .switchmark__o { opacity: 1; color: var(--fg); }
 .switchmark.is-on { border-color: #4ac97e; }
 .switchmark.is-on .switchmark__i { opacity: 1; color: #4ac97e; }
+
+/* ---- playback speed ----
+   A slider rather than five buttons, over a ladder of stops: fine near 1x
+   where a tenth is audible, coarse at the ends where it is not. */
+.speed { padding: var(--space-2) var(--space-3) var(--space-3); min-width: 15rem; }
+.speed__row { display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-3); margin-bottom: var(--space-2); }
+.speed__value { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.speed__reset {
+  background: none; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px;
+  color: var(--fg-3); font-size: 11px; padding: 2px 8px; cursor: pointer;
+}
+.speed__reset:hover:not(:disabled) { color: var(--fg); border-color: rgba(255, 255, 255, 0.4); }
+/* Disabled at 1x rather than hidden: a control that appears and disappears as
+   you drag past the middle is worse than one that simply dims. */
+.speed__reset:disabled { opacity: 0.35; cursor: default; }
+.range--speed { width: 100%; }
+.speed__ends { display: flex; justify-content: space-between;
+  margin-top: 2px; font-size: 10px; color: var(--fg-3); }
