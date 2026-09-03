@@ -27,6 +27,9 @@ import * as transcoder from './transcoder.js';
 import * as mp4cache from './mp4cache.js';
 import * as thumbnails from './thumbnails.js';
 import * as diskspace from './diskspace.js';
+import * as scanner from './scanner.js';
+import * as warmPolicy from './warmPolicy.js';
+import { readState, writeState } from '../db/index.js';
 
 const log = createLogger('warmup');
 
@@ -50,7 +53,12 @@ const stats = {
   queued: 0,
   converted: 0,
   thumbed: 0,
+  // Nothing to do: already browser-native, or already converted.
   skipped: 0,
+  // Deliberately passed over, because a rule says so. Counted separately from
+  // `skipped` because they are different answers to "why did nothing happen",
+  // and only one of them is something you chose.
+  excluded: 0,
   failed: 0
 };
 
@@ -63,14 +71,55 @@ export const getStats = () => ({
 });
 
 /**
+ * What the policy needs to know about a file: how big it is, and what it is
+ * part of.
+ *
+ * The library index is the source for the title, because that is what a rule
+ * is written against — "never convert this show" has to survive the file being
+ * renamed, remuxed or replaced by a better release.
+ */
+function describe(filePath) {
+  let size = 0;
+  try {
+    size = fs.statSync(filePath).size;
+  } catch {
+    // Gone between being queued and being looked at. warmOne skips it anyway.
+  }
+
+  const located = scanner.findByPath(filePath);
+  return {
+    filePath,
+    size,
+    type: located?.type || 'movie',
+    tmdbId: located?.item?.tmdb_id ?? null
+  };
+}
+
+/** Would this file be converted, and if not, why not? */
+export function assess(filePath) {
+  return warmPolicy.decide(describe(filePath), readState(POLICY_KEY));
+}
+
+/**
  * Add a file to the queue.
  *
  * De-duplicated: a download that produces several files, and a rescan that
  * sees the same one again, must not queue it twice.
+ *
+ * The policy is consulted here rather than when the file comes up, so that a
+ * queue of two hundred files is a queue of two hundred files that will
+ * actually be converted — and so the count the page shows means something.
  */
 export function enqueue(filePath) {
   if (!filePath || queued.has(filePath) || stopped) return false;
   if (!config.mp4Cache.enabled) return false;
+
+  const verdict = assess(filePath);
+  if (!verdict.warm) {
+    stats.excluded += 1;
+    log.debug(`not warming ${filePath}: ${verdict.reason}`);
+    return false;
+  }
 
   queued.add(filePath);
   queue.push(filePath);
@@ -87,6 +136,32 @@ export function enqueueAll(filePaths) {
   for (const filePath of filePaths || []) if (enqueue(filePath)) added += 1;
   return added;
 }
+
+/* --------------------------------------------------------------------------
+ * The policy
+ * ----------------------------------------------------------------------- */
+
+/** Where the rules live. Durable: they are a preference, not a cache. */
+const POLICY_KEY = 'warm.policy';
+
+export const getPolicy = () => warmPolicy.normalise(readState(POLICY_KEY));
+
+export function setPolicy(policy) {
+  const normalised = warmPolicy.normalise(policy);
+  writeState(POLICY_KEY, normalised);
+  log.info(`policy updated: movies=${normalised.movies} shows=${normalised.shows} `
+    + `max=${normalised.maxBytes || 'none'} exclude=${normalised.exclude.length} `
+    + `titles=${Object.keys(normalised.titles).length}`);
+  return normalised;
+}
+
+/** Set or clear one title's rule, leaving the rest of the policy alone. */
+export function setTitleRule(type, tmdbId, choice) {
+  return setPolicy(warmPolicy.withTitle(readState(POLICY_KEY), type, tmdbId, choice));
+}
+
+export const getTitleRule = (type, tmdbId) =>
+  warmPolicy.titleChoice(readState(POLICY_KEY), type, tmdbId);
 
 /**
  * Convert one file, if it needs converting and there is room for it.
@@ -211,4 +286,7 @@ export function stop() {
   queued.clear();
 }
 
-export default { enqueue, enqueueAll, watchDownloads, getStats, stop };
+export default {
+  enqueue, enqueueAll, watchDownloads, getStats, stop,
+  assess, getPolicy, setPolicy, setTitleRule, getTitleRule
+};

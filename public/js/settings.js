@@ -355,8 +355,82 @@ function renderPerformance() {
         </button>
         <button class="btn btn--secondary" data-action="settings-refresh">Refresh</button>
       </div>
+      ${renderWarmPolicy()}
       ${renderBenchmark()}
     </section>`;
+}
+
+/**
+ * Which files are worth converting ahead of time.
+ *
+ * Warming everything is the right default for a library of 1080p web rips and
+ * the wrong one for almost anything else: a 4K remux converted for a phone
+ * that will never play it is an hour of encoding and twenty gigabytes spent on
+ * a file nobody asked for.
+ *
+ * The dry run is the important half of this panel. Rules on their own are not
+ * an answer to the question anyone has, which is what they will do to this
+ * library.
+ */
+function renderWarmPolicy() {
+  const state_ = state.settings?.warmPolicy;
+  if (!state_) return '';
+
+  const { policy, preview } = state_;
+  const gb = policy.maxBytes > 0 ? Math.round(policy.maxBytes / 1024 ** 3) : 0;
+
+  const reasons = Object.entries(preview.reasons || {})
+    .sort((a, b) => b[1] - a[1]);
+
+  return `
+    <div class="settings__sub">
+      <h3 class="settings__subheading">What gets converted</h3>
+
+      ${row('Films', 'Convert films ahead of time.', toggle('warmMovies', policy.movies))}
+      ${row('Shows', 'Convert episodes ahead of time.', toggle('warmShows', policy.shows))}
+      ${row('Size limit', gb > 0
+    ? 'Files larger than this are left alone and converted on first play instead.'
+    : 'No limit — every file is a candidate, including 4K remuxes.',
+  stepper('warmMaxGb', gb, gb > 0 ? ' GB' : ' (off)', 0, 200, 5))}
+
+      <div class="setting">
+        <div class="setting__text">
+          <div class="setting__label">Never convert paths containing</div>
+          <div class="setting__hint">
+            One per line. Matched anywhere in the path, ignoring case — a folder
+            name, a release group, a drive letter.
+          </div>
+        </div>
+      </div>
+      <textarea class="env__value warm__exclude" id="warm-exclude" rows="3"
+        data-action="warm-exclude" spellcheck="false"
+        placeholder="Extras&#10;Behind the Scenes">${esc(policy.exclude.join('\n'))}</textarea>
+
+      <div class="facts">
+        <div class="fact"><dt>Would convert</dt><dd class="t-num">${preview.included} files · ${esc(formatBytes(preview.bytes))}</dd></div>
+        <div class="fact"><dt>Would pass over</dt><dd class="t-num">${preview.excluded}</dd></div>
+        ${reasons.map(([reason, count]) => `
+          <div class="fact"><dt>${esc(reason)}</dt><dd class="t-num">${count}</dd></div>`).join('')}
+      </div>
+
+      ${preview.titles.length === 0 ? '' : `
+        <div class="settings__sub">
+          <h3 class="settings__subheading">Named titles</h3>
+          <p class="settings__note">
+            A rule about one title beats every general rule above, both ways
+            round — which is the point of having one.
+          </p>
+          <div class="warm-titles">
+            ${preview.titles.map((entry) => `
+              <div class="warm-title">
+                <span class="warm-title__name">${esc(entry.title || entry.key)}</span>
+                <span class="badge">${esc(entry.choice)}</span>
+                <button class="btn btn--ghost" data-action="warm-title-clear"
+                  data-kind="${esc(entry.kind)}" data-id="${entry.tmdbId}">Clear</button>
+              </div>`).join('')}
+          </div>
+        </div>`}
+    </div>`;
 }
 
 /**
@@ -841,7 +915,7 @@ export function renderSettings() {
  */
 export async function loadSettings() {
   const [devices, logins, diagnostics, storage, saved, quota, warm, encoders, env, log, benchmark,
-    sourceStats, pushState, pushKey, account] =
+    sourceStats, warmPolicy, pushState, pushKey, account] =
     await Promise.all([
       api.getDevices().catch(() => []),
       api.getLoginHistory().catch(() => []),
@@ -855,6 +929,7 @@ export async function loadSettings() {
       api.getServerLog({ limit: 400 }).catch(() => null),
       api.getBenchmark().catch(() => null),
       api.getSourceStats().catch(() => null),
+      api.getWarmPolicy().catch(() => null),
       push.status().catch(() => null),
       api.getPushKey().catch(() => null),
       // null means the call failed, which is itself worth showing: an
@@ -864,7 +939,7 @@ export async function loadSettings() {
   setState({
     settings: {
       devices, logins, diagnostics, storage, offline: saved, quota, warm, encoders,
-      env, log, benchmark, sourceStats, account,
+      env, log, benchmark, sourceStats, account, warmPolicy,
       push: pushState, pushCount: pushKey?.subscribers ?? 0,
       // Carried across a reload so following the log survives a refresh of the
       // page's data, which is the one time you are most likely to be doing it.
@@ -1176,9 +1251,49 @@ export async function runBenchmark() {
 const SUBTITLE_FIELDS = new Set(['size', 'opacity', 'position']);
 const PICTURE_FIELDS = new Set(['brightness', 'contrast']);
 
+/*
+ * Which fields belong to the server rather than to this device.
+ *
+ * Everything else on this page is a property of the screen you are sitting in
+ * front of and lives in localStorage. What gets converted ahead of time is a
+ * property of the library, so a phone and a television have to agree about it
+ * — which means it is stored once, on the server.
+ */
+const WARM_FIELDS = new Set(['warmMovies', 'warmShows', 'warmMaxGb']);
+
+/** Change one field of the warm policy and save the whole thing back. */
+async function patchWarmPolicy(patch) {
+  const current = state.settings?.warmPolicy?.policy;
+  if (!current) return;
+
+  // Rendered from the answer rather than from the patch, so the page shows
+  // what was actually stored — the server normalises, and disagreeing with it
+  // is how a settings page starts lying.
+  const next = { ...current, ...patch };
+  state.settings.warmPolicy = { ...state.settings.warmPolicy, policy: next };
+  setState({});
+
+  try {
+    await api.saveWarmPolicy(next);
+    state.settings.warmPolicy = await api.getWarmPolicy();
+    setState({});
+  } catch (error) {
+    toast('error', 'Could not save that', error.message);
+  }
+}
+
 export function stepSetting(field, delta) {
   const amount = Number(delta);
   if (!Number.isFinite(amount)) return;
+
+  if (field === 'warmMaxGb') {
+    const current = state.settings?.warmPolicy?.policy?.maxBytes || 0;
+    const gb = Math.max(0, Math.round(current / 1024 ** 3) + amount);
+    // Zero is "no limit" rather than "convert nothing", which is why the
+    // control bottoms out there rather than at one.
+    patchWarmPolicy({ maxBytes: gb * 1024 ** 3 });
+    return;
+  }
 
   if (SUBTITLE_FIELDS.has(field)) {
     const current = loadSubtitleStyle();
@@ -1194,9 +1309,43 @@ export function stepSetting(field, delta) {
 }
 
 export function toggleSetting(field) {
+  if (WARM_FIELDS.has(field)) {
+    const policy = state.settings?.warmPolicy?.policy;
+    if (!policy) return;
+    const key = field === 'warmMovies' ? 'movies' : 'shows';
+    patchWarmPolicy({ [key]: !policy[key] });
+    return;
+  }
+
   const current = loadDevicePrefs();
   saveDevicePrefs({ [field]: !current[field] });
   setState({});
+}
+
+/**
+ * The exclusion list, saved when you stop typing rather than on every key.
+ *
+ * Saving per keystroke would write a rule for every prefix of every line, and
+ * the page re-renders on the answer — which would take the caret with it.
+ */
+let excludeTimer = null;
+export function editWarmExclude(text) {
+  clearTimeout(excludeTimer);
+  excludeTimer = setTimeout(() => {
+    const exclude = String(text).split('\n').map((line) => line.trim()).filter(Boolean);
+    patchWarmPolicy({ exclude });
+  }, 800);
+}
+
+/** Drop one title's rule, putting it back under the general ones. */
+export async function clearWarmTitle(kind, tmdbId) {
+  try {
+    await api.setWarmTitleRule(kind, Number(tmdbId), 'auto');
+    state.settings.warmPolicy = await api.getWarmPolicy();
+    setState({});
+  } catch (error) {
+    toast('error', 'Could not clear that', error.message);
+  }
 }
 
 export function chooseSetting(field, value) {

@@ -43,6 +43,7 @@ const SUITES = [
   { file: 'subtitle-sync.test.mjs' },
   { file: 'cast-link.test.mjs' },
   { file: 'encode-farm.test.mjs' },
+  { file: 'warm-policy.test.mjs' },
   { file: 'cache-limits.test.mjs' },
   { file: 'scanner-titles.test.mjs' },
   { file: 'downloads.test.mjs' },

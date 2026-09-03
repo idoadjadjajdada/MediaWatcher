@@ -204,15 +204,98 @@ router.post('/warm', (req, res, next) => {
 
     const queued = warmup.enqueueAll(paths);
     log.info(`warm requested: ${queued} of ${paths.length} file(s) queued`);
-    // Fewer queued than found is the normal case on a second run: anything
-    // already converted, or already waiting, is not queued again.
-    return res.json({ found: paths.length, queued, ...warmup.getStats() });
+    /*
+     * Fewer queued than found has two quite different causes and the answer
+     * separates them: something already converted or already waiting, and
+     * something a rule deliberately passed over. Only one of those is worth
+     * doing anything about.
+     */
+    return res.json({
+      found: paths.length,
+      queued,
+      excluded: paths.length - queued,
+      ...warmup.getStats()
+    });
   } catch (error) {
     next(error);
   }
 });
 
 /** GET /api/library/warm — how far the catch-up has got. */
+/**
+ * GET /api/library/warm/policy — what gets converted ahead of time.
+ *
+ * Answers the rules and a dry run against the current library together,
+ * because the rules on their own are not an answer to the question anyone
+ * actually has, which is "what will this do to my library".
+ */
+router.get('/warm/policy', (_req, res) => {
+  const policy = warmup.getPolicy();
+  const library = scanner.getLibrary();
+
+  const preview = { included: 0, excluded: 0, bytes: 0, reasons: {}, titles: [] };
+
+  const consider = (file) => {
+    if (!file?.file_path) return;
+    const verdict = warmup.assess(file.file_path);
+    if (verdict.warm) {
+      preview.included += 1;
+      preview.bytes += Number(file.size) || 0;
+      return;
+    }
+    preview.excluded += 1;
+    preview.reasons[verdict.reason] = (preview.reasons[verdict.reason] || 0) + 1;
+  };
+
+  for (const movie of library.movies || []) {
+    for (const file of movie.files || []) consider(file);
+  }
+  for (const show of library.shows || []) {
+    for (const season of show.seasons || []) {
+      for (const episode of season.episodes || []) {
+        for (const file of episode.files || []) consider(file);
+      }
+    }
+  }
+
+  /*
+   * Named titles come back with their names attached. A page listing
+   * "movie:603" and "show:1396" is a page that cannot be used to undo a rule
+   * set six months ago.
+   */
+  for (const [key, choice] of Object.entries(policy.titles)) {
+    const [kind, id] = key.split(':');
+    const pool = kind === 'show' ? library.shows : library.movies;
+    const found = (pool || []).find((entry) => String(entry.tmdb_id) === id);
+    preview.titles.push({ key, kind, tmdbId: Number(id), choice, title: found?.title || null });
+  }
+  preview.titles.sort((a, b) => String(a.title || a.key).localeCompare(String(b.title || b.key)));
+
+  res.json({ policy, preview });
+});
+
+/** PUT /api/library/warm/policy — change the rules. */
+router.put('/warm/policy', (req, res) => {
+  res.json({ policy: warmup.setPolicy(req.body?.policy) });
+});
+
+/**
+ * PUT /api/library/warm/policy/title — one title's own rule.
+ *
+ * Separate from the whole policy so the button on a title's page cannot
+ * accidentally write back a stale copy of every other rule alongside it.
+ */
+router.put('/warm/policy/title', (req, res) => {
+  const { type, tmdb_id: tmdbId, choice } = req.body || {};
+  if (!tmdbId) return res.status(400).json({ error: 'tmdb_id is required' });
+  if (!['auto', 'always', 'never'].includes(String(choice))) {
+    return res.status(400).json({ error: 'choice must be auto, always or never' });
+  }
+
+  const policy = warmup.setTitleRule(type === 'show' ? 'show' : 'movie', tmdbId, choice);
+  return res.json({ choice, titles: policy.titles });
+});
+
 router.get('/warm', (_req, res) => {
   res.json(warmup.getStats());
 });

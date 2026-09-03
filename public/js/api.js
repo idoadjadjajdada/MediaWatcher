@@ -420,6 +420,15 @@ export const getStorage = () => get('/api/library/storage');
 export const warmLibrary = (show) => post('/api/library/warm', show ? { show } : {});
 export const getWarmStatus = () => get('/api/library/warm');
 
+/** The rules for what gets converted ahead of time, and a dry run of them. */
+export const getWarmPolicy = () => get('/api/library/warm/policy');
+
+export const saveWarmPolicy = (policy) => put('/api/library/warm/policy', { policy });
+
+/** One title's own rule: auto, always or never. */
+export const setWarmTitleRule = (type, tmdbId, choice) =>
+  put('/api/library/warm/policy/title', { type, tmdb_id: tmdbId, choice });
+
 /** What this device has not seen in the library since it last caught up. */
 export const getChanges = () => get('/api/library/changes');
 
@@ -468,5 +477,6 @@ export default {
   getPushKey, subscribePush, unsubscribePush, testPush, checkSubtitleSync,
   getCastStatus, getCastMedia,
   getMissingEpisodes, getStorage, warmLibrary, getWarmStatus, getChanges, markChangesSeen,
+  getWarmPolicy, saveWarmPolicy, setWarmTitleRule,
   getOfflineInfo, offlineFileUrl
 };

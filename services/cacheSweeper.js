@@ -172,6 +172,68 @@ export async function sweepRoot(root, limits) {
   return { removed, freed, remaining };
 }
 
+/**
+ * Conversions that were interrupted and never cleaned up.
+ *
+ * A conversion writes to `<variant>.mp4.part` and renames it only on success,
+ * which is what stops a truncated file ever appearing at the name playback
+ * trusts. The tidy-up lives in ffmpeg's close handler — so it runs when a
+ * conversion fails, and does not run when the whole process dies: a kill from
+ * Task Manager, a crash, a power cut, a reboot mid-encode.
+ *
+ * Nothing removed them afterwards, so they accumulated. This install had 13.6
+ * GB of them, some three days old, none of which anything would ever have
+ * read: the file they belong to is either converted by now or was never
+ * finished.
+ *
+ * They cost more than their own size, too. `hasPartial` marks any directory
+ * holding one as busy so a conversion in progress is never evicted from under
+ * itself — which means an abandoned one also pinned its whole cache entry
+ * against eviction, permanently. The budget was being enforced against a set
+ * that quietly excluded them.
+ *
+ * The grace period is what distinguishes an orphan from a conversion happening
+ * right now. An active one is being written to constantly, so anything whose
+ * mtime has not moved in five minutes has been abandoned.
+ */
+export async function sweepPartials(root, { now = Date.now(), graceMs = IN_USE_GRACE_MS } = {}) {
+  let removed = 0;
+  let freed = 0;
+
+  let entries;
+  try {
+    entries = await fsp.readdir(root, { withFileTypes: true });
+  } catch {
+    return { removed, freed };
+  }
+
+  for (const entry of entries) {
+    const full = path.join(root, entry.name);
+
+    if (entry.isDirectory()) {
+      const inner = await sweepPartials(full, { now, graceMs });
+      removed += inner.removed;
+      freed += inner.freed;
+      continue;
+    }
+
+    if (!entry.name.endsWith('.part')) continue;
+
+    try {
+      const stat = await fsp.stat(full);
+      if (now - stat.mtimeMs < graceMs) continue;
+      await fsp.rm(full, { force: true });
+      removed += 1;
+      freed += stat.size;
+    } catch {
+      // Finished and renamed between the readdir and the stat, which is the
+      // one outcome here that needs no action at all.
+    }
+  }
+
+  return { removed, freed };
+}
+
 /** Trim every cache root. Safe to call at any time. */
 export async function sweep() {
   const mp4 = await sweepRoot(config.mp4Cache.dir, {
@@ -189,7 +251,18 @@ export async function sweep() {
    * by age. Kept on the same schedule because it is the same question.
    */
   const hls = segmentStore.sweep();
-  return { mp4, thumbs, hls };
+
+  /*
+   * Interrupted conversions, which the budget rules above cannot see: a
+   * `.part` file belongs to no finished cache entry, so a sweep that only
+   * evicts whole directories leaves it there forever.
+   */
+  const partials = await sweepPartials(config.mp4Cache.dir);
+  if (partials.removed > 0) {
+    log.info(`removed ${partials.removed} interrupted conversion(s), freeing ${formatBytes(partials.freed)}`);
+  }
+
+  return { mp4, thumbs, hls, partials };
 }
 
 let timer = null;

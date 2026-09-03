@@ -318,9 +318,17 @@ sends a keepalive, so a long pause is not reaped out from under it.
 | Directory | Holds | Trimmed by |
 |---|---|---|
 | `cache/mp4` | a browser-native copy of anything played on a non-direct path, roughly source-sized | `MP4_CACHE_MAX_GB`, then `MP4_CACHE_TTL_DAYS` |
+| `cache/hls/_shared` | segments pooled across sessions | `HLS_SHARED_CACHE_MAX_GB`, least recently used first |
 | `cache/thumbs` | seek-preview frames, a few hundred KB per file | `THUMB_CACHE_MAX_GB` / `THUMB_CACHE_TTL_DAYS` |
 | `cache/hls` | live segments, bounded per session and reaped when idle | itself |
 | `temp/` | in-progress downloads, moved into the library when complete | itself |
+
+Interrupted conversions are swept up too. A conversion writes to a `.part`
+file and renames it only on success, so nothing truncated ever appears at the
+name playback trusts — but the tidy-up runs in ffmpeg's close handler, which a
+kill from Task Manager or a power cut never reaches. Those files were never
+removed, and worse, each one made its cache entry look busy and so exempt from
+eviction. This install had 13.6 GB of them.
 
 Both budgeted caches are swept on boot and every `CACHE_SWEEP_INTERVAL_MS`:
 whatever is past its TTL goes first, then the least recently played until the
@@ -500,6 +508,29 @@ ffmpeg slots, one file at a time, always yielding to whatever is playing.
 A library that already exists never went through that, so **Settings →
 Performance → Convert library ahead of time** is the catch-up. It is safe to
 start and walk away from.
+
+#### Choosing what gets converted
+
+Converting everything is right for a library of 1080p web rips and wrong for
+almost anything else: a 4K remux converted for a phone that will never play it
+is an hour of encoding and twenty gigabytes spent on a file nobody asked for.
+**Settings → Performance → What gets converted** sets the rules.
+
+| Rule | For |
+|---|---|
+| Films / Shows | Turning off a whole kind |
+| Size limit | Leaving remuxes alone and converting them on first play instead |
+| Never convert paths containing | A folder of extras, a release group, a drive |
+| A title's own rule | The exception, in either direction |
+
+A rule about one title beats every general rule, both ways round — "always" is
+usually said *because* the size limit would have skipped it. It is set on the
+title's own page, under **Convert ahead of time**, where the thought actually
+occurs.
+
+The panel shows a dry run against the current library rather than only the
+rules, because the rules on their own do not answer the question anyone has:
+how many files, how many gigabytes, and how many were passed over and why.
 
 **HDR is passed through** to displays that can show it. Tone mapping is right
 for an ordinary screen — a browser renders a PQ stream as if the curve were
@@ -893,6 +924,8 @@ and rebuilt on rescan. Scans are single-flight — concurrent callers share one 
 | `GET` | `/api/torrents/source-stats` | How each search source has behaved lately |
 | `GET` | `/api/torrents/account` | The AllDebrid account behind every download |
 | `GET` | `/api/library/changes` | What this device has not seen yet |
+| `GET`/`PUT` | `/api/library/warm/policy` | What gets converted ahead of time, and a dry run |
+| `PUT` | `/api/library/warm/policy/title` | One title's own rule: auto, always or never |
 | `GET` | `/api/diagnostics/encoders` | Every ffmpeg process running now |
 | `DELETE` | `/api/diagnostics/encoders/:id` | Stop one |
 | `GET` | `/api/admin/log` | Recent log lines, redacted |

@@ -686,6 +686,38 @@ function jobRow(job) {
  * Detail modal
  * ----------------------------------------------------------------------- */
 
+/**
+ * Whether this title is converted ahead of time.
+ *
+ * On the title's own page because that is where the thought occurs — usually
+ * while looking at a 4K remux and realising the machine has been spending an
+ * hour a time converting copies of it for a phone that will never play it.
+ *
+ * Three states rather than a switch. "Auto" is not the same as "always": it
+ * means the general rules decide, and the difference matters the moment a size
+ * limit is set.
+ */
+export function renderWarmRule(item, isShow) {
+  const rules = state.settings?.warmPolicy?.policy?.titles || {};
+  const key = `${isShow ? 'show' : 'movie'}:${item.tmdb_id}`;
+  const choice = rules[key] || 'auto';
+
+  const option = (value, label, hint) => `
+    <button class="choices__item${choice === value ? ' is-active' : ''}"
+      data-action="warm-rule" data-kind="${isShow ? 'show' : 'movie'}"
+      data-id="${item.tmdb_id}" data-choice="${value}" title="${esc(hint)}">${label}</button>`;
+
+  return `
+    <div class="modal__warm">
+      <span class="modal__warm-label">Convert ahead of time</span>
+      <div class="choices">
+        ${option('auto', 'Auto', 'Let the rules in Settings decide')}
+        ${option('always', 'Always', 'Convert this even when the rules would skip it')}
+        ${option('never', 'Never', 'Never convert this — play it as it is')}
+      </div>
+    </div>`;
+}
+
 export function renderDetailModal(item) {
   const root = document.getElementById('modal-root');
   if (!root) return;
@@ -735,6 +767,7 @@ export function renderDetailModal(item) {
                     data-id="${item.tmdb_id}"
                     data-title="${esc(item.title)}">${unowned ? 'Find torrents' : 'Find More'}</button>
           </div>
+          ${unowned ? '' : renderWarmRule(item, isShow)}
           ${unowned && isShow
     ? '<p class="modal__hint">Shows are indexed one episode at a time — pick a season and episode on the next screen.</p>'
     : ''}

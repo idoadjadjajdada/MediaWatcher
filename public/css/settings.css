@@ -217,3 +217,13 @@
 .enrol__detail { flex: 1; min-width: 0; }
 .enrol__url { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
   overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- what gets converted ahead of time ---- */
+.warm__exclude { width: 100%; margin-top: var(--space-2); resize: vertical; line-height: 1.5; }
+.warm-titles { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); }
+.warm-title {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-2) 0; border-bottom: 1px solid var(--line-2, var(--line));
+}
+.warm-title__name { flex: 1; min-width: 0; font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

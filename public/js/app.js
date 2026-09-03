@@ -486,6 +486,24 @@ const ACTIONS = {
   'settings-refresh': () => settings.refreshDiagnostics(),
   'settings-kill-encoder': (el) => settings.killEncoder(el.dataset.id),
   'settings-benchmark': () => settings.runBenchmark(),
+  'warm-exclude': (el) => settings.editWarmExclude(el.value),
+  'warm-rule': async (el) => {
+    try {
+      await api.setWarmTitleRule(el.dataset.kind, Number(el.dataset.id), el.dataset.choice);
+      // Kept on state so the modal redraws with the new choice, and so the
+      // Settings page agrees with it without being reloaded.
+      const warmPolicy = await api.getWarmPolicy().catch(() => state.settings?.warmPolicy);
+      setState({ settings: { ...state.settings, warmPolicy } });
+      views.toast('success', el.dataset.choice === 'never'
+        ? 'This will not be converted ahead of time'
+        : el.dataset.choice === 'always'
+          ? 'This will always be converted ahead of time'
+          : 'Back to the general rules');
+    } catch (error) {
+      views.toast('error', 'Could not save that', error.message);
+    }
+  },
+  'warm-title-clear': (el) => settings.clearWarmTitle(el.dataset.kind, el.dataset.id),
   'settings-reset-sources': () => settings.resetSourceStats(),
   'settings-enrol': () => settings.createEnrolment(),
   'settings-push-on': () => settings.enablePush(),
@@ -984,6 +1002,15 @@ async function boot() {
    * yet and report the whole thing as gone.
    */
   api.getChanges().then((changes) => setState({ changes })).catch(() => { /* not worth a toast */ });
+
+  /*
+   * The warm rules are small and a title's page needs them to draw its own
+   * control, so they are fetched at boot rather than only when Settings is
+   * opened — otherwise every title would show "Auto" until you had been there.
+   */
+  api.getWarmPolicy()
+    .then((warmPolicy) => setState({ settings: { ...state.settings, warmPolicy } }))
+    .catch(() => { /* the control falls back to Auto, which is the default anyway */ });
   syncJobPolling();
 
   // Deliberately not awaited: Home renders from the library first and the

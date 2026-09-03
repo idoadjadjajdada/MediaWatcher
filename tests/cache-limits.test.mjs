@@ -196,5 +196,52 @@ check('but it is retried eventually',
 check('and immediately if frames have appeared since',
   shouldGenerate({ count: 30, total: 100, running: false, attempt: gaveUp, now: NOW + 1000 }));
 
+console.log('\ninterrupted conversions');
+
+/*
+ * A conversion writes to a .part file and renames it only on success, so the
+ * tidy-up lives in ffmpeg's close handler — which does not run when the whole
+ * process dies. The measured install had 13.6 GB of these, and each one also
+ * pinned its cache directory against eviction by looking like work in
+ * progress.
+ */
+{
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const nodePath = await import('node:path');
+  const { sweepPartials } = await import('../services/cacheSweeper.js');
+
+  const scratch = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'mw-partials-'));
+  const nested = nodePath.join(scratch, 'abc123');
+  fs.mkdirSync(nested, { recursive: true });
+
+  const orphan = nodePath.join(nested, 'h264.mp4.part');
+  const finished = nodePath.join(nested, 'copy.mp4');
+  const active = nodePath.join(nested, 'active.mp4.part');
+  fs.writeFileSync(orphan, Buffer.alloc(2048));
+  fs.writeFileSync(finished, Buffer.alloc(1024));
+  fs.writeFileSync(active, Buffer.alloc(512));
+
+  // Old enough to be abandoned; the other was written just now.
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  fs.utimesSync(orphan, old, old);
+
+  const result = await sweepPartials(scratch);
+  check('removes an abandoned partial', result.removed === 1);
+  check('and reports what it freed', result.freed === 2048);
+  check('it is actually gone', !fs.existsSync(orphan));
+  // The one distinction that matters: a conversion running right now is being
+  // written to constantly, and deleting it would break the job.
+  check('leaves one that is still being written', fs.existsSync(active));
+  check('and never touches a finished file', fs.existsSync(finished));
+
+  const again = await sweepPartials(scratch);
+  check('a second pass finds nothing left', again.removed === 0);
+  check('a directory that does not exist is not an error',
+    (await sweepPartials(nodePath.join(scratch, 'nope'))).removed === 0);
+
+  fs.rmSync(scratch, { recursive: true, force: true });
+}
+
 console.log(`\n${total - failures}/${total} passed`);
 process.exit(failures > 0 ? 1 : 0);
