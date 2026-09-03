@@ -663,3 +663,26 @@ html.is-player-open body { overflow: hidden; }
 }
 .subsync--good { color: #4ac97e; }
 .subsync--bad { color: #e5b04b; }
+
+/* ---- O|I switch, in the speed menu ----
+   A menu row rather than a control bar button: it belongs beside the speeds it
+   changes the behaviour of, and it is not something anyone reaches for
+   mid-scene. */
+.player__menu-item--switch {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+}
+.switchmark {
+  display: inline-flex; align-items: center; gap: 1px; flex: none;
+  padding: 1px 6px; border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  color: var(--fg-3);
+}
+/* The lit half is the state you are in: O for off, I for on — the same reading
+   as the symbol on a power switch. */
+.switchmark__o, .switchmark__i { opacity: 0.35; transition: opacity 120ms, color 120ms; }
+.switchmark__bar { opacity: 0.4; margin: 0 1px; }
+.switchmark:not(.is-on) .switchmark__o { opacity: 1; color: var(--fg); }
+.switchmark.is-on { border-color: #4ac97e; }
+.switchmark.is-on .switchmark__i { opacity: 1; color: #4ac97e; }

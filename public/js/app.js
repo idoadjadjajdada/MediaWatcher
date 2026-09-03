@@ -541,6 +541,7 @@ const ACTIONS = {
   'subtitle-colour': (el) => player.setSubtitleColour(el.dataset.colour),
   'subtitle-reset': () => player.resetSubtitleStyle(),
   'set-speed': (el) => player.setSpeed(el.dataset.speed),
+  'toggle-pitch': () => player.togglePitchMode(),
   'set-quality': (el) => player.setQuality(el.dataset.quality),
   'set-audio-track': (el) => player.setAudioTrack(el.dataset.index),
   'toggle-stats': () => player.toggleStats(),

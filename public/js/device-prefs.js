@@ -33,7 +33,18 @@ export const FIELDS = {
   // Whether the resume pill appears at all.
   resumePrompt: { default: true, coerce: (v) => v === true || v === 'true' },
   // Seek step for the on-screen buttons and arrow keys.
-  seekSeconds: { default: 10, coerce: (v) => clampInt(v, 5, 60, 10) }
+  seekSeconds: { default: 10, coerce: (v) => clampInt(v, 5, 60, 10) },
+  /*
+   * Whether the pitch follows the speed.
+   *
+   * Off by default, which is what every browser does on its own: at 1.5x the
+   * voices stay at the pitch they were recorded at. Turning it on gives the
+   * tape-machine behaviour instead — slower is deeper, faster is higher — and
+   * it is a real preference rather than a bug, because pitch correction
+   * smears transients and some people would rather have the chipmunks than
+   * the artefacts.
+   */
+  pitchFollowsSpeed: { default: false, coerce: (v) => v === true || v === 'true' }
 };
 
 function clampInt(value, min, max, fallback) {

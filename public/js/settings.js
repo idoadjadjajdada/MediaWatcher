@@ -122,6 +122,10 @@ function renderPlayback(prefs) {
     toggle('resumePrompt', prefs.resumePrompt))}
       ${row('Seek step', 'How far the skip buttons and arrow keys jump.',
     stepper('seekSeconds', prefs.seekSeconds, 's', 5, 60, 5))}
+      ${row('Pitch follows speed',
+    'Off, voices keep their pitch at any speed. On, slower is deeper and faster is higher — '
+    + 'the way a tape does it, with no pitch correction to smear the transients.',
+    toggle('pitchFollowsSpeed', prefs.pitchFollowsSpeed))}
     </section>`;
 }
 

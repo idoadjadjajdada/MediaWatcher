@@ -32,7 +32,7 @@ import { parseAss, renderAssText, eventsAt, alignmentToAnchor } from './ass.js';
 import {
   prefsKey, matchAudio, matchSubtitle, describeAudio, describeSubtitle
 } from './track-prefs.js';
-import { loadDevicePrefs } from './device-prefs.js';
+import { loadDevicePrefs, saveDevicePrefs } from './device-prefs.js';
 import * as offline from './offline.js';
 import * as adaptive from './adaptive.js';
 
@@ -300,6 +300,12 @@ async function openInner(filePath) {
     trackKey,
     prefs,
     speed: 1,
+    /*
+     * Read from this device rather than reset per file: someone who wants the
+     * tape-machine behaviour wants it for everything, and having to switch it
+     * on again at the start of each episode would make it useless.
+     */
+    pitchFollowsSpeed: loadDevicePrefs().pitchFollowsSpeed,
     audioOffset: (saved && Number(saved.audio_offset)) || 0,
     // Which audio stream of the file to decode. The server re-encodes the
     // chosen one, so changing it means a new stream, exactly like the delay.
@@ -495,6 +501,13 @@ function endHlsSession() {
 }
 
 function load(startAt = 0, { autoplay = true } = {}) {
+  /*
+   * Every path below either attaches a new source or hands the element to
+   * hls.js, and a fresh source is where a browser is most likely to have
+   * forgotten the pitch flag. Cheap enough to simply reassert every time.
+   */
+  applyPitchMode();
+
   /*
    * A saved copy wins over everything. It is already a browser-native file,
    * so it needs no decision from the server and plays with the network down -
@@ -1272,6 +1285,17 @@ function buildSpeedPopover() {
     <div class="player__menu-label">Playback speed</div>
     ${SPEEDS.map((speed) => `
       <button class="player__menu-item${ctx.speed === speed ? ' is-active' : ''}" data-action="set-speed" data-speed="${speed}">${speed}&times;</button>`).join('')}
+    ${pitchControlAvailable() ? `
+      <button class="player__menu-item player__menu-item--switch" data-action="toggle-pitch"
+        role="switch" aria-checked="${ctx.pitchFollowsSpeed}"
+        title="${ctx.pitchFollowsSpeed
+    ? 'Slower is deeper, faster is higher'
+    : 'Voices keep their pitch at any speed'}">
+        <span>Pitch follows speed</span>
+        <span class="switchmark${ctx.pitchFollowsSpeed ? ' is-on' : ''}" aria-hidden="true">
+          <span class="switchmark__o">O</span><span class="switchmark__bar">|</span><span class="switchmark__i">I</span>
+        </span>
+      </button>` : ''}
     <div class="player__menu-label">Quality</div>
     ${QUALITY_LABELS.map(([value, label]) => `
       <button class="player__menu-item${quality === value ? ' is-active' : ''}" data-action="set-quality" data-quality="${value}">${label}</button>`).join('')}
@@ -1825,6 +1849,55 @@ export function setSpeed(speed) {
   if (!ctx) return;
   ctx.speed = Number(speed);
   ctx.video.playbackRate = ctx.speed;
+  // Re-applied on every change: a browser is entitled to reset the flag when
+  // the rate moves, and some do.
+  applyPitchMode();
+  buildMenu();
+}
+
+/* --------------------------------------------------------------------------
+ * Pitch
+ *
+ * `preservesPitch` defaults to true everywhere, which is why 1.5x sounds like
+ * the same voices talking faster rather than like a tape being wound on.
+ * Turning it off is the old behaviour: slower is deeper, faster is higher.
+ *
+ * Worth offering rather than assuming, because pitch correction is not free —
+ * it works by stretching and overlapping windows of audio, which smears
+ * transients and gives music a watery quality. For a concert film at 0.9x
+ * some people would rather have the honest pitch shift.
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Push the current preference onto the element.
+ *
+ * All three spellings, because this is one of the few places where the vendor
+ * prefixes are still load-bearing: Safari only understands `webkitPreservesPitch`
+ * before 17, and Firefox only `mozPreservesPitch` before 116. Setting a
+ * property a browser does not have is harmless, and missing the one it does
+ * have means the toggle silently does nothing.
+ */
+function applyPitchMode() {
+  if (!ctx?.video) return;
+  const preserve = !ctx.pitchFollowsSpeed;
+  for (const key of ['preservesPitch', 'webkitPreservesPitch', 'mozPreservesPitch']) {
+    if (key in ctx.video) ctx.video[key] = preserve;
+  }
+}
+
+/** Does this browser let the pitch follow the speed at all? */
+export function pitchControlAvailable() {
+  const probe = document.createElement('video');
+  return 'preservesPitch' in probe || 'webkitPreservesPitch' in probe || 'mozPreservesPitch' in probe;
+}
+
+export function togglePitchMode() {
+  if (!ctx) return;
+  ctx.pitchFollowsSpeed = !ctx.pitchFollowsSpeed;
+  // Per device, like every other playback preference: it describes the room
+  // and the ears in it, not the file.
+  saveDevicePrefs({ pitchFollowsSpeed: ctx.pitchFollowsSpeed });
+  applyPitchMode();
   buildMenu();
 }
 
@@ -2499,6 +2572,10 @@ function attach() {
     });
   }
 
+  // Set on the element before anything plays, so the first frame of audio is
+  // already the right shape rather than switching a second in.
+  applyPitchMode();
+
   // Asked once per open rather than at boot: it costs a request to the server
   // and a script from gstatic, and neither is worth doing for someone who
   // never opens the player.
@@ -2697,6 +2774,7 @@ function playNextImmediate() {
 export default {
   open, close, isOpen, togglePlay, toggleMute, toggleFullscreen,
   skip, setSubtitle, setSpeed, setQuality, setAudioTrack, toggleStats,
+  togglePitchMode, pitchControlAvailable,
   answerResume, toggleShortcuts, showAirplayPicker, skipIntro,
   togglePopover, closePopovers, setPicture,
   playNext, cancelNext

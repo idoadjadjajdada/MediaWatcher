@@ -59,6 +59,41 @@ page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text(
 page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
 
 /**
+ * Get past the gate.
+ *
+ * Every one of these suites predates the password, and none of them logged in
+ * — so against a gated server they were quietly measuring the login page and
+ * reporting a library with nothing in it. The password is read from `.env`
+ * because that is where it already is and the test runs on the same machine;
+ * `MW_PASSWORD` overrides it for a server configured elsewhere.
+ */
+async function signIn() {
+  let password = process.env.MW_PASSWORD || '';
+  if (!password) {
+    try {
+      const env = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf8');
+      const line = env.split(/\r?\n/).find((entry) => entry.startsWith('AUTH_PASSWORD='));
+      // The value may carry a trailing comment, as everything in .env.example does.
+      password = line ? line.slice('AUTH_PASSWORD='.length).split(/\s+#/)[0].trim() : '';
+    } catch {
+      // No .env beside the test. An ungated server still works.
+    }
+  }
+  if (!password) return;
+
+  await page.goto(`${BASE}/login.html`, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(async (secret) => {
+    await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: secret, remember: false })
+    });
+  }, password);
+}
+
+await signIn();
+
+/**
  * Open the first playable file of a kind. Returns false when the library has
  * nothing of that kind, so a movie-less library skips rather than fails.
  */
@@ -419,6 +454,63 @@ if (!(await openFirst('movie'))) {
   console.log('  [skip] no movie in the library');
 } else {
   check('a movie has no episode arrow', (await page.$eval('#ep-arrow', (el) => el.hidden)) === true);
+}
+
+console.log('\npitch');
+/*
+ * The O|I switch has to reach the element, not just the menu. `preservesPitch`
+ * defaults to true everywhere, so this checks the default, the flip, that a
+ * speed change does not undo it - browsers are entitled to reset the flag when
+ * the rate moves - and that it comes back off again.
+ */
+if (!(await openFirst('movie')) && !(await openFirst('episode'))) {
+  console.log('  [skip] nothing playable in the library');
+} else {
+  const readPitch = () => page.evaluate(() => {
+    const video = document.querySelector('video');
+    return {
+      preserves: video?.preservesPitch,
+      rate: video?.playbackRate,
+      on: Boolean(document.querySelector('.switchmark.is-on')),
+      present: Boolean(document.querySelector('[data-action="toggle-pitch"]'))
+    };
+  });
+
+  // Named calls rather than a string to evaluate: the page's CSP forbids
+  // 'unsafe-eval', and correctly refused a `new Function` helper here.
+  const setSpeed = (rate) => page.evaluate(async (value) => {
+    const player = await import('/js/player.js');
+    player.setSpeed(value);
+  }, rate);
+  const togglePitch = () => page.evaluate(async () => {
+    const player = await import('/js/player.js');
+    player.togglePitchMode();
+  });
+
+  await setSpeed(1);
+  await page.waitForTimeout(250);
+
+  let pitch = await readPitch();
+  check('the switch is in the speed menu', pitch.present);
+  check('pitch is preserved by default', pitch.preserves === true, pitch);
+  check('and the switch reads off', pitch.on === false, pitch);
+
+  await togglePitch();
+  await page.waitForTimeout(250);
+  pitch = await readPitch();
+  check('turning it on stops the element preserving pitch', pitch.preserves === false, pitch);
+  check('and the switch reads on', pitch.on === true, pitch);
+
+  await setSpeed(1.5);
+  await page.waitForTimeout(250);
+  pitch = await readPitch();
+  check('a speed change does not undo it', pitch.rate === 1.5 && pitch.preserves === false, pitch);
+
+  await togglePitch();
+  await setSpeed(1);
+  await page.waitForTimeout(250);
+  pitch = await readPitch();
+  check('turning it off restores pitch preservation', pitch.preserves === true, pitch);
 }
 
 console.log('\nconsole');
