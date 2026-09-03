@@ -153,8 +153,12 @@ at a timestamp, so seek accuracy is bounded by the source's keyframe interval.
 
 ### Known limits
 
-- **No hardware-accelerated transcoding.** A full HEVC → H.264 transcode is
-  CPU-bound. It works, but on a weak machine it will not keep up with 4K.
+- **Hardware encoding is used for tone mapping only.** `transcoder.js` finds
+  NVENC, QSV or AMF and uses it when tone mapping, where the CPU is already
+  busy with the colour conversion; an ordinary HEVC → H.264 transcode still
+  runs on libx264. **Settings → Performance → This machine** measures both, so
+  the gap is a number rather than a guess — 1.48x against 2.14x on the machine
+  this was written on.
 - **Bitmap subtitles (PGS/VobSub) cannot be shown.** They are images, and turning
   them into WebVTT would need OCR. Text-based tracks (SRT, ASS, embedded SubRip)
   are fine.
@@ -237,6 +241,25 @@ The tab authenticates with `config/admin-key`, a 32-byte key the server writes
 on first boot. It is machine-local, gitignored, and must never be committed. A
 signed-in phone holds a device cookie but not this key, so it cannot enumerate
 or revoke anything.
+
+### Adding a device without typing the password
+
+The gate is right and it is miserable on a television: twelve characters
+entered with a D-pad and an on-screen keyboard, usually while someone waits.
+
+**Settings → Devices → Add a device** mints an enrolment code and draws it as a
+QR. The device that scans it is signed in — the login page reads the code out
+of the URL, strips it from the address bar before doing anything else, and
+signs itself in without anyone pressing a key.
+
+Good once and for five minutes, so the photograph someone takes of the screen
+is worth nothing afterwards. Codes live in memory, so a restart during
+enrolment costs one re-scan and there is nothing on disk to leak. Every way of
+failing answers identically: a caller who can tell "expired" from "never
+existed" learns whether a code ever existed.
+
+Minting one needs the password, because a code is a way into the server and
+handing one out should be at least as hard as signing in.
 
 ### Playback delivery
 
@@ -324,6 +347,63 @@ working transport controls, including next and previous episode for a show.
 receiver on the network. It works because everything needing ffmpeg is HLS —
 AirPlay will not accept an arbitrary progressive stream.
 
+### Notifications
+
+The launcher raises a toast on the machine the server runs on, which is the one
+place you are not when a download finishes. **Settings → Notifications**
+subscribes this device instead.
+
+The push carries no payload. Encrypting one means the whole of RFC 8291 — ECDH
+against the subscription key, HKDF, AES-128-GCM, record padding — which is a
+library's worth of cryptography to get subtly wrong, and it would mean the
+title of whatever you just downloaded passing through Google or Mozilla on its
+way here. Instead the push is an empty knock and the service worker asks this
+server what it was about. Less code, and the push service carries a knock at
+the door rather than the message.
+
+Three things have to be true and they fail differently, so the page reports
+them separately: the browser supports Push, permission was granted, and this
+device is subscribed. On iPhone and iPad it works only once MediaWatcher has
+been added to the home screen — Safari allows notifications from an installed
+app and not from a tab. There is a test button, because there are four places
+this can break and the alternative is finding out on the night it matters.
+
+`PUSH_CONTACT` is the address put in the signed token for the push service's
+own logs. It defaults to an `.invalid` address deliberately: nothing here needs
+a real one, and sending a personal address to Google on every push is not a
+reasonable default.
+
+### Chromecast
+
+Casting is not the same shape as AirPlay, and the difference decides what it
+takes to support. AirPlay hands the stream over from a device that is already
+signed in. A Chromecast is *told a URL* and fetches it itself, from a device
+that holds no cookie, cannot be given one, and cannot join a tailnet.
+
+So two things have to be true, and both are deliberately off by default:
+
+```ini
+BIND_HOST=0.0.0.0     # the server listens where a Chromecast can reach it
+CAST_ENABLED=1
+```
+
+`CAST_ENABLED` alone, with the server still on loopback, leaves casting off
+rather than producing a button that cannot work. The boot log says so whenever
+the server is listening wider than loopback, because that is a real change to
+what is exposed: the gate is still in front of everything, but everything on
+the network can now reach the gate.
+
+Permission to fetch is a signed link — an HMAC over the one path the receiver
+may read and an expiry, signed with the machine-local admin key. It names a
+single path, so a link for one film admits a request for that film and nothing
+else; it expires after six hours; and only something already signed in can mint
+one. The endpoints it may ever name are a fixed list: the stream, HLS segments,
+and subtitles.
+
+The Cast sender SDK is the only third-party script in the app, and it is
+allowed into the CSP only when casting is switched on — an install that does
+not cast keeps a policy with no external script origin in it at all.
+
 ### Skip Intro
 
 A **Skip intro** button appears when the app knows where a season's title
@@ -387,6 +467,29 @@ stored is the language and where the track came from, never a stream index:
 numbering belongs to the file, so one release muxing the commentary second and
 the next muxing it fifth would otherwise start episode two on the commentary.
 
+### Are these subtitles in time?
+
+A subtitle cut for a different release is out from the first line, and the way
+anyone finds out is by watching two minutes of dialogue arrive at the wrong
+moment. **Check against the audio**, in the subtitles menu, asks the file: a
+cue begins when someone begins speaking, so cue starts and sound starts should
+coincide, and if one set has to be slid eight seconds to meet the other then
+the track is eight seconds out.
+
+It compares onsets rather than loudness, and that is the whole difficulty. A
+loudness threshold marks 58-74% of a film's opening ten minutes as loud —
+music, effects, room tone and dialogue together — so every candidate offset
+scores well, the peak is flat, and the answer lands wherever the noise is. The
+first version of this reported every file in the library as out of sync with
+its own embedded track. Onsets are rare where loudness is common.
+
+The thresholds come from measurement: five films checked against their own
+tracks, which must read as in sync, and again with every cue moved eight
+seconds, which must read as out. One of the five — a quiet film with sparse
+dialogue over a lot of ambient sound — cannot be told apart either way, and
+reports "cannot tell" rather than guessing. A warning that cries wolf on a
+correct track spends the credibility that makes the true ones worth reading.
+
 ### Ahead-of-time conversion
 
 Playing an MKV that no browser can decode means tone-mapping and encoding it
@@ -410,6 +513,82 @@ always HEVC and a re-encode cannot preserve it.
 settles. Not a multi-rendition ladder: every stream here is encoded on demand,
 so three renditions would mean three encoders per viewer. Picking a level by
 hand turns it off.
+
+### Pooled segments
+
+A session owns an encoder; it does not own the bytes that encoder produced.
+Two devices watching the same episode at the same quality, one device seeking
+back into a stretch it already played, or the same file opened again tomorrow
+all want segment 214 to be the same four megabytes — and each used to pay for a
+full re-encode, because segments lived in a per-session directory that was
+deleted with the session.
+
+Sessions are still keyed on the viewer, because a *running* encoder cannot be
+shared: a seek by either party moves it out from under the other. Finished
+segments are pooled under the same identity with the viewer removed, as a hard
+link where the filesystem allows one — so a pooled segment usually costs no
+extra disk at all. The pool is wiped at boot with the rest of `cache/hls` and
+trimmed to `HLS_SHARED_CACHE_MAX_GB`, least recently used first.
+
+### How much a run encodes
+
+One encoder run used to produce five minutes of video whatever was happening,
+so opening a title to see what it was cost five minutes of encoding for the
+thirty seconds actually watched.
+
+The first run is now two minutes, and every run that ends by spending its
+budget rather than by a seek doubles the next, up to `HLS_ENCODE_AHEAD_SECONDS`.
+Someone watching straight through reaches the ceiling within a couple of runs;
+someone browsing never does. A seek resets it, because a seek is the one thing
+that proves the last run's remaining output was encoded for nobody.
+
+### Encoders
+
+**Settings → Encoders** lists every ffmpeg process the server is running: what
+it is for, which file, how far it has reached, and its realtime factor. Below
+1× an encoder is producing video more slowly than it is being watched, which is
+a stall in the making rather than one that has happened yet. Each row has a
+Stop, which is safe by construction — every process on that list is restartable,
+an HLS encoder by the next segment request and a conversion by the next play.
+
+The numbers come from ffmpeg's own `-progress` stream rather than from parsing
+the status line it writes for a terminal.
+
+### Encoding on another machine
+
+The slow path here is always the CPU: a 4K HDR film tone-mapped to H.264 takes
+about ninety minutes of the same processor that is meant to be serving
+playback. A second PC can take the job instead.
+
+On the machine doing the work:
+
+```ini
+ENCODE_WORKER=1
+ENCODE_SECRET=the-same-value-in-both-files
+```
+
+On the machine that owns the library:
+
+```ini
+ENCODE_WORKERS=http://box2:3000
+ENCODE_SELF_URL=http://box1:3000
+ENCODE_SECRET=the-same-value-in-both-files
+```
+
+The worker pulls the source over HTTP, converts it, and holds the result until
+this end collects it. It pulls rather than both machines sharing a disk because
+the shared-storage version needs a NAS, matching paths at both ends and
+credentials, none of which this app has anywhere else — and the transfer is not
+the expensive part.
+
+There is nobody to sign in, so the two ends prove themselves to each other with
+the shared secret, and the source link is signed over one path: a worker given
+a link to one film cannot read another with it. Every failure — worker asleep,
+busy, unreachable, on a different version — falls back to converting locally,
+silently.
+
+`ENCODE_SELF_URL` is configured rather than worked out because behind a tunnel
+a server's own idea of its address is usually wrong.
 
 ### Downloads queue
 
@@ -481,6 +660,65 @@ Tunable in `.env`: `REMOTE_DEFAULT_QUALITY`,
 
 ---
 
+## Running it from somewhere else
+
+Reading the log meant the launcher window, changing a setting meant a text
+editor, and restarting meant going home. Over the tunnel none of those are
+available, which is exactly when they are wanted. All three are in **Settings →
+Server**.
+
+**The log** is a ring of the last few thousand lines, with a level filter and a
+follow that polls only while the page is open. Anything that looks like a key
+is redacted on the way into the buffer: the console is on the machine that owns
+the keys, this is reachable from a phone.
+
+**The settings file** can be edited in place. Comments, ordering and unrelated
+keys survive a write; secrets are masked, and a value that comes back still
+masked leaves the stored one alone. Validation happens before anything is
+written, so a rejected change leaves the file exactly as it was, and the write
+is a temporary file and a rename with the previous contents kept at `.env.bak`.
+Nothing takes effect until the server restarts — every value is read once at
+boot and then frozen, and the page says so rather than appearing to apply
+something it has not.
+
+**Restarting** exits with a code the launcher understands, so a requested
+restart comes straight back instead of being backed off and counted against the
+crash-loop budget. It refuses when nothing is supervising the process, because
+a server that cannot come back is not a restart.
+
+Saving settings and restarting both ask for the password again. A signed-in
+device is a cookie on a phone that might be sitting unlocked on a table.
+
+### What this machine can do
+
+**Settings → Performance → This machine** encodes a few seconds of the largest
+file in the library on each path and times it. Above 1× the encoder produces
+video faster than it is watched; below it, playback stalls and no amount of
+buffering helps.
+
+Those numbers used to live only in code comments, measured once on one machine.
+On the machine this was written on:
+
+| Path | Realtime |
+|---|---|
+| H.264, software, 1080p | 1.48x |
+| H.264, NVENC, 1080p | 2.14x |
+| HDR tone map to 1080p | 1.31x |
+| HDR tone map at 2160p | 0.42x |
+
+The last row is the 1080p tone-mapping cap earning itself.
+
+### Search sources, and the AllDebrid account
+
+**Settings → Sources** keeps a rolling hundred searches per source: the median
+and p95 to set `SEARCH_SOURCE_TIMEOUT_MS` from, timeouts separated from errors,
+and the quiet failure counted — a source that answers fast, never errors, and
+returns nothing every time.
+
+The AllDebrid account is on the same page. An expired subscription otherwise
+surfaces as downloads failing one at a time with an auth error, which is a slow
+way to learn something the account says outright.
+
 ## Search and downloads
 
 Searching queries every configured source in parallel and merges the results,
@@ -516,6 +754,49 @@ Leave `JACKETT_URL` empty and the source is skipped entirely.
 array in `services/torrentSearch.js`. A source only has to return
 `{ title, infoHash, magnet, size_bytes, seeders, source }`; ranking, badges,
 deduplication and the whole download path are source-agnostic.
+
+### Season packs
+
+The common real-world release for a show is one torrent holding a whole season.
+A job used to be one file with one destination, so taking every file wrote the
+season over one name — `Show - S01E05.mkv`, ` (2).mkv`, ` (3).mkv` — and the
+selector refused packs outright rather than do that.
+
+Each file carries its own numbering in its name, which is what the library
+scanner already reads. A pack is its own kind of request now: every file is
+parsed on its own and filed where it belongs. A file that will not say which
+episode it is gets skipped rather than guessed at, because a wrong episode
+number is silent and a missing file is visible in the season list. The same
+goes for a second copy of an episode and for a season-two file inside a
+season-one pack.
+
+### Looking inside a torrent
+
+A filename and a size do not say whether a torrent holds one episode, nine, or
+a film with three samples and a readme beside it. **Files**, on any search
+result, lists what is actually in there with each file's episode read off its
+name, and a tick per file.
+
+An explicit choice ends the argument: it is honoured against every file the
+torrent holds, including the ones the rules would have dropped, because the
+picker showed those too and ticking one means it was meant.
+
+Inspection uploads the magnet, because there is no endpoint that takes a hash
+and answers with a file list. If AllDebrid does not already hold the torrent
+then the list does not exist yet — it waits twelve seconds, says so, and
+deletes the magnet again rather than quietly starting a transfer nobody asked
+for.
+
+### Cached, or fetching?
+
+"Stuck at 50%" is the boundary between AllDebrid fetching the torrent and the
+local transfer. A job sitting there is not stuck: it is waiting on a torrent
+AllDebrid did not already hold, which can take twenty minutes. The first status
+poll answers that and the Downloads page says which is happening.
+
+There is no badge on search results, and there cannot be one: it would need an
+instant-availability lookup by hash, and AllDebrid has removed it —
+`/magnet/instant` answers `Endpoint doesn't exist` on both v4 and v4.1.
 
 ### Result ranking
 
@@ -607,6 +888,21 @@ and rebuilt on rescan. Scans are single-flight — concurrent callers share one 
 | `GET` | `/api/stream?path=` | Video, with range support or ffmpeg piping |
 | `GET` | `/api/stream/info?path=` | Playback mode, duration, tracks, and why |
 | `GET` | `/api/subs?path=` | Subtitles as WebVTT. `?list=1` enumerates tracks |
+| `GET` | `/api/subs/sync?path=` | Whether that track is in time with the audio |
+| `POST` | `/api/torrents/inspect` | What is inside a torrent, without downloading it |
+| `GET` | `/api/torrents/source-stats` | How each search source has behaved lately |
+| `GET` | `/api/torrents/account` | The AllDebrid account behind every download |
+| `GET` | `/api/library/changes` | What this device has not seen yet |
+| `GET` | `/api/diagnostics/encoders` | Every ffmpeg process running now |
+| `DELETE` | `/api/diagnostics/encoders/:id` | Stop one |
+| `GET` | `/api/admin/log` | Recent log lines, redacted |
+| `GET`/`PUT` | `/api/admin/env` | Read and change settings |
+| `POST` | `/api/admin/restart` | Stop and come back. Needs the password |
+| `POST` | `/api/admin/benchmark` | Measure this machine |
+| `POST` | `/api/auth/enrol` | A code that signs another device in |
+| `POST` | `/api/notifications/subscribe` | Register a device for push |
+| `GET` | `/api/cast/media?path=` | A signed link a Chromecast can fetch |
+| `POST` | `/api/encode/jobs` | Worker mode: take a conversion |
 
 ---
 
@@ -644,6 +940,17 @@ Everything lives in `.env`. Only the first three are required.
 | `TAILNET_HOST` | empty | Tailnet hostname, so CORS accepts that origin |
 | `REMOTE_DEFAULT_QUALITY` | `high` | What `Auto` means over the tunnel |
 | `QUALITY_*_HEIGHT` / `QUALITY_*_MAXRATE` | see `.env.example` | The remote quality ladder |
+| `HLS_ENCODE_AHEAD_MIN_SECONDS` | `120` | What the first encoder run produces, before it doubles |
+| `HLS_SHARED_CACHE_MAX_GB` | `4` | Budget for segments pooled across sessions |
+| `HLS_CACHE_DIR` | `cache/hls` | Where sessions and the pool live |
+| `BIND_HOST` | `127.0.0.1` | Listen wider. Needed for casting, and only for casting |
+| `CAST_ENABLED` | `0` | Offer Chromecast. Ignored while the server is loopback-only |
+| `CAST_HOST` | empty | Override the address handed to a Chromecast |
+| `PUSH_CONTACT` | an `.invalid` address | Contact in the VAPID token. Not your email |
+| `ENCODE_WORKER` | `0` | Accept conversions from another MediaWatcher |
+| `ENCODE_WORKERS` | empty | Servers this one may hand conversions to |
+| `ENCODE_SELF_URL` | empty | How a worker reaches this machine to pull the source |
+| `ENCODE_SECRET` | empty | The same value in both `.env` files |
 
 ---
 
@@ -679,7 +986,9 @@ for more coverage.
 **Downloads sit at 50%**
 That is the boundary between AllDebrid fetching the torrent and the local
 transfer. An uncached torrent has to download on AllDebrid's side first; the bar
-moves again once the direct link is unlocked.
+moves again once the direct link is unlocked. The job now says which of the two
+is happening, so this is visible rather than something to work out from a
+percentage that is not moving.
 
 **`better-sqlite3` fails to install**
 It needs a prebuilt binary for your Node version. If none exists you will need
@@ -694,8 +1003,11 @@ progress and download history, not your media. It is rebuilt on next start.
 
 ## Notes
 
-- The server binds to `127.0.0.1` only. It holds API keys and serves local files,
-  so exposing it to a network needs a deliberate reverse proxy with auth in front.
+- The server binds to `127.0.0.1` unless `BIND_HOST` says otherwise, and remote
+  access is a Tailscale tunnel rather than an open port. The one thing that
+  needs it listening wider is Chromecast, which fetches media itself from a
+  device that cannot join a tailnet — and even then the password gate is still
+  in front of everything, so what changes is who can reach the gate.
 - `.env` is gitignored; `.env.example` is not. Keep real keys out of the example.
 - Press `Ctrl+C` to stop the server cleanly. On Windows, a kill from Task Manager
   cannot run the shutdown handler — that is safe, since SQLite runs in WAL mode
