@@ -504,6 +504,33 @@ const config = {
     host: str('CAST_HOST')
   },
 
+  /*
+   * Handing conversions to another machine.
+   *
+   * The slow path here is always the CPU: a 4K HDR film tone-mapped to H.264
+   * takes about ninety minutes of the same processor that is meant to be
+   * serving playback, while a second PC on the tailnet sits idle.
+   *
+   * Both ends share one secret. There is nobody to sign in — these are
+   * servers — and a worker that took work from anything that asked would be a
+   * machine anyone on the network could spend.
+   */
+  encode: {
+    // This server will accept conversions from another one.
+    worker: str('ENCODE_WORKER', '0') === '1',
+    // Servers this one may hand conversions to, e.g. http://box2:3000
+    workers: str('ENCODE_WORKERS').split(',').map((entry) => entry.trim().replace(/\/+$/, '')).filter(Boolean),
+    secret: str('ENCODE_SECRET'),
+    /*
+     * How a worker reaches this machine to pull the source.
+     *
+     * Configured rather than worked out: behind a tunnel a server's own idea
+     * of its address is usually wrong, and a worker given the wrong one fails
+     * after downloading nothing for a minute.
+     */
+    selfUrl: str('ENCODE_SELF_URL').replace(/\/+$/, '')
+  },
+
   // Downloads
   downloads: {
     maxConcurrent: 2,

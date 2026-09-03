@@ -26,6 +26,7 @@ import { probe, isAvailable, hardwareEncoder, isHdr, tonemapChain } from './tran
 import { cacheKey } from './thumbnails.js';
 import * as ffmpegPool from './ffmpegPool.js';
 import { createProgressReader } from './ffmpegProgress.js';
+import * as encodeFarm from './encodeFarm.js';
 import * as cacheSweeper from './cacheSweeper.js';
 import { hasRoomFor, formatBytes } from './diskspace.js';
 
@@ -211,6 +212,19 @@ async function convert(filePath, target, variant) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
 
   const args = variantArgs(filePath, partial, variant, { video: info.video, encoder });
+
+  /*
+   * Somewhere else first, if there is a somewhere else.
+   *
+   * Tried before taking a local slot rather than after failing: the whole
+   * point is not to spend this machine's processor, and holding a slot while
+   * asking would block the background work this is meant to unblock. Every
+   * failure inside falls back to here, silently, because the alternative to a
+   * remote conversion is the conversion this machine was going to do anyway.
+   */
+  if (await encodeFarm.convertRemotely(filePath, target, { variant, video: info.video })) {
+    return target;
+  }
 
   // Taken before the spawn and released however the run ends, so a background
   // conversion draws on the same budget live playback does.

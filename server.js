@@ -26,6 +26,7 @@ import offlineRouter from './routes/offline.js';
 import adminRouter from './routes/admin.js';
 import notificationsRouter from './routes/notifications.js';
 import castRouter from './routes/cast.js';
+import encodeRouter from './routes/encode.js';
 import { onShutdown } from './services/lifecycle.js';
 import mediaRouter from './routes/media.js';
 import discoverRouter from './routes/discover.js';
@@ -160,6 +161,14 @@ app.use('/api/auth', authRouter);
  * cookie — was turned away by requireAuth before its own check ever ran.
  */
 app.use('/api/devices', devicesRouter);
+
+/*
+ * Also above the gate, and for the same reason. The two ends of a remote
+ * conversion are servers: neither holds a device cookie, neither can be given
+ * one, and both prove themselves with a shared secret instead. Every route in
+ * there checks it for itself.
+ */
+app.use('/api/encode', encodeRouter);
 
 app.use(requireAuth);
 
