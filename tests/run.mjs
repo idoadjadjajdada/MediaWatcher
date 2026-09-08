@@ -38,6 +38,7 @@ const SUITES = [
   { file: 'hardware-encoder.test.mjs' },
   { file: 'hls-efficiency.test.mjs' },
   { file: 'env-file.test.mjs' },
+  { file: 'updates.test.mjs' },
   { file: 'source-stats.test.mjs' },
   { file: 'season-pack.test.mjs' },
   { file: 'catalog.test.mjs' },

@@ -43,7 +43,9 @@ fs.cpSync(path.join(root, 'public'), path.join(backend, 'public'), { recursive: 
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 fs.writeFileSync(path.join(shell, 'package.json'), JSON.stringify({
   name: pkg.name, version: pkg.version, description: pkg.description,
-  author: 'MediaWatcher', main: 'desktop/main.cjs', private: true
+  author: 'MediaWatcher', main: 'desktop/main.cjs', private: true,
+  // The shell checks GitHub releases itself; the backend never sees an updater.
+  dependencies: { 'electron-updater': pkg.dependencies['electron-updater'] }
 }, null, 2));
 fs.cpSync(path.join(root, 'desktop'), path.join(shell, 'desktop'), { recursive: true });
 for (const file of ['css/base.css', 'css/fonts.css', 'icons/app.ico', 'icons/mark.png']) {
@@ -64,6 +66,15 @@ execFileSync(process.execPath, [process.env.npm_execpath, 'ci', '--omit=dev', '-
 execFileSync(path.join(runtime, 'node.exe'), ['--input-type=module', '-e',
   "import Database from 'better-sqlite3'; const db = new Database(':memory:'); db.exec('CREATE TABLE smoke (id INTEGER)'); db.close();"
 ], { cwd: backend, stdio: 'inherit', windowsHide: true });
+// Electron runs the shell, so its one dependency installs against Electron's
+// own tree rather than the backend's. A missing updater must fail here, not
+// silently ship an app that can never find its next release.
+execFileSync(process.execPath, [process.env.npm_execpath, 'install', '--omit=dev', '--no-audit', '--no-fund', '--no-package-lock'], {
+  cwd: shell, stdio: 'inherit', windowsHide: true
+});
+execFileSync(process.execPath, ['-e', "require.resolve('electron-updater')"], {
+  cwd: shell, stdio: 'inherit', windowsHide: true
+});
 
 function findBinary(name) {
   const explicit = process.env[`MW_BUILD_${name.toUpperCase()}`];
@@ -94,4 +105,4 @@ fs.writeFileSync(path.join(runtime, 'versions.json'), JSON.stringify({
   platform: process.platform, arch: process.arch,
   ffmpeg: execFileSync(path.join(bin, 'ffmpeg.exe'), ['-version'], { encoding: 'utf8', windowsHide: true }).split(/\r?\n/)[0]
 }, null, 2));
-console.log('Desktop payload staged. Node, SQLite and FFmpeg verified; personal data excluded.');
+console.log('Desktop payload staged. Node, SQLite, FFmpeg and the updater verified; personal data excluded.');

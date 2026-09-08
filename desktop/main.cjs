@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { fork, execFile } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
+const { createUpdates, repositoryName } = require('./updater.cjs');
 
 app.setName('MediaWatcher');
 const sourceRoot = path.resolve(__dirname, '..');
@@ -12,6 +13,7 @@ if (process.env.MW_DESKTOP_PROFILE) app.setPath('userData', path.resolve(process
 const profile = app.getPath('userData');
 const settingsPath = path.join(profile, 'desktop.json');
 const setupUrl = pathToFileURL(path.join(__dirname, 'setup.html')).href;
+const updatesUrl = pathToFileURL(path.join(__dirname, 'updates.html')).href;
 const icon = path.join(sourceRoot, 'public', 'icons', 'app.ico');
 const titlebarCss = fs.readFileSync(path.join(__dirname, 'titlebar.css'), 'utf8');
 let settings = {};
@@ -19,6 +21,7 @@ try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { /*
 let dataDir = path.resolve(process.env.MW_DATA_DIR || settings.dataDir
   || (app.isPackaged ? path.join(profile, 'data') : sourceRoot));
 let win, tray, child, origin, starting, stopPromise;
+let updatesWin, updateTimer, trayUpdateStatus;
 let quitting = false;
 let failures = 0;
 let restartTimer;
@@ -88,6 +91,7 @@ function updateMenu() {
     { label: 'Open data folder', click: () => shell.openPath(dataDir) },
     { label: 'Edit configuration', click: openConfiguration },
     { label: 'Open desktop log', click: () => shell.openPath(path.join(profile, 'desktop.log')) },
+    { label: updateLabel(), click: openUpdates },
     { type: 'separator' },
     { label: 'Quit MediaWatcher', click: () => app.quit() }
   ]));
@@ -230,6 +234,112 @@ ipcMain.handle('setup:create', async (event, values) => {
   return { ok: true };
 });
 
+// Updates live entirely in the main process. Like first-run setup, the updates
+// window is a local page with a narrow bridge; it never sees an installer path.
+function releaseRepository() {
+  try {
+    return String(JSON.parse(fs.readFileSync(path.join(__dirname, 'release.json'), 'utf8')).repository || '');
+  } catch { return ''; }
+}
+let savedRepository = '';
+// A hand-edited desktop.json or release.json must not stop the app from opening.
+try { savedRepository = repositoryName(settings.updateRepository ?? releaseRepository()); } catch { savedRepository = ''; }
+
+// `electron desktop/main.cjs` reports Electron's own version rather than the
+// app's, and a version nobody recognises makes the update notice meaningless.
+function appVersion() {
+  if (app.isPackaged) return app.getVersion();
+  try { return JSON.parse(fs.readFileSync(path.join(sourceRoot, 'package.json'), 'utf8')).version; }
+  catch { return app.getVersion(); }
+}
+
+const updates = createUpdates({
+  version: appVersion(),
+  packaged: app.isPackaged,
+  repository: savedRepository,
+  makeUpdater: (options) => new (require('electron-updater').NsisUpdater)(options),
+  saveRepository: (repository) => { settings.updateRepository = repository; saveSettings(); },
+  changed: (state) => {
+    if (updatesWin && !updatesWin.isDestroyed()) updatesWin.webContents.send('updates:status', state);
+    // Rebuilding the tray menu on every download percentage would be wasteful.
+    if (state.status !== trayUpdateStatus) { trayUpdateStatus = state.status; updateMenu(); }
+  },
+  beforeInstall: async () => {
+    // The installer replaces files the running server holds open, and the
+    // backend owns downloads and conversions that deserve a clean shutdown.
+    quitting = true;
+    clearTimeout(restartTimer);
+    clearInterval(updateTimer);
+    await stopBackend();
+  },
+  installFailed: async () => {
+    quitting = false;
+    failures = 0;
+    scheduleUpdateChecks();
+    try {
+      const url = await startBackend();
+      if (win && !win.isDestroyed()) await win.loadURL(url);
+    } catch (error) { await startupFailure(error); }
+  }
+});
+
+function updateLabel() {
+  const { status, latestVersion } = updates.snapshot();
+  if (status === 'available') return `Download update ${latestVersion}`;
+  if (status === 'downloading') return 'Downloading update…';
+  if (status === 'ready') return 'Restart & install update';
+  return 'Check for updates';
+}
+
+function scheduleUpdateChecks() {
+  clearInterval(updateTimer);
+  // Checking from source has nothing to install, so only the packaged app polls.
+  if (!app.isPackaged) return;
+  updateTimer = setInterval(() => { void updates.check(); }, 6 * 60 * 60 * 1000);
+  void updates.check();
+}
+
+function openUpdates() {
+  if (updatesWin && !updatesWin.isDestroyed()) {
+    if (updatesWin.isMinimized()) updatesWin.restore();
+    updatesWin.show();
+    updatesWin.focus();
+    return;
+  }
+  updatesWin = new BrowserWindow({
+    width: 560, height: 660, minWidth: 460, minHeight: 520,
+    parent: win, backgroundColor: '#090a0c', title: 'MediaWatcher updates', icon,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#090a0c', symbolColor: '#a5a7ad', height: 36 },
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false, contextIsolation: true, sandbox: true
+    }
+  });
+  updatesWin.webContents.on('did-finish-load', () => {
+    updatesWin.webContents.insertCSS(titlebarCss).catch(appendLog);
+  });
+  updatesWin.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
+  updatesWin.webContents.on('will-navigate', (event, url) => {
+    if (url !== updatesUrl) { event.preventDefault(); openExternal(url); }
+  });
+  updatesWin.webContents.on('will-attach-webview', (event) => event.preventDefault());
+  updatesWin.on('closed', () => { updatesWin = null; });
+  updatesWin.loadURL(updatesUrl).catch(appendLog);
+}
+
+function requireUpdates(event) {
+  if (event.sender !== updatesWin?.webContents || event.senderFrame !== updatesWin.webContents.mainFrame
+      || event.senderFrame.url !== updatesUrl) throw new Error('Updates are only available in the local updates window.');
+}
+
+ipcMain.handle('updates:status', (event) => { requireUpdates(event); return updates.snapshot(); });
+ipcMain.handle('updates:check', (event) => { requireUpdates(event); return updates.check(); });
+ipcMain.handle('updates:download', (event) => { requireUpdates(event); return updates.download(); });
+ipcMain.handle('updates:install', (event) => { requireUpdates(event); return updates.install(); });
+ipcMain.handle('updates:configure', (event, repository) => { requireUpdates(event); return updates.configure(repository); });
+
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', showWindow);
@@ -269,6 +379,8 @@ else {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: 'MediaWatcher', submenu: [
         { label: 'Open in browser', click: () => origin && openExternal(origin) },
+        { label: 'Check for updates…', click: openUpdates },
+        { type: 'separator' },
         { label: 'Quit MediaWatcher', accelerator: 'Control+Q', click: () => app.quit() }
       ] },
       { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
@@ -302,12 +414,15 @@ else {
     if (configured()) {
       try { await win.loadURL(await startBackend()); } catch (error) { await startupFailure(error); }
     } else await win.loadURL(setupUrl);
+    // Checked once the app is up, so a release notice never delays playback.
+    scheduleUpdateChecks();
   }).catch((error) => { dialog.showErrorBox('MediaWatcher', error.message); app.quit(); });
   app.on('before-quit', (event) => {
     if (quitting) return;
     event.preventDefault();
     quitting = true;
     clearTimeout(restartTimer);
+    clearInterval(updateTimer);
     if (win && !win.isDestroyed()) {
       settings.window = win.getNormalBounds();
       settings.maximized = win.isMaximized();

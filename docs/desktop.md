@@ -53,7 +53,7 @@ to their browser profile: the desktop window has its own profile, so sign in onc
 and set its device preferences there. Server-side watch history, queue, library
 settings and remembered remote devices are preserved.
 
-## New installations and updates
+## New installations and your data
 
 **Set up a new library** collects the same required TMDB key, AllDebrid key and
 password as the existing `.env` configuration. New data defaults to
@@ -76,6 +76,36 @@ The tray menu opens the data folder, configuration editor and log.
 For isolated testing, `MW_DESKTOP_PROFILE` changes the Electron profile folder
 and `MW_DATA_DIR` changes the backend data folder. `MW_NODE_PATH` can select the
 Node executable for development. Packaged runs always use bundled Node.
+
+## Updates
+
+The packaged app checks GitHub Releases for the repository in
+`desktop/release.json`, which is also what `npm run dist` publishes for: the
+build writes `latest.yml` and `resources/app-update.yml` from it, and
+electron-updater needs both to find and cache a release. Change the repository
+in one place and the app and the build follow.
+
+- Checks run once at launch and every six hours, never during a check already
+  in flight. Nothing downloads on its own.
+- The tray and application menus show the state: *Check for updates*,
+  *Download update 1.1.0*, *Downloading update…*, *Restart & install update*.
+  **Check for updates** opens the updates window.
+- Downloading is explicit and playback continues while it runs. Installing is
+  explicit too: it stops the backend cleanly, then hands over to the NSIS
+  installer, which keeps your data folder.
+- Running from source reports *Running from source* and contacts nobody; there
+  is no installer to replace.
+- The updates window is a local page with the same narrow bridge as first-run
+  setup. It cannot name an installer path or reach the network itself; every
+  channel checks that the message came from that window's own frame.
+- The repository field takes `owner/repository` or a GitHub link, rejects
+  anything else, and is stored in `desktop.json`. It cannot be changed while an
+  update is downloaded and waiting.
+
+To publish an update: raise `version` in `package.json`, run `npm run dist`, and
+attach `dist/MediaWatcher-Setup-<version>-x64.exe`, `latest.yml` and the
+installer's `.blockmap` to a public GitHub release. A release missing
+`latest.yml` is invisible to the app.
 
 ## Desktop behavior
 
@@ -110,7 +140,10 @@ npm run test:desktop-ui
 
 The backend tests check isolated data, unchanged HTML, the authentication gate,
 remembered sessions, graceful Windows IPC shutdown, supervised restart and an
-occupied port. Real Electron tests cover fresh setup, login, original UI loading,
+occupied port. `npm test` includes `updates.test.mjs`, which drives the update
+state machine against a fake updater and checks the updates window, its bridge,
+the sender check and the published release source.
+Real Electron tests cover fresh setup, login, original UI loading,
 sandboxing, actual direct and HLS video playback, tray lifetime and process cleanup.
 Test profiles and generated video clips are temporary; UI screenshots go in
 `test-results/`.

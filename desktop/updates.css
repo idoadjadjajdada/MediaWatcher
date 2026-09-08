@@ -1,4 +1,5 @@
-body { background: #090a0c; color: #f3f5f9; font: 14px/1.6 system-ui,sans-serif; }
+/* Typography and colour come from the app's own stylesheet. */
+body { background: #090a0c; line-height: 1.6; }
 main { padding: 62px 30px 30px; }
 h1 { margin: 0 0 12px; font-size: 30px; letter-spacing: -.04em; }
 h2 { font-size: 18px; margin: 0 0 8px; }

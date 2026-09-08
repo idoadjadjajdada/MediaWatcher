@@ -29,11 +29,24 @@ window.addEventListener('DOMContentLoaded', () => {
   document.body.prepend(bar);
   syncChrome();
 });
-// Only first-run setup gets a bridge. The normal website has no desktop API.
-if (location.protocol === 'file:' && location.pathname.endsWith('/setup.html')) {
+// Only the local desktop pages get a bridge. The normal website has no desktop API.
+const localPage = (name) => location.protocol === 'file:' && location.pathname.endsWith(`/${name}`);
+if (localPage('setup.html')) {
   contextBridge.exposeInMainWorld('desktopSetup', {
     info: () => ipcRenderer.invoke('setup:info'),
     useExisting: () => ipcRenderer.invoke('setup:existing'),
     create: (values) => ipcRenderer.invoke('setup:create', values)
+  });
+}
+// Checking, downloading and installing stay in the main process. The updates
+// window only asks for them and renders the state it is handed back.
+if (localPage('updates.html')) {
+  contextBridge.exposeInMainWorld('desktopUpdates', {
+    status: () => ipcRenderer.invoke('updates:status'),
+    check: () => ipcRenderer.invoke('updates:check'),
+    download: () => ipcRenderer.invoke('updates:download'),
+    install: () => ipcRenderer.invoke('updates:install'),
+    configure: (repository) => ipcRenderer.invoke('updates:configure', repository),
+    onStatus: (fn) => ipcRenderer.on('updates:status', (_event, state) => fn(state))
   });
 }

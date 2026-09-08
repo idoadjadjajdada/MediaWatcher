@@ -27,6 +27,12 @@ files. Closing the window keeps downloads and remote access running in the tray;
 right-click the tray icon and choose **Quit MediaWatcher** to stop everything.
 Use **Open in browser** for Chromecast and browser web push integrations.
 
+The app checks GitHub for a newer release when it opens and every six hours
+after that. **Check for updates** in the tray and application menus opens a
+window showing your version, the latest release, and a download that only
+installs when you restart. Releases come from the repository in
+`desktop/release.json`; the window can point at a different one.
+
 Run `npm run desktop` for desktop development, or `npm run desktop:pack` for an
 unpacked executable. Build prerequisites, data locations, tests and distribution
 notes are in [docs/desktop.md](docs/desktop.md).

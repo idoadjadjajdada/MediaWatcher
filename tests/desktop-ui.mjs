@@ -117,6 +117,29 @@ try {
   assert.equal((await page.request.get(`${origin}/api/health`)).status(), 200);
   await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].show());
   console.log('PASS: closing the window preserves the server in the tray');
+
+  // Native menus cannot be clicked from the outside, so invoke the item itself.
+  const [updates] = await Promise.all([
+    desktop.waitForEvent('window'),
+    desktop.evaluate(({ Menu }) => Menu.getApplicationMenu().items[0].submenu.items
+      .find((item) => item.label.startsWith('Check for updates')).click())
+  ]);
+  await updates.getByRole('heading', { name: 'App updates' }).waitFor();
+  const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  assert.equal(await updates.locator('#current').textContent(), version);
+  assert.equal(await updates.locator('#repository').inputValue(),
+    JSON.parse(fs.readFileSync(path.join(root, 'desktop/release.json'), 'utf8')).repository);
+  assert.equal(await updates.evaluate(() => typeof window.desktopUpdates), 'object');
+  assert.equal(await updates.evaluate(() => typeof window.desktopSetup), 'undefined');
+  assert.equal(await updates.evaluate(() => typeof window.require), 'undefined');
+  // A source checkout has no installer to replace, so it never reaches GitHub.
+  if (!executablePath) {
+    await updates.waitForFunction(() => document.getElementById('status').textContent === 'Running from source');
+    assert.equal(await updates.locator('#check').isDisabled(), true);
+  }
+  await updates.screenshot({ path: path.join(root, 'test-results', executablePath ? 'updates-packaged.png' : 'updates-development.png') });
+  await updates.close();
+  console.log('PASS: the updates window opens from the menu, isolated, showing this version');
   await desktop.close();
   desktop = null;
   await assert.rejects(fetch(`${origin}/api/health`));
