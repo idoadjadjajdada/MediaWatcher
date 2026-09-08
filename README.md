@@ -10,6 +10,25 @@ and next-episode autoplay.
 Node on the back, vanilla ES modules on the front. The web server needs no
 frontend build step; the Windows desktop edition packages the same UI in Electron.
 
+## Contents
+
+- [Windows desktop application](#windows-desktop-application)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Organising your library](#organising-your-library)
+- [Playback](#playback)
+- [Conversion and encoding](#conversion-and-encoding)
+- [Search and downloads](#search-and-downloads)
+- [Remote access](#remote-access)
+- [Running it from somewhere else](#running-it-from-somewhere-else)
+- [Architecture](#architecture)
+- [API](#api)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Notes](#notes)
+
+---
+
 ## Windows desktop application
 
 Build a Windows installer with `npm install` followed by `npm run dist`.
@@ -96,6 +115,19 @@ a fallback.
 The first launch creates `library/movies`, `library/shows`, `temp/` and
 `db/mediawatcher.db`, then scans whatever is already in the library.
 
+### What else the launcher does
+
+Beyond starting and stopping the server:
+
+- **Restart if it crashes**, backing off each time and giving up after five
+  failures in a row, so the error that caused them stays readable.
+- **Throughput** while downloads run, derived from progress rather than from
+  the socket — the launcher polls an API for a percentage and never sees bytes.
+- **Notifications** when a download finishes or fails, whichever tab is open.
+- **System tab**: Tailscale status with a start/stop toggle and a QR code to
+  point a phone at, cache sizes with sweep and clear, and installing the server
+  as a Windows service. Installing needs administrator rights.
+
 ### Installing ffmpeg
 
 ```powershell
@@ -180,133 +212,6 @@ Seeking works differently in the two shapes, and the player handles both: in
 direct mode it is a normal byte-range seek; in ffmpeg modes the stream restarts
 at a timestamp, so seek accuracy is bounded by the source's keyframe interval.
 
-### Known limits
-
-- **Hardware encoding is used for tone mapping only.** `transcoder.js` finds
-  NVENC, QSV or AMF and uses it when tone mapping, where the CPU is already
-  busy with the colour conversion; an ordinary HEVC → H.264 transcode still
-  runs on libx264. **Settings → Performance → This machine** measures both, so
-  the gap is a number rather than a guess — 1.48x against 2.14x on the machine
-  this was written on.
-- **Bitmap subtitles (PGS/VobSub) cannot be shown.** They are images, and turning
-  them into WebVTT would need OCR. Text-based tracks (SRT, ASS, embedded SubRip)
-  are fine.
-- **Bitmap subtitles still cannot be shown** — see above. ASS *is* rendered now,
-  in an overlay rather than through `<track>`, but karaoke, animated transforms
-  and vector drawings are dropped rather than approximated.
-
----
-
-## Remote access
-
-MediaWatcher still binds to `127.0.0.1` and is never exposed to the internet or
-even to your LAN. Remote devices reach it over a Tailscale tunnel, and
-everything behind the tunnel is behind a password.
-
-### One-time setup
-
-1. Install [Tailscale](https://tailscale.com/download/windows) on this machine
-   and sign in.
-2. In the [admin console](https://login.tailscale.com/admin/dns), enable
-   **MagicDNS** *and* **HTTPS Certificates**. Both are required — without them
-   there is no valid certificate, and iOS Safari gates several video and
-   secure-context behaviours behind one.
-3. Publish the server:
-
-   ```
-   tailscale serve --bg 3000
-   ```
-
-   This prints a hostname like `desktop-9dikq29.taila824ee.ts.net`. It says
-   "Available within your tailnet" — this is the private serve, not Funnel, so
-   nothing is reachable from the public internet.
-4. Put that hostname (bare — no `https://`, no trailing slash) into `.env`:
-
-   ```
-   TAILNET_HOST=desktop-9dikq29.taila824ee.ts.net
-   ```
-
-   Restart the server so CORS accepts the new origin.
-5. Install Tailscale on each device, signed into the same account, and open
-   `https://<your-host>.ts.net`.
-
-`tailscale serve` configuration does not always survive a Tailscale upgrade. If
-remote access stops working, re-run step 3 before looking anywhere else.
-
-### On a phone's home screen
-
-Open the site and use **Add to Home Screen**. It opens without browser chrome
-from then on, which is the point and also the catch: with no address bar and no
-toolbar, the page owns the whole screen — including the strip under the clock
-and the island, and the strip the home indicator sits on. iOS reports those four
-distances as safe-area insets, and every bar in the app is held off them: the
-top bar grows by the top inset rather than sharing a strip with the clock, the
-tab bar pads out past the home indicator, and in landscape — where the island
-moves to the side of the screen, beside the back button — the player's controls
-come in from both edges. The video itself still bleeds to every edge, because
-that is what a video should do.
-
-A browser tab reports all four as zero, so none of this shows up until the app
-is actually installed. `npm run ui-standalone` writes the insets itself and
-measures where everything lands, in both orientations.
-
-### The password gate
-
-`AUTH_PASSWORD` in `.env` is required and must be at least 8 characters — the
-server refuses to start without it, because booting an unauthenticated server
-behind a tunnel is the worst failure available here.
-
-Every device enters it once. Ticking **Remember this device** stores a row in
-the `devices` table keyed by the SHA-256 of a random 256-bit token, which is
-kept in an `HttpOnly` cookie. Only the hash is stored, so a leaked database file
-yields no working credential. Leaving it unticked gives a session that is never
-recorded: the cookie dies with the browser, and the server-side entry behind it
-expires after `AUTH_SESSION_TTL_HOURS` of no requests. The window measures idle
-time, so it never interrupts a viewing — but a token does stop being one long
-before the next restart, which is what it used to wait for.
-
-A device is identified by that minted token, never by a browser fingerprint. A
-fingerprint merely *describes* a device, and a description can be forged by
-anyone who knows the shape of an authorised one. It also could not work here:
-playback is driven by `<video src="/api/stream?...">`, which issues its own
-range requests with no JavaScript in the loop to attach a header or compute
-anything — a cookie is the only credential that rides along.
-
-**Loopback is deliberately not trusted.** `tailscale serve` proxies from
-`127.0.0.1`, so every remote request arrives looking local; a "trust loopback"
-shortcut would disable authentication for exactly the traffic the gate exists to
-stop. `tests/auth-loopback.test.mjs` guards this.
-
-### Managing devices
-
-The launcher's **Devices** tab lists every remembered device — name, browser,
-LAN or Tailscale, last IP, last seen — and revokes any of them. Revocation takes
-effect on that device's very next request.
-
-The tab authenticates with `config/admin-key`, a 32-byte key the server writes
-on first boot. It is machine-local, gitignored, and must never be committed. A
-signed-in phone holds a device cookie but not this key, so it cannot enumerate
-or revoke anything.
-
-### Adding a device without typing the password
-
-The gate is right and it is miserable on a television: twelve characters
-entered with a D-pad and an on-screen keyboard, usually while someone waits.
-
-**Settings → Devices → Add a device** mints an enrolment code and draws it as a
-QR. The device that scans it is signed in — the login page reads the code out
-of the URL, strips it from the address bar before doing anything else, and
-signs itself in without anyone pressing a key.
-
-Good once and for five minutes, so the photograph someone takes of the screen
-is worth nothing afterwards. Codes live in memory, so a restart during
-enrolment costs one re-scan and there is nothing on disk to leak. Every way of
-failing answers identically: a caller who can tell "expired" from "never
-existed" learns whether a code ever existed.
-
-Minting one needs the password, because a code is a way into the server and
-handing one out should be at least as hard as signing in.
-
 ### Playback delivery
 
 Three ways a file reaches a player, in order of preference:
@@ -359,104 +264,75 @@ anyone watches that far.
 Closing the player ends its session immediately. While it is open the player
 sends a keepalive, so a long pause is not reaped out from under it.
 
-### Disk the app manages
+### Playback speed
 
-| Directory | Holds | Trimmed by |
-|---|---|---|
-| `cache/mp4` | a browser-native copy of anything played on a non-direct path, roughly source-sized | `MP4_CACHE_MAX_GB`, then `MP4_CACHE_TTL_DAYS` |
-| `cache/hls/_shared` | segments pooled across sessions | `HLS_SHARED_CACHE_MAX_GB`, least recently used first |
-| `cache/thumbs` | seek-preview frames, a few hundred KB per file | `THUMB_CACHE_MAX_GB` / `THUMB_CACHE_TTL_DAYS` |
-| `cache/hls` | live segments, bounded per session and reaped when idle | itself |
-| `temp/` | in-progress downloads, moved into the library when complete | itself |
+A slider from 0.25x to 5x, in the speed menu, over a ladder of stops rather
+than a continuous range. The reason is 1.00x: it is the most-used value and the
+only one that has to be exactly right, and on a continuous slider it is a pixel
+you have to find. Every stop is a value someone would actually pick, so
+dragging cannot leave you at 1.03x wondering why the audio sounds slightly off.
+**Normal** puts it back.
 
-Interrupted conversions are swept up too. A conversion writes to a `.part`
-file and renames it only on success, so nothing truncated ever appears at the
-name playback trusts — but the tidy-up runs in ffmpeg's close handler, which a
-kill from Task Manager or a power cut never reaches. Those files were never
-removed, and worse, each one made its cache entry look busy and so exempt from
-eviction. This install had 13.6 GB of them.
+The spacing is uneven on purpose — fine near 1x where a tenth is audible,
+coarse at the ends where it is not. A linear slider over that range would spend
+four fifths of its travel above 2x, which is the part nobody adjusts carefully.
 
-Both budgeted caches are swept on boot and every `CACHE_SWEEP_INTERVAL_MS`:
-whatever is past its TTL goes first, then the least recently played until the
-directory is under budget. A conversion in progress and anything played in the
-last few minutes are never candidates.
+**Pitch follows speed**, the O|I switch below it, decides what the audio does.
+Off — the default, and what every browser does on its own — voices keep their
+pitch at any rate. On, it behaves like a tape: slower is deeper, faster is
+higher. Worth having as a choice because pitch correction is not free: it
+stretches and overlaps windows of audio, which smears transients and gives
+music a watery quality.
 
-Downloads and conversions also check before they start. A transfer that would
-leave less than `DOWNLOAD_MIN_FREE_GB` free is refused with that as its error,
-and a conversion that would not fit is skipped and retried on a later play —
-which is a great deal easier to act on than the ffmpeg write error a full disk
-used to produce somewhere else entirely.
+Browsers clamp very high rates and some mute audio above 2x, so the top of the
+slider is worth more to skimming than to listening.
 
-**Seeking transcoded content costs an encode.** Every seek restarts ffmpeg at
-that point, so the first segment after a jump takes a few seconds — and on 4K
-HDR, where the seek also pays for a tone map, measurably longer. Files that play
-`direct` or from the MP4 cache seek instantly, because those are real files.
+### Resuming
 
-### On a phone
+A saved position is offered, not taken: opening something you were part way
+through shows where you got to, with Resume and Start over. Playback waits for
+the answer rather than dropping you into the middle of a scene.
 
-The lock screen and Control Centre show the poster, the episode title and
-working transport controls, including next and previous episode for a show.
+### Playback stats
 
-**AirPlay** appears as a button in the control bar once Safari reports a
-receiver on the network. It works because everything needing ffmpeg is HLS —
-AirPlay will not accept an arbitrary progressive stream.
+`i`, or Diagnostics in the playback menu, overlays what is actually happening
+to the stream: which delivery path it took, whether a cap applied, the source
+and output resolutions, buffer ahead, dropped frames, and the HLS session id.
 
-### Notifications
+It exists because working out those exact numbers from the outside is slow.
+When something looks wrong — a stall, a soft picture, a stream that will not
+start — this answers "what is it actually doing" in one glance, and the session
+id is what to grep the server log for.
 
-The launcher raises a toast on the machine the server runs on, which is the one
-place you are not when a download finishes. **Settings → Notifications**
-subscribes this device instead.
+### Remote quality
 
-The push carries no payload. Encrypting one means the whole of RFC 8291 — ECDH
-against the subscription key, HKDF, AES-128-GCM, record padding — which is a
-library's worth of cryptography to get subtly wrong, and it would mean the
-title of whatever you just downloaded passing through Google or Mozilla on its
-way here. Instead the push is an empty knock and the service worker asks this
-server what it was about. Less code, and the push service carries a knock at
-the door rather than the message.
+Playback over the tunnel is capped, because the constraint is the *client's*
+connection — hotel wifi, cellular, or Tailscale's DERP relay fallback when a
+direct peer-to-peer connection cannot be established. The host's uplink is not
+the bottleneck.
 
-Three things have to be true and they fail differently, so the page reports
-them separately: the browser supports Push, permission was granted, and this
-device is subscribed. On iPhone and iPad it works only once MediaWatcher has
-been added to the home screen — Safari allows notifications from an installed
-app and not from a tab. There is a test button, because there are four places
-this can break and the alternative is finding out on the night it matters.
+| Level | Height | Max bitrate |
+|-------|--------|-------------|
+| Original | source | uncapped |
+| High | 1080p | 12M |
+| Medium | 720p | 5M |
+| Low | 480p | 1.5M |
 
-`PUSH_CONTACT` is the address put in the signed token for the push service's
-own logs. It defaults to an `.invalid` address deliberately: nothing here needs
-a real one, and sending a personal address to Google on every push is not a
-reasonable default.
+`Auto` — the default, and selectable per device in the player's speed menu —
+means Original on the LAN and High over the tunnel. It never picks Original
+remotely even though the host could serve it: a 4K remux runs 60-100 Mbps, past
+most client links, and shipping tens of gigabytes over a possibly-metered
+connection is not something to do unasked. Original remains available by
+explicit request.
 
-### Chromecast
+A cap overrules `direct` and `cached-*` alike — both hand over full-quality
+bytes, so neither can shrink a 4K source. Height *and* container bitrate are
+both grounds for capping, since a 720p file at 40 Mbps is under the height
+limit and still far too fat.
 
-Casting is not the same shape as AirPlay, and the difference decides what it
-takes to support. AirPlay hands the stream over from a device that is already
-signed in. A Chromecast is *told a URL* and fetches it itself, from a device
-that holds no cookie, cannot be given one, and cannot join a tailnet.
-
-So two things have to be true, and both are deliberately off by default:
-
-```ini
-BIND_HOST=0.0.0.0     # the server listens where a Chromecast can reach it
-CAST_ENABLED=1
-```
-
-`CAST_ENABLED` alone, with the server still on loopback, leaves casting off
-rather than producing a button that cannot work. The boot log says so whenever
-the server is listening wider than loopback, because that is a real change to
-what is exposed: the gate is still in front of everything, but everything on
-the network can now reach the gate.
-
-Permission to fetch is a signed link — an HMAC over the one path the receiver
-may read and an expiry, signed with the machine-local admin key. It names a
-single path, so a link for one film admits a request for that film and nothing
-else; it expires after six hours; and only something already signed in can mint
-one. The endpoints it may ever name are a fixed list: the stream, HLS segments,
-and subtitles.
-
-The Cast sender SDK is the only third-party script in the app, and it is
-allowed into the CSP only when casting is switched on — an install that does
-not cast keeps a policy with no external script origin in it at all.
+Tunable in `.env`: `REMOTE_DEFAULT_QUALITY`,
+`QUALITY_{HIGH,MEDIUM,LOW}_{HEIGHT,MAXRATE}`, and the session behaviour via
+`HLS_IDLE_TIMEOUT_MS`, `HLS_KEEP_BEHIND` and `HLS_SEGMENT_TIMEOUT_MS`.
 
 ### Skip Intro
 
@@ -566,6 +442,29 @@ seconds, which must read as out. One of the five — a quiet film with sparse
 dialogue over a lot of ambient sound — cannot be told apart either way, and
 reports "cannot tell" rather than guessing. A warning that cries wolf on a
 correct track spends the credibility that makes the true ones worth reading.
+
+### Known limits
+
+- **Hardware encoding is used for tone mapping only.** `transcoder.js` finds
+  NVENC, QSV or AMF and uses it when tone mapping, where the CPU is already
+  busy with the colour conversion; an ordinary HEVC → H.264 transcode still
+  runs on libx264. **Settings → Performance → This machine** measures both, so
+  the gap is a number rather than a guess — 1.48x against 2.14x on the machine
+  this was written on.
+- **Bitmap subtitles (PGS/VobSub) cannot be shown.** They are images, and turning
+  them into WebVTT would need OCR. Text-based tracks (SRT, ASS, embedded SubRip)
+  are fine.
+- **Bitmap subtitles still cannot be shown** — see above. ASS *is* rendered now,
+  in an overlay rather than through `<track>`, but karaoke, animated transforms
+  and vector drawings are dropped rather than approximated.
+
+---
+
+## Conversion and encoding
+
+Everything below is ffmpeg work: converting a release the browser cannot play,
+deciding when to do it, and where. None of it is needed for a file that already
+plays directly — see [Playback delivery](#playback-delivery) for which is which.
 
 ### Ahead-of-time conversion
 
@@ -690,157 +589,40 @@ silently.
 `ENCODE_SELF_URL` is configured rather than worked out because behind a tunnel
 a server's own idea of its address is usually wrong.
 
-### Downloads queue
+### Disk the app manages
 
-Jobs run in an order you control. Reorder with the arrows, pause one without
-cancelling it, retry one that failed. Pausing an active transfer aborts it and
-discards the partial file — AllDebrid issues a fresh link each time, so there
-is no resume-from-offset and a resumed download restarts — but the job keeps
-its place in the queue.
+| Directory | Holds | Trimmed by |
+|---|---|---|
+| `cache/mp4` | a browser-native copy of anything played on a non-direct path, roughly source-sized | `MP4_CACHE_MAX_GB`, then `MP4_CACHE_TTL_DAYS` |
+| `cache/hls/_shared` | segments pooled across sessions | `HLS_SHARED_CACHE_MAX_GB`, least recently used first |
+| `cache/thumbs` | seek-preview frames, a few hundred KB per file | `THUMB_CACHE_MAX_GB` / `THUMB_CACHE_TTL_DAYS` |
+| `cache/hls` | live segments, bounded per session and reaped when idle | itself |
+| `temp/` | in-progress downloads, moved into the library when complete | itself |
 
-### The launcher
+Interrupted conversions are swept up too. A conversion writes to a `.part`
+file and renames it only on success, so nothing truncated ever appears at the
+name playback trusts — but the tidy-up runs in ffmpeg's close handler, which a
+kill from Task Manager or a power cut never reaches. Those files were never
+removed, and worse, each one made its cache entry look busy and so exempt from
+eviction. This install had 13.6 GB of them.
 
-Beyond starting and stopping the server:
+Both budgeted caches are swept on boot and every `CACHE_SWEEP_INTERVAL_MS`:
+whatever is past its TTL goes first, then the least recently played until the
+directory is under budget. A conversion in progress and anything played in the
+last few minutes are never candidates.
 
-- **Restart if it crashes**, backing off each time and giving up after five
-  failures in a row, so the error that caused them stays readable.
-- **Throughput** while downloads run, derived from progress rather than from
-  the socket — the launcher polls an API for a percentage and never sees bytes.
-- **Notifications** when a download finishes or fails, whichever tab is open.
-- **System tab**: Tailscale status with a start/stop toggle and a QR code to
-  point a phone at, cache sizes with sweep and clear, and installing the server
-  as a Windows service. Installing needs administrator rights.
+Downloads and conversions also check before they start. A transfer that would
+leave less than `DOWNLOAD_MIN_FREE_GB` free is refused with that as its error,
+and a conversion that would not fit is skipped and retried on a later play —
+which is a great deal easier to act on than the ffmpeg write error a full disk
+used to produce somewhere else entirely.
 
-### Playback speed
-
-A slider from 0.25x to 5x, in the speed menu, over a ladder of stops rather
-than a continuous range. The reason is 1.00x: it is the most-used value and the
-only one that has to be exactly right, and on a continuous slider it is a pixel
-you have to find. Every stop is a value someone would actually pick, so
-dragging cannot leave you at 1.03x wondering why the audio sounds slightly off.
-**Normal** puts it back.
-
-The spacing is uneven on purpose — fine near 1x where a tenth is audible,
-coarse at the ends where it is not. A linear slider over that range would spend
-four fifths of its travel above 2x, which is the part nobody adjusts carefully.
-
-**Pitch follows speed**, the O|I switch below it, decides what the audio does.
-Off — the default, and what every browser does on its own — voices keep their
-pitch at any rate. On, it behaves like a tape: slower is deeper, faster is
-higher. Worth having as a choice because pitch correction is not free: it
-stretches and overlaps windows of audio, which smears transients and gives
-music a watery quality.
-
-Browsers clamp very high rates and some mute audio above 2x, so the top of the
-slider is worth more to skimming than to listening.
-
-### Resuming
-
-A saved position is offered, not taken: opening something you were part way
-through shows where you got to, with Resume and Start over. Playback waits for
-the answer rather than dropping you into the middle of a scene.
-
-### Playback stats
-
-`i`, or Diagnostics in the playback menu, overlays what is actually happening
-to the stream: which delivery path it took, whether a cap applied, the source
-and output resolutions, buffer ahead, dropped frames, and the HLS session id.
-
-It exists because working out those exact numbers from the outside is slow.
-When something looks wrong — a stall, a soft picture, a stream that will not
-start — this answers "what is it actually doing" in one glance, and the session
-id is what to grep the server log for.
-
-### Remote quality
-
-Playback over the tunnel is capped, because the constraint is the *client's*
-connection — hotel wifi, cellular, or Tailscale's DERP relay fallback when a
-direct peer-to-peer connection cannot be established. The host's uplink is not
-the bottleneck.
-
-| Level | Height | Max bitrate |
-|-------|--------|-------------|
-| Original | source | uncapped |
-| High | 1080p | 12M |
-| Medium | 720p | 5M |
-| Low | 480p | 1.5M |
-
-`Auto` — the default, and selectable per device in the player's speed menu —
-means Original on the LAN and High over the tunnel. It never picks Original
-remotely even though the host could serve it: a 4K remux runs 60-100 Mbps, past
-most client links, and shipping tens of gigabytes over a possibly-metered
-connection is not something to do unasked. Original remains available by
-explicit request.
-
-A cap overrules `direct` and `cached-*` alike — both hand over full-quality
-bytes, so neither can shrink a 4K source. Height *and* container bitrate are
-both grounds for capping, since a 720p file at 40 Mbps is under the height
-limit and still far too fat.
-
-Tunable in `.env`: `REMOTE_DEFAULT_QUALITY`,
-`QUALITY_{HIGH,MEDIUM,LOW}_{HEIGHT,MAXRATE}`, and the session behaviour via
-`HLS_IDLE_TIMEOUT_MS`, `HLS_KEEP_BEHIND` and `HLS_SEGMENT_TIMEOUT_MS`.
+**Seeking transcoded content costs an encode.** Every seek restarts ffmpeg at
+that point, so the first segment after a jump takes a few seconds — and on 4K
+HDR, where the seek also pays for a tone map, measurably longer. Files that play
+`direct` or from the MP4 cache seek instantly, because those are real files.
 
 ---
-
-## Running it from somewhere else
-
-Reading the log meant the launcher window, changing a setting meant a text
-editor, and restarting meant going home. Over the tunnel none of those are
-available, which is exactly when they are wanted. All three are in **Settings →
-Server**.
-
-**The log** is a ring of the last few thousand lines, with a level filter and a
-follow that polls only while the page is open. Anything that looks like a key
-is redacted on the way into the buffer: the console is on the machine that owns
-the keys, this is reachable from a phone.
-
-**The settings file** can be edited in place. Comments, ordering and unrelated
-keys survive a write; secrets are masked, and a value that comes back still
-masked leaves the stored one alone. Validation happens before anything is
-written, so a rejected change leaves the file exactly as it was, and the write
-is a temporary file and a rename with the previous contents kept at `.env.bak`.
-Nothing takes effect until the server restarts — every value is read once at
-boot and then frozen, and the page says so rather than appearing to apply
-something it has not.
-
-**Restarting** exits with a code the launcher understands, so a requested
-restart comes straight back instead of being backed off and counted against the
-crash-loop budget. It refuses when nothing is supervising the process, because
-a server that cannot come back is not a restart.
-
-Saving settings and restarting both ask for the password again. A signed-in
-device is a cookie on a phone that might be sitting unlocked on a table.
-
-### What this machine can do
-
-**Settings → Performance → This machine** encodes a few seconds of the largest
-file in the library on each path and times it. Above 1× the encoder produces
-video faster than it is watched; below it, playback stalls and no amount of
-buffering helps.
-
-Those numbers used to live only in code comments, measured once on one machine.
-On the machine this was written on:
-
-| Path | Realtime |
-|---|---|
-| H.264, software, 1080p | 1.48x |
-| H.264, NVENC, 1080p | 2.14x |
-| HDR tone map to 1080p | 1.31x |
-| HDR tone map at 2160p | 0.42x |
-
-The last row is the 1080p tone-mapping cap earning itself.
-
-### Search sources, and the AllDebrid account
-
-**Settings → Sources** keeps a rolling hundred searches per source: the median
-and p95 to set `SEARCH_SOURCE_TIMEOUT_MS` from, timeouts separated from errors,
-and the quiet failure counted — a source that answers fast, never errors, and
-returns nothing every time.
-
-The AllDebrid account is on the same page. An expired subscription otherwise
-surfaces as downloads failing one at a time with an auth error, which is a slow
-way to learn something the account says outright.
 
 ## Search and downloads
 
@@ -871,6 +653,17 @@ error if *every* source fails.
 | **AllDebrid cache** | your API key | Instant downloads when a torrent is already cached |
 | **Torrentio** | nothing | Public Stremio addon; which trackers it queries is configurable |
 | **Jackett** | a local Jackett install | Optional. Gives you any tracker Jackett supports |
+
+### Search sources, and the AllDebrid account
+
+**Settings → Sources** keeps a rolling hundred searches per source: the median
+and p95 to set `SEARCH_SOURCE_TIMEOUT_MS` from, timeouts separated from errors,
+and the quiet failure counted — a source that answers fast, never errors, and
+returns nothing every time.
+
+The AllDebrid account is on the same page. An expired subscription otherwise
+surfaces as downloads failing one at a time with an auth error, which is a slow
+way to learn something the account says outright.
 
 ### Adding more indexers
 
@@ -960,6 +753,242 @@ library/shows/{Title}/Season {NN}/{Title} - S{NN}E{NN} - {Episode}.mkv
 The file only appears in the library once the byte count matches, so a
 half-downloaded file is never scanned or played. Retrying a failed job is the
 same Download call again.
+
+### Downloads queue
+
+Jobs run in an order you control. Reorder with the arrows, pause one without
+cancelling it, retry one that failed. Pausing an active transfer aborts it and
+discards the partial file — AllDebrid issues a fresh link each time, so there
+is no resume-from-offset and a resumed download restarts — but the job keeps
+its place in the queue.
+
+---
+
+## Remote access
+
+MediaWatcher still binds to `127.0.0.1` and is never exposed to the internet or
+even to your LAN. Remote devices reach it over a Tailscale tunnel, and
+everything behind the tunnel is behind a password.
+
+### One-time setup
+
+1. Install [Tailscale](https://tailscale.com/download/windows) on this machine
+   and sign in.
+2. In the [admin console](https://login.tailscale.com/admin/dns), enable
+   **MagicDNS** *and* **HTTPS Certificates**. Both are required — without them
+   there is no valid certificate, and iOS Safari gates several video and
+   secure-context behaviours behind one.
+3. Publish the server:
+
+   ```
+   tailscale serve --bg 3000
+   ```
+
+   This prints a hostname like `desktop-9dikq29.taila824ee.ts.net`. It says
+   "Available within your tailnet" — this is the private serve, not Funnel, so
+   nothing is reachable from the public internet.
+4. Put that hostname (bare — no `https://`, no trailing slash) into `.env`:
+
+   ```
+   TAILNET_HOST=desktop-9dikq29.taila824ee.ts.net
+   ```
+
+   Restart the server so CORS accepts the new origin.
+5. Install Tailscale on each device, signed into the same account, and open
+   `https://<your-host>.ts.net`.
+
+`tailscale serve` configuration does not always survive a Tailscale upgrade. If
+remote access stops working, re-run step 3 before looking anywhere else.
+
+### The password gate
+
+`AUTH_PASSWORD` in `.env` is required and must be at least 8 characters — the
+server refuses to start without it, because booting an unauthenticated server
+behind a tunnel is the worst failure available here.
+
+Every device enters it once. Ticking **Remember this device** stores a row in
+the `devices` table keyed by the SHA-256 of a random 256-bit token, which is
+kept in an `HttpOnly` cookie. Only the hash is stored, so a leaked database file
+yields no working credential. Leaving it unticked gives a session that is never
+recorded: the cookie dies with the browser, and the server-side entry behind it
+expires after `AUTH_SESSION_TTL_HOURS` of no requests. The window measures idle
+time, so it never interrupts a viewing — but a token does stop being one long
+before the next restart, which is what it used to wait for.
+
+A device is identified by that minted token, never by a browser fingerprint. A
+fingerprint merely *describes* a device, and a description can be forged by
+anyone who knows the shape of an authorised one. It also could not work here:
+playback is driven by `<video src="/api/stream?...">`, which issues its own
+range requests with no JavaScript in the loop to attach a header or compute
+anything — a cookie is the only credential that rides along.
+
+**Loopback is deliberately not trusted.** `tailscale serve` proxies from
+`127.0.0.1`, so every remote request arrives looking local; a "trust loopback"
+shortcut would disable authentication for exactly the traffic the gate exists to
+stop. `tests/auth-loopback.test.mjs` guards this.
+
+### Managing devices
+
+The launcher's **Devices** tab lists every remembered device — name, browser,
+LAN or Tailscale, last IP, last seen — and revokes any of them. Revocation takes
+effect on that device's very next request.
+
+The tab authenticates with `config/admin-key`, a 32-byte key the server writes
+on first boot. It is machine-local, gitignored, and must never be committed. A
+signed-in phone holds a device cookie but not this key, so it cannot enumerate
+or revoke anything.
+
+### Adding a device without typing the password
+
+The gate is right and it is miserable on a television: twelve characters
+entered with a D-pad and an on-screen keyboard, usually while someone waits.
+
+**Settings → Devices → Add a device** mints an enrolment code and draws it as a
+QR. The device that scans it is signed in — the login page reads the code out
+of the URL, strips it from the address bar before doing anything else, and
+signs itself in without anyone pressing a key.
+
+Good once and for five minutes, so the photograph someone takes of the screen
+is worth nothing afterwards. Codes live in memory, so a restart during
+enrolment costs one re-scan and there is nothing on disk to leak. Every way of
+failing answers identically: a caller who can tell "expired" from "never
+existed" learns whether a code ever existed.
+
+Minting one needs the password, because a code is a way into the server and
+handing one out should be at least as hard as signing in.
+
+### On a phone's home screen
+
+Open the site and use **Add to Home Screen**. It opens without browser chrome
+from then on, which is the point and also the catch: with no address bar and no
+toolbar, the page owns the whole screen — including the strip under the clock
+and the island, and the strip the home indicator sits on. iOS reports those four
+distances as safe-area insets, and every bar in the app is held off them: the
+top bar grows by the top inset rather than sharing a strip with the clock, the
+tab bar pads out past the home indicator, and in landscape — where the island
+moves to the side of the screen, beside the back button — the player's controls
+come in from both edges. The video itself still bleeds to every edge, because
+that is what a video should do.
+
+A browser tab reports all four as zero, so none of this shows up until the app
+is actually installed. `npm run ui-standalone` writes the insets itself and
+measures where everything lands, in both orientations.
+
+### On a phone
+
+The lock screen and Control Centre show the poster, the episode title and
+working transport controls, including next and previous episode for a show.
+
+**AirPlay** appears as a button in the control bar once Safari reports a
+receiver on the network. It works because everything needing ffmpeg is HLS —
+AirPlay will not accept an arbitrary progressive stream.
+
+### Notifications
+
+The launcher raises a toast on the machine the server runs on, which is the one
+place you are not when a download finishes. **Settings → Notifications**
+subscribes this device instead.
+
+The push carries no payload. Encrypting one means the whole of RFC 8291 — ECDH
+against the subscription key, HKDF, AES-128-GCM, record padding — which is a
+library's worth of cryptography to get subtly wrong, and it would mean the
+title of whatever you just downloaded passing through Google or Mozilla on its
+way here. Instead the push is an empty knock and the service worker asks this
+server what it was about. Less code, and the push service carries a knock at
+the door rather than the message.
+
+Three things have to be true and they fail differently, so the page reports
+them separately: the browser supports Push, permission was granted, and this
+device is subscribed. On iPhone and iPad it works only once MediaWatcher has
+been added to the home screen — Safari allows notifications from an installed
+app and not from a tab. There is a test button, because there are four places
+this can break and the alternative is finding out on the night it matters.
+
+`PUSH_CONTACT` is the address put in the signed token for the push service's
+own logs. It defaults to an `.invalid` address deliberately: nothing here needs
+a real one, and sending a personal address to Google on every push is not a
+reasonable default.
+
+### Chromecast
+
+Casting is not the same shape as AirPlay, and the difference decides what it
+takes to support. AirPlay hands the stream over from a device that is already
+signed in. A Chromecast is *told a URL* and fetches it itself, from a device
+that holds no cookie, cannot be given one, and cannot join a tailnet.
+
+So two things have to be true, and both are deliberately off by default:
+
+```ini
+BIND_HOST=0.0.0.0     # the server listens where a Chromecast can reach it
+CAST_ENABLED=1
+```
+
+`CAST_ENABLED` alone, with the server still on loopback, leaves casting off
+rather than producing a button that cannot work. The boot log says so whenever
+the server is listening wider than loopback, because that is a real change to
+what is exposed: the gate is still in front of everything, but everything on
+the network can now reach the gate.
+
+Permission to fetch is a signed link — an HMAC over the one path the receiver
+may read and an expiry, signed with the machine-local admin key. It names a
+single path, so a link for one film admits a request for that film and nothing
+else; it expires after six hours; and only something already signed in can mint
+one. The endpoints it may ever name are a fixed list: the stream, HLS segments,
+and subtitles.
+
+The Cast sender SDK is the only third-party script in the app, and it is
+allowed into the CSP only when casting is switched on — an install that does
+not cast keeps a policy with no external script origin in it at all.
+
+---
+
+## Running it from somewhere else
+
+Reading the log meant the launcher window, changing a setting meant a text
+editor, and restarting meant going home. Over the tunnel none of those are
+available, which is exactly when they are wanted. All three are in **Settings →
+Server**.
+
+**The log** is a ring of the last few thousand lines, with a level filter and a
+follow that polls only while the page is open. Anything that looks like a key
+is redacted on the way into the buffer: the console is on the machine that owns
+the keys, this is reachable from a phone.
+
+**The settings file** can be edited in place. Comments, ordering and unrelated
+keys survive a write; secrets are masked, and a value that comes back still
+masked leaves the stored one alone. Validation happens before anything is
+written, so a rejected change leaves the file exactly as it was, and the write
+is a temporary file and a rename with the previous contents kept at `.env.bak`.
+Nothing takes effect until the server restarts — every value is read once at
+boot and then frozen, and the page says so rather than appearing to apply
+something it has not.
+
+**Restarting** exits with a code the launcher understands, so a requested
+restart comes straight back instead of being backed off and counted against the
+crash-loop budget. It refuses when nothing is supervising the process, because
+a server that cannot come back is not a restart.
+
+Saving settings and restarting both ask for the password again. A signed-in
+device is a cookie on a phone that might be sitting unlocked on a table.
+
+### What this machine can do
+
+**Settings → Performance → This machine** encodes a few seconds of the largest
+file in the library on each path and times it. Above 1× the encoder produces
+video faster than it is watched; below it, playback stalls and no amount of
+buffering helps.
+
+Those numbers used to live only in code comments, measured once on one machine.
+On the machine this was written on:
+
+| Path | Realtime |
+|---|---|
+| H.264, software, 1080p | 1.48x |
+| H.264, NVENC, 1080p | 2.14x |
+| HDR tone map to 1080p | 1.31x |
+| HDR tone map at 2160p | 0.42x |
+
+The last row is the 1080p tone-mapping cap earning itself.
 
 ---
 
