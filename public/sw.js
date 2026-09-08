@@ -20,7 +20,7 @@
  * middle of a video stream is a way to break seeking, not to speed it up.
  */
 
-const VERSION = 'v1';
+const VERSION = 'v7';
 const SHELL_CACHE = `mw-shell-${VERSION}`;
 const DATA_CACHE = `mw-data-${VERSION}`;
 // Not versioned: saved video survives deploys. Bumping this would silently
@@ -44,6 +44,7 @@ const SHELL = [
   '/css/base.css',
   '/css/shell.css',
   '/css/content.css',
+  '/css/catalog.css',
   '/css/player.css',
   '/css/settings.css',
   '/js/app.js',
@@ -51,11 +52,13 @@ const SHELL = [
   '/js/state.js',
   '/js/views.js',
   '/js/search.js',
+  '/js/catalog.js',
   '/js/player.js',
   '/js/settings.js',
   '/js/preview.js',
   '/js/picture.js',
   '/js/intro.js',
+  '/js/intro-edit.js',
   '/js/ass.js',
   '/js/subtitle-style.js',
   '/js/track-prefs.js',
@@ -70,7 +73,8 @@ const SHELL = [
   '/js/vendor/hls.min.js',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
-  '/icons/icon-512.png'
+  '/icons/icon-512.png',
+  '/icons/mark.png'
 ];
 
 self.addEventListener('install', (event) => {

@@ -1,0 +1,16 @@
+body { background: #090a0c; color: #f3f5f9; font: 14px/1.6 system-ui,sans-serif; }
+main { padding: 62px 30px 30px; }
+h1 { margin: 0 0 12px; font-size: 30px; letter-spacing: -.04em; }
+h2 { font-size: 18px; margin: 0 0 8px; }
+.eyebrow { font-size: 10px; letter-spacing: .2em; color: #8d939f; }
+.version { color: #999faa; } .version strong { color: #e3e6eb; } #latest { margin-left: 18px; }
+section { background: #11141a; border: 1px solid #272c35; border-radius: 14px; padding: 20px; margin: 22px 0; }
+#description { margin: 0; color: #a5adb9; }
+.actions, .source-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.source-row { flex-wrap: nowrap; } .source-row input { flex: 1; min-width: 0; }
+.note { font-size: 12px; color: #8d939f; margin: 16px 0; }
+details { border-top: 1px solid #272c35; margin-top: 24px; padding-top: 16px; } summary { cursor: pointer; color: #a5adb9; }
+label { display: block; color: #8d939f; font-size: 12px; margin: 16px 0 8px; }
+progress { width: 100%; margin-top: 15px; accent-color: #d1d9e6; }
+#error { color: #e9979c; font-size: 12px; }
+[hidden] { display: none !important; }

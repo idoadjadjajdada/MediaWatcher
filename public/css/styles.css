@@ -1,7 +1,9 @@
 /* MediaWatcher styles.
    Split by responsibility; order matters - base defines the tokens the rest use. */
+@import url('./fonts.css');
 @import url('./base.css');
 @import url('./shell.css');
 @import url('./content.css');
+@import url('./catalog.css');
 @import url('./player.css');
 @import url('./settings.css');

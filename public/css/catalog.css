@@ -1,0 +1,61 @@
+/* Catalog uses the same artwork, type and controls as the library. */
+.catalog-toolbar { margin-bottom: var(--space-5); }
+.catalog-toolbar .search-toolbar__row > .input { flex: 1; min-width: 120px; width: auto; }
+.catalog-title-actions a { text-decoration: none; }
+.catalog-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.catalog-filters label { display: flex; flex-direction: column; gap: 6px; color: var(--fg-3); font-size: 12px; }
+.catalog-filters .select { min-width: 130px; }
+.catalog-filters #catalog-year { width: 110px; }
+.catalog-card { padding: 0; text-align: left; min-width: 0; }
+.catalog-card .card__art { width: 100%; }
+.catalog-card__placeholder { display: grid; place-items: center; height: 100%; color: var(--fg-3); }
+.catalog-card__placeholder svg { width: 40px; height: 40px; }
+.catalog-card__status { position: absolute; bottom: 8px; left: 8px; right: 8px; padding: 5px 8px; border: 1px solid rgba(255,255,255,.16); border-radius: var(--radius-pill); background: rgba(6,7,9,.85); color: var(--fg-2); font-size: 10px; text-align: center; }
+.catalog-card__status.is-owned, .catalog-availability.is-owned, .catalog-owned-text { color: var(--ok); }
+.catalog-pagination { display: flex; gap: 20px; justify-content: center; align-items: center; padding: 32px 0; }
+.catalog-back { margin: 10px 0 18px; }
+.catalog-hero { position: relative; isolation: isolate; overflow: hidden; border-radius: var(--r-card); background: var(--surface); min-height: 460px; display: flex; align-items: end; }
+.catalog-hero__backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center 25%; z-index: -2; opacity: .65; }
+.catalog-hero::before { content: ''; position: absolute; inset: 0; z-index: -1; background: linear-gradient(0deg, var(--bg) 0%, rgba(7,8,10,.9) 24%, rgba(7,8,10,.35) 100%), linear-gradient(90deg, rgba(7,8,10,.65), transparent); }
+.catalog-hero__content { width: 100%; display: flex; align-items: end; gap: 32px; padding: 80px 32px 24px; }
+.catalog-hero__poster { width: clamp(150px, 20vw, 240px); aspect-ratio: 2/3; object-fit: cover; border-radius: var(--r-card); border: 1px solid var(--line); flex-shrink: 0; }
+.catalog-hero__info { max-width: 780px; min-width: 0; }
+.catalog-hero h1 { font-family: var(--font-display, var(--font-ui)); font-size: clamp(30px, 4vw, 60px); line-height: 1.06; letter-spacing: -.04em; margin: 16px 0; text-wrap: balance; }
+.catalog-availability { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: var(--radius-pill); padding: 6px 12px; font-size: 12px; color: var(--fg-2); background: rgba(7,8,10,.5); }
+.catalog-meta { color: var(--fg-2); margin: 0 0 16px; }
+.catalog-tagline { color: var(--fg-3); font-style: italic; margin-bottom: 0; }
+.catalog-overview { max-width: 70ch; color: var(--fg-2); line-height: 1.7; margin: 16px 0 20px; }
+.catalog-title-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.catalog-download-note { margin: 12px 0 0; }
+.catalog-seasons, .catalog-downloads, .catalog-cast { margin: 24px 22px 40px; scroll-margin-top: calc(var(--safe-top) + 20px); }
+.catalog-detail h2 { margin: 0 0 8px; font-size: 22px; letter-spacing: -.02em; }
+.catalog-season-tabs { display: flex; gap: 8px; overflow: auto; padding: 4px 0 12px; }
+.catalog-season-tabs .chip { white-space: nowrap; flex-shrink: 0; }
+.catalog-season-tabs .t-meta { margin-left: 8px; }
+.catalog-season-tabs .is-active .t-meta { color: inherit; opacity: .65; }
+.catalog-season-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 20px 0; }
+.catalog-season-head h3, .catalog-season-head p { margin: 0 0 5px; }
+.catalog-episode { display: flex; align-items: center; gap: 20px; padding: 20px 0; border-top: 1px solid var(--line); }
+.catalog-episode > img, .catalog-episode__number { width: 168px; aspect-ratio: 16/9; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+.catalog-episode__number { display: grid; place-items: center; background: var(--surface); color: var(--fg-3); font-size: 28px; }
+.catalog-episode__body { flex: 1; min-width: 0; }
+.catalog-episode h4 { font-size: 15px; margin: 0 0 5px; }
+.catalog-episode p { margin: 5px 0 0; color: var(--fg-2); }
+.catalog-episode p:not(.t-meta) { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; }
+.catalog-episode .btn { flex-shrink: 0; }
+.catalog-cast__list { display: flex; gap: 20px; overflow: auto; padding-top: 12px; }
+.catalog-cast__list > div { flex: 0 0 100px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.catalog-cast__list img, .catalog-cast__empty { width: 100px; height: 130px; object-fit: cover; border-radius: 8px; background: var(--surface); }
+@media (max-width: 700px) {
+  .catalog-filters { gap: 10px; }
+  .catalog-filters label { flex: 1 1 40%; }
+  .catalog-filters .select, .catalog-filters #catalog-year { min-width: 0; width: 100%; }
+  .catalog-hero__content { padding: 140px 16px 16px; gap: 20px; }
+  .catalog-hero__poster { display: none; }
+  .catalog-seasons, .catalog-downloads, .catalog-cast { margin: 20px 6px; }
+  .catalog-season-head { align-items: start; flex-direction: column; }
+  .catalog-episode { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 12px; }
+  .catalog-episode > img, .catalog-episode__number { width: 100px; }
+  .catalog-episode > .btn { grid-column: 2; justify-self: start; }
+  .catalog-card__status { font-size: 9px; padding: 4px 3px; }
+}

@@ -14,8 +14,12 @@ import dotenv from 'dotenv';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT_DIR = path.resolve(HERE, '..');
+// Installed code is read-only; desktop state lives outside the application.
+// Source/server launches retain their original paths unless explicitly set.
+export const DATA_DIR = process.env.MW_DATA_DIR
+  ? path.resolve(process.env.MW_DATA_DIR) : ROOT_DIR;
 
-dotenv.config({ path: path.join(ROOT_DIR, '.env') });
+dotenv.config({ path: path.join(DATA_DIR, '.env') });
 
 /* --------------------------------------------------------------------------
  * Logger (leveled, honours LOG_LEVEL)
@@ -144,10 +148,10 @@ export function torrentioSegment(raw) {
   return segment;
 }
 
-/** Resolve a possibly-relative path against the project root. */
+/** Resolve a possibly-relative path against the writable data root. */
 function resolvePath(value, fallback) {
   const raw = value || fallback;
-  return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(ROOT_DIR, raw);
+  return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(DATA_DIR, raw);
 }
 
 /* --------------------------------------------------------------------------
@@ -168,7 +172,7 @@ if (missing.length > 0) {
     '',
     ...missing.map(([name, where]) => `  - ${name} is empty or unset. Get one at ${where}`),
     '',
-    `Fix: copy .env.example to .env in ${ROOT_DIR} and fill in the values.`,
+    `Fix: copy .env.example to .env in ${DATA_DIR} and fill in the values.`,
     ''
   ];
   console.error(lines.join('\n'));
@@ -199,7 +203,7 @@ if (authPassword.length < 8) {
  * from loopback — tailscale serve makes every remote request look local. So it
  * proves itself with a file instead.
  */
-const ADMIN_KEY_PATH = path.join(ROOT_DIR, 'config', 'admin-key');
+const ADMIN_KEY_PATH = path.join(DATA_DIR, 'config', 'admin-key');
 
 function loadOrCreateAdminKey() {
   try {
@@ -209,6 +213,7 @@ function loadOrCreateAdminKey() {
     // Absent or unreadable: fall through and mint a new one.
   }
   const key = randomBytes(32).toString('hex');
+  fs.mkdirSync(path.dirname(ADMIN_KEY_PATH), { recursive: true });
   fs.writeFileSync(ADMIN_KEY_PATH, key, { mode: 0o600 });
   return key;
 }
@@ -222,6 +227,7 @@ const tempPath = resolvePath(str('TEMP_PATH'), './temp');
 
 const config = {
   rootDir: ROOT_DIR,
+  dataDir: DATA_DIR,
   port: int('PORT', 3000),
   /*
    * Loopback unless told otherwise.
@@ -270,8 +276,8 @@ const config = {
   moviesPath: path.join(libraryPath, 'movies'),
   showsPath: path.join(libraryPath, 'shows'),
   tempPath,
-  cachePath: path.join(ROOT_DIR, 'cache'),
-  dbPath: path.join(ROOT_DIR, 'db', 'mediawatcher.db'),
+  cachePath: path.join(DATA_DIR, 'cache'),
+  dbPath: path.join(DATA_DIR, 'db', 'mediawatcher.db'),
 
   // Scanning
   scanIntervalMs: int('SCAN_INTERVAL_MS', 5000),
@@ -375,7 +381,7 @@ const config = {
   // has no byte offsets. Sources are never touched or replaced.
   mp4Cache: {
     enabled: str('MP4_CACHE_ENABLED', '1') !== '0',
-    dir: path.join(ROOT_DIR, 'cache', 'mp4'),
+    dir: path.join(DATA_DIR, 'cache', 'mp4'),
     /*
      * A converted copy is roughly the size of the source, so an unbounded cache
      * is a second library. Least-recently-played variants are evicted once the
@@ -389,7 +395,7 @@ const config = {
   // Seek-preview frames. Tiny per file, but the keys are content-addressed, so
   // every replaced or re-downloaded file leaves its old set behind.
   thumbCache: {
-    dir: path.join(ROOT_DIR, 'cache', 'thumbs'),
+    dir: path.join(DATA_DIR, 'cache', 'thumbs'),
     maxBytes: Math.round(Number(str('THUMB_CACHE_MAX_GB', '2')) * 1024 ** 3),
     ttlMs: int('THUMB_CACHE_TTL_DAYS', 60) * 24 * 60 * 60 * 1000
   },
@@ -400,7 +406,7 @@ const config = {
   hls: {
     // Overridable so the pool can be exercised against a scratch directory
     // rather than the live cache.
-    dir: resolvePath(str('HLS_CACHE_DIR'), path.join(ROOT_DIR, 'cache', 'hls')),
+    dir: resolvePath(str('HLS_CACHE_DIR'), path.join(DATA_DIR, 'cache', 'hls')),
     // How long a session survives without a keepalive before it is reaped.
     // Long enough to cover a pause and a phone locking its screen.
     idleTimeoutMs: int('HLS_IDLE_TIMEOUT_MS', 60000),

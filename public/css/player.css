@@ -27,8 +27,8 @@ html.is-player-open body { overflow: hidden; }
  */
 .player__stats {
   position: absolute;
-  top: 64px;
-  left: 20px;
+  top: calc(64px + var(--safe-top));
+  left: calc(20px + var(--safe-left));
   z-index: 5;
   padding: 10px 12px;
   border-radius: 8px;
@@ -59,8 +59,8 @@ html.is-player-open body { overflow: hidden; }
  */
 .player__resumed {
   position: absolute;
-  top: 76px;
-  left: 20px;
+  top: calc(76px + var(--safe-top));
+  left: calc(20px + var(--safe-left));
   z-index: 5;
   display: flex;
   align-items: center;
@@ -159,11 +159,18 @@ html.is-player-open body { overflow: hidden; }
  * chrome hides: the whole point is that it is reachable without first waking
  * the controls, which would cost a tap on a phone.
  */
-.player__skip-intro {
+.player__skip-wrap {
   position: absolute;
-  right: 24px;
-  bottom: 92px;
+  right: calc(24px + var(--safe-right));
+  bottom: calc(92px + var(--safe-bottom));
   z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.player__skip-wrap[hidden] { display: none; }
+
+.player__skip-intro {
   padding: 10px 18px;
   border-radius: 999px;
   background: rgba(20, 20, 24, .82);
@@ -172,10 +179,26 @@ html.is-player-open body { overflow: hidden; }
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  backdrop-filter: blur(4px);
+
 }
 
 .player__skip-intro:hover { background: rgba(30, 30, 36, .92); }
+
+/* Deliberately quieter than the offer beside it: the common case is taking the
+   jump, and the way to move it should be findable without competing. */
+.player__skip-tune {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(20, 20, 24, .82);
+  border: 1px solid rgba(255, 255, 255, .22);
+  color: var(--fg-3);
+  cursor: pointer;
+
+}
+.player__skip-tune:hover { color: var(--fg); background: rgba(30, 30, 36, .92); }
 
 .player__top, .player__controls { transition: opacity var(--state), transform var(--state); }
 .player.is-idle .player__top { opacity: 0; transform: translateY(-8px); pointer-events: none; }
@@ -185,7 +208,11 @@ html.is-player-open body { overflow: hidden; }
 .player__top {
   position: absolute; top: 0; left: 0; right: 0; z-index: 3;
   display: flex; align-items: flex-start; gap: var(--space-3);
-  padding: var(--space-4);
+  padding:
+    calc(var(--space-4) + var(--safe-top))
+    calc(var(--space-4) + var(--safe-right))
+    var(--space-4)
+    calc(var(--space-4) + var(--safe-left));
   background: linear-gradient(180deg, rgba(0, 0, 0, .82), transparent);
 }
 .player__heading { min-width: 0; }
@@ -193,33 +220,120 @@ html.is-player-open body { overflow: hidden; }
 .player__subtitle { font-size: 11px; color: var(--fg-2); margin-top: 2px; }
 .player__mode { margin-left: auto; flex: none; }
 
+/* Controls float over the picture. The fade extends above their hit area so
+   there is no hard panel edge, and clicking the picture still reaches video. */
 .player__controls {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
-  padding: var(--space-6) var(--space-4) var(--space-4);
-  background: linear-gradient(0deg, rgba(0, 0, 0, .9), transparent);
+  isolation: isolate;
+  padding:
+    var(--space-3)
+    calc(var(--space-5) + var(--safe-right))
+    calc(var(--space-3) + var(--safe-bottom))
+    calc(var(--space-5) + var(--safe-left));
+  background: transparent;
+  border: 0;
 }
+.player__controls::before {
+  content: '';
+  position: absolute;
+  inset: -140px 0 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(to top,
+    rgba(0, 0, 0, .9) 0%,
+    rgba(0, 0, 0, .73) 25%,
+    rgba(0, 0, 0, .38) 53%,
+    rgba(0, 0, 0, .12) 76%,
+    transparent 100%);
+}
+@media (max-height: 520px) {
+  .player__controls::before { top: -80px; }
+}
+
+/* A fixed width on both, not just tabular figures: the clock and its ghost have
+   to stay the same size or the centre shifts, and the text changes width the
+   moment a film crosses an hour. */
 .player__times {
-  display: flex; justify-content: space-between;
-  font-size: 11px; color: var(--fg-2); margin-top: 6px;
+  display: inline-flex; align-items: center; justify-content: flex-end;
+  gap: 6px; flex: none; min-width: 132px;
+  font-family: var(--font-mo); font-variant-numeric: tabular-nums;
+  font-size: 12px; color: var(--fg-2); white-space: nowrap;
+  margin-right: var(--space-2);
 }
+.player__times-sep { opacity: .5; }
+.player__times--ghost { visibility: hidden; margin: 0 0 0 var(--space-2); }
+
+/*
+ * The transport is centred on the bar itself, not on whatever space the side
+ * clusters leave over. Two flex:1 groups split the free space evenly, so the
+ * moment volume is wider than the settings cluster the middle drifts;
+ * positioning it at 50% is exact at every width.
+ */
 .player__buttons {
-  display: flex; align-items: center; gap: var(--space-2);
-  margin-top: var(--space-2);
+  position: relative; min-height: 50px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-3); margin-top: var(--space-1);
 }
-/* Keep the transport together in the middle instead of flung to the corners
-   of a 1900px screen, with volume and settings balanced either side. */
 .player__buttons-left,
-.player__buttons-right { display: flex; align-items: center; gap: var(--space-2); flex: 1; }
-.player__buttons-right { justify-content: flex-end; }
-.player__transport { display: flex; align-items: center; gap: var(--space-1); }
+.player__buttons-right { display: flex; align-items: center; gap: var(--space-1); flex: none; }
+.player__transport {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: flex; align-items: center; gap: var(--space-1);
+}
+
+/* Below this the clock and the transport together stop clearing the side
+   clusters, so the clock lifts back out to a row of its own above them. */
+@media (max-width: 919px) {
+  .player__buttons { padding-top: var(--space-5); }
+  .player__times {
+    position: absolute; top: 0; left: 0; right: 0; margin: 0; min-width: 0;
+    display: flex; justify-content: space-between;
+  }
+  .player__times-sep { display: none; }
+  .player__times--ghost { display: none; }
+}
+
+/*
+ * On a phone the transport and the two clusters cannot all fit across one row,
+ * so exact centring is not available at any price. Back to an ordinary flex
+ * row, where the groups share the width and nothing lands on top of anything.
+ */
+@media (max-width: 700px) {
+  .player__controls {
+    padding-left: calc(var(--space-3) + var(--safe-left));
+    padding-right: calc(var(--space-3) + var(--safe-right));
+  }
+  .player__buttons { justify-content: space-between; gap: var(--space-1); }
+  .player__transport { position: static; transform: none; }
+  .player__buttons-left, .player__buttons-right { flex: 1; min-width: 0; }
+  .player__buttons-right { justify-content: flex-end; }
+  .player__btn { width: 40px; height: 40px; }
+  .player__btn--play { width: 46px; height: 46px; }
+}
 
 .player__btn {
   width: 44px; height: 44px; display: grid; place-items: center;
-  border-radius: var(--radius); color: var(--fg);
-  transition: background var(--state), color var(--state), opacity var(--state);
+  border-radius: var(--r-nav); color: var(--fg);
+  border: 1px solid transparent;
+  transition: background var(--state), color var(--state), border-color var(--state),
+              transform var(--t1) var(--spring), opacity var(--state);
 }
-.player__btn:hover { background: rgba(255, 255, 255, .14); }
-.player__btn--play svg { width: 30px; height: 30px; }
+.player__btn:active { transform: scale(.88); }
+/* display: grid above outranks the UA's [hidden] rule, which is why the cast,
+   AirPlay and intro buttons all have to be told again. */
+.player__btn[hidden] { display: none; }
+.player__btn:hover { background: var(--surface-3); border-color: var(--line-2); }
+
+/* After the generic hover, not before it: these carry the same specificity, so
+   whichever is written last wins and the filled button would otherwise go grey
+   under the pointer. */
+.player__btn--play {
+  background: var(--paper); color: #0a0b0d;
+  border-radius: var(--radius-pill); width: 50px; height: 50px;
+}
+.player__btn--play:hover { background: #fff; color: #0a0b0d; border-color: transparent; transform: scale(1.06); }
+.player__btn--play:active { transform: scale(.94); }
+.player__btn--play svg { width: 24px; height: 24px; }
 .player__btn--ep { color: var(--fg-3); }
 .player__btn--ep:hover { color: var(--fg); }
 .player__volume { display: flex; align-items: center; gap: var(--space-2); }
@@ -357,7 +471,9 @@ html.is-player-open body { overflow: hidden; }
 .substyle__reset:hover { color: var(--fg); background: var(--surface-2); }
 
 .next-up {
-  position: absolute; right: var(--space-5); bottom: 132px; z-index: 4; width: 300px;
+  position: absolute; z-index: 4; width: 300px;
+  right: calc(var(--space-5) + var(--safe-right));
+  bottom: calc(132px + var(--safe-bottom));
   padding: var(--space-4); background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius); box-shadow: var(--shadow);
   animation: rise-in var(--enter) both;
@@ -386,12 +502,20 @@ html.is-player-open body { overflow: hidden; }
 @media (max-width: 767px) {
   .player__volume { display: none; }
   .player__controls { padding: var(--space-6) var(--space-3) var(--space-3); }
-  .next-up { left: var(--space-4); right: var(--space-4); width: auto; bottom: 140px; }
-  .player__menu-panel { position: fixed; left: var(--space-4); right: var(--space-4); bottom: 140px; width: auto; }
+  .next-up {
+    left: calc(var(--space-4) + var(--safe-left));
+    right: calc(var(--space-4) + var(--safe-right));
+    width: auto; bottom: calc(140px + var(--safe-bottom));
+  }
+  .player__menu-panel {
+    position: fixed; left: var(--space-4); right: var(--space-4);
+    bottom: calc(140px + var(--safe-bottom)); width: auto;
+  }
   /* Four panels anchored right:0 inside a 375px bar would overflow it, so on a
      phone they span the viewport the way the old single panel did. */
   .player__pop-panel {
-    position: fixed; left: var(--space-4); right: var(--space-4); bottom: 140px;
+    position: fixed; left: var(--space-4); right: var(--space-4);
+    bottom: calc(140px + var(--safe-bottom));
     width: auto; min-width: 0;
   }
   .audiodelay__step { min-height: 44px; }
@@ -442,7 +566,7 @@ html.is-player-open body { overflow: hidden; }
    Rendered only for episodes. It sits above the video, so it swallows its own
    taps and never reaches the double-tap-to-seek listener bound to the video. */
 .player__eparrow {
-  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  position: absolute; right: var(--safe-right); top: 50%; transform: translateY(-50%);
   z-index: 3;
   display: grid; place-items: center;
   width: 30px; height: 76px;
@@ -463,7 +587,8 @@ html.is-player-open body { overflow: hidden; }
    four corners rather than only the two facing inward. */
 .player__episodes {
   position: absolute; z-index: 4;
-  top: var(--space-3); right: var(--space-3);
+  top: calc(var(--space-3) + var(--safe-top));
+  right: calc(var(--space-3) + var(--safe-right));
   /* Clears the control bar, so the settings buttons and fullscreen stay
      reachable with the panel open. player.js measures the bar and writes
      --controls-h; the fallback is its height at the time of writing. */
@@ -661,7 +786,7 @@ html.is-player-open body { overflow: hidden; }
   line-height: 1.35;
   max-width: 22rem;
 }
-.subsync--good { color: #4ac97e; }
+.subsync--good { color: var(--ok); }
 .subsync--bad { color: #e5b04b; }
 
 /* ---- O|I switch, in the speed menu ----
@@ -684,8 +809,8 @@ html.is-player-open body { overflow: hidden; }
 .switchmark__o, .switchmark__i { opacity: 0.35; transition: opacity 120ms, color 120ms; }
 .switchmark__bar { opacity: 0.4; margin: 0 1px; }
 .switchmark:not(.is-on) .switchmark__o { opacity: 1; color: var(--fg); }
-.switchmark.is-on { border-color: #4ac97e; }
-.switchmark.is-on .switchmark__i { opacity: 1; color: #4ac97e; }
+.switchmark.is-on { border-color: var(--ok); }
+.switchmark.is-on .switchmark__i { opacity: 1; color: var(--ok); }
 
 /* ---- playback speed ----
    A slider rather than five buttons, over a ladder of stops: fine near 1x
@@ -705,3 +830,205 @@ html.is-player-open body { overflow: hidden; }
 .range--speed { width: 100%; }
 .speed__ends { display: flex; justify-content: space-between;
   margin-top: 2px; font-size: 10px; color: var(--fg-3); }
+
+/* ---- intro editor ----
+   A window on the file rather than a view of it: the strip is two minutes wide,
+   not forty, which is the whole reason this exists. At that scale a second is
+   about eight pixels — a comfortable drag — where on the seek bar the entire
+   title sequence is four. */
+.introedit {
+  position: absolute;
+  /* Centred by margin rather than a translate, because the entrance animation
+     ends on `transform: none` and would drop a translated panel half a width
+     to the right on its last frame. */
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  bottom: calc(104px + var(--safe-bottom));
+  z-index: 7;
+  /* Never taller than the screen it is on. The rules for short screens below
+     keep it well inside this in practice; this is the guarantee. */
+  max-height: calc(100dvh - var(--safe-top) - 128px);
+  overflow-y: auto;
+  width: min(760px, calc(100vw - 24px - var(--safe-left) - var(--safe-right)));
+  padding: var(--space-4) var(--space-4) var(--space-3);
+  background: rgba(13, 13, 15, .96);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+
+  animation: rise-in var(--enter) both;
+}
+.introedit[hidden] { display: none; }
+
+.introedit__head { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
+.introedit__titles { flex: 1; min-width: 0; }
+.introedit__scope {
+  margin-top: 2px; font-size: 11px; color: var(--fg-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.introedit__zoom {
+  display: flex; align-items: center; flex: none; gap: 2px;
+  padding: 2px; border: 1px solid var(--line); border-radius: var(--radius-pill);
+}
+.introedit__zoombtn {
+  width: 26px; height: 26px; border-radius: 50%;
+  color: var(--fg-2); font-size: 14px; line-height: 1;
+}
+.introedit__zoombtn:hover { background: rgba(255, 255, 255, .12); color: var(--fg); }
+.introedit__span { min-width: 30px; text-align: center; font-size: 11px; color: var(--fg-2); }
+
+/* Not clipped: the handles carry their times above and below the track, and at
+   the ends of the strip those labels have to hang over the edge to stay whole.
+   The frames do their own clipping instead. */
+.introedit__strip {
+  position: relative;
+  height: 68px;
+  border-radius: var(--radius);
+  background: #08080a;
+  box-shadow: inset 0 0 0 1px var(--line);
+  cursor: pointer;
+  /* The strip drags handles. Without this a touch drag scrolls the page and the
+     handle stays where it was. */
+  touch-action: none;
+  user-select: none;
+}
+
+.introedit__frames {
+  position: absolute; inset: 0; display: flex;
+  border-radius: var(--radius); overflow: hidden;
+}
+.introedit__frame {
+  flex: 1 1 0; min-width: 0;
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, .55);
+  /* Dimmed so the handles, the region and the playhead read as controls over a
+     backdrop rather than competing with the picture. */
+  opacity: .5;
+}
+.introedit__frame img { width: 100%; height: 100%; object-fit: cover; }
+.introedit__frame.is-blank img { display: none; }
+
+.introedit__region {
+  position: absolute; top: 0; bottom: 0;
+  background: rgba(255, 255, 255, .16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .2);
+  pointer-events: none;
+}
+
+/* Thin, and topped with a wedge, so it never reads as a third handle. */
+.introedit__playhead {
+  position: absolute; top: 0; bottom: 0; width: 1px;
+  background: rgba(255, 255, 255, .75);
+  pointer-events: none;
+}
+.introedit__playhead[hidden] { display: none; }
+.introedit__playhead::before {
+  content: '';
+  position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid rgba(255, 255, 255, .85);
+}
+
+.introedit__handle {
+  position: absolute; top: -3px; bottom: -3px; width: 3px; margin-left: -1.5px;
+  background: var(--fg);
+  border-radius: 2px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+/* A three-pixel bar is not a touch target. This widens the grab area to a
+   thumb's width without widening what is drawn. */
+.introedit__handle::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: -13px; right: -13px;
+}
+/* The time it is currently sitting on, which is the number being edited. */
+.introedit__handle::after {
+  content: attr(data-time);
+  position: absolute; top: -9px; left: 50%; transform: translateX(-50%);
+  padding: 1px 5px; border-radius: var(--radius-sm);
+  background: var(--fg); color: #000;
+  font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums;
+  white-space: nowrap; pointer-events: none;
+}
+/* Start above, end below: at a tight zoom the two handles sit close enough
+   that one row of labels would overlap into an unreadable smear. */
+.introedit__handle--end::after { top: auto; bottom: -9px; }
+.introedit__handle:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(255, 255, 255, .35); }
+
+.introedit__scale { position: relative; height: 13px; margin-top: var(--space-3); }
+.introedit__tick {
+  position: absolute; top: 0; transform: translateX(-50%);
+  font-size: 10px; color: var(--fg-3); white-space: nowrap;
+}
+
+.introedit__rows { margin-top: var(--space-2); display: grid; gap: var(--space-2); }
+.introedit__row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.introedit__label {
+  width: 40px; flex: none;
+  font-size: 10px; font-weight: 600; letter-spacing: .9px; text-transform: uppercase;
+  color: var(--fg-3);
+}
+/* Fixed width: the value changes on every frame of a drag, and a number that
+   resizes shoves the buttons beside it around while they are being aimed at. */
+.introedit__value { min-width: 64px; font-size: 15px; font-weight: 700; }
+
+.introedit__nudges { display: flex; gap: 2px; }
+.introedit__nudge {
+  min-width: 36px; height: 30px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  color: var(--fg-2); font-size: 11px; font-weight: 600;
+}
+.introedit__nudge:hover { background: var(--surface-2); color: var(--fg); }
+
+.introedit__set {
+  height: 30px; padding: 0 var(--space-3);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  color: var(--fg-2); font-size: 11px; font-weight: 600;
+}
+.introedit__set:hover { background: var(--surface-2); color: var(--fg); }
+
+.introedit__foot {
+  display: flex; align-items: center; gap: var(--space-2);
+  margin-top: var(--space-2); padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+.introedit__length { flex: 1; font-size: 11px; color: var(--fg-3); }
+.introedit__foot .btn { min-height: 34px; font-size: 11px; }
+
+@media (max-width: 767px) {
+  /* Above the control bar, which is taller on a phone, and wide enough that
+     the strip keeps its resolution. */
+  .introedit { bottom: calc(140px + var(--safe-bottom)); padding: var(--space-3); }
+  .introedit__strip { height: 56px; }
+  .introedit__label { width: 100%; }
+  .introedit__nudge { min-width: 42px; height: 36px; }
+  .introedit__set { height: 36px; }
+}
+
+/*
+ * A phone held sideways — which is how anything gets watched, and so the way
+ * this panel is most often opened — is under 400px tall. The panel was drawn
+ * for a window and stood 318px high, which put its heading off the top of the
+ * screen.
+ *
+ * Everything tightens and the filmstrip gets shorter. That costs some of the
+ * picture and none of the precision: the strip is an aid to finding the right
+ * second, and the times underneath are what is actually being edited.
+ */
+@media (max-height: 520px) {
+  .introedit {
+    bottom: calc(84px + var(--safe-bottom));
+    padding: var(--space-2) var(--space-3) var(--space-3);
+  }
+  .introedit__head { margin-bottom: var(--space-2); }
+  .introedit__strip { height: 40px; }
+  .introedit__scale { height: 12px; margin-top: var(--space-2); }
+  .introedit__rows { margin-top: var(--space-1); gap: var(--space-1); }
+  .introedit__value { font-size: 14px; }
+  .introedit__nudge { min-width: 38px; height: 28px; }
+  .introedit__set { height: 28px; }
+  .introedit__foot { margin-top: 0; padding-top: var(--space-2); }
+  .introedit__foot .btn { min-height: 30px; }
+}

@@ -11,6 +11,12 @@
   --dim: #8a8a94;
   --accent: #a855f7;
   --danger: #ef4444;
+
+  /* Duplicated from base.css for the same reason as everything above it. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
 }
 
 * { box-sizing: border-box; }
@@ -18,12 +24,17 @@
 body {
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   background: var(--bg);
   color: var(--text);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-  padding: 24px;
+  padding:
+    calc(24px + var(--safe-top))
+    calc(24px + var(--safe-right))
+    calc(24px + var(--safe-bottom))
+    calc(24px + var(--safe-left));
 }
 
 .gate {
@@ -33,6 +44,15 @@ body {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 28px 24px;
+}
+
+/* The mark, above the name, cut out of its background so the card shows
+   through the sockets rather than a black square sitting on it. */
+.gate__mark {
+  height: 112px;
+  width: auto;
+  display: block;
+  margin: 0 0 18px;
 }
 
 .gate__title {

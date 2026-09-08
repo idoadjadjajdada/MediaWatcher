@@ -88,7 +88,7 @@ async function searchAllDebrid({ query }) {
  * segment from torrentio.strem.fun/configure. No code change needed to add one.
  * ----------------------------------------------------------------------- */
 
-async function searchTorrentio({ type, imdbId, season, episode, signal }) {
+async function searchTorrentio({ type, imdbId, season, episode, scope, signal }) {
   if (!imdbId) {
     throw new SearchError('Torrentio needs an IMDB id and TMDB did not provide one', 404);
   }
@@ -107,7 +107,7 @@ async function searchTorrentio({ type, imdbId, season, episode, signal }) {
   return streams.map((stream) => {
     // title is multi-line: "Release.Name\n👤 1234 💾 2.1 GB ⚙️ provider"
     const lines = String(stream.title || '').split('\n').map((line) => line.trim()).filter(Boolean);
-    const releaseTitle = stream.behaviorHints?.filename || lines[0] || stream.name || '';
+    const releaseTitle = (scope === 'season' ? lines[0] : stream.behaviorHints?.filename) || lines[0] || stream.name || '';
     const meta = lines.slice(1).join(' ');
 
     const seeders = Number(/👤\s*(\d+)/.exec(meta)?.[1] || /(\d+)\s*seed/i.exec(meta)?.[1] || 0);
@@ -141,11 +141,13 @@ async function searchTorrentio({ type, imdbId, season, episode, signal }) {
 
 const JACKETT_CATEGORIES = { movie: 2000, show: 5000 };
 
-async function searchJackett({ query, type, season, episode, signal }) {
+async function searchJackett({ query, type, season, episode, scope, signal }) {
   const base = `${config.jackett.url}/api/v2.0/indexers/${encodeURIComponent(config.jackett.indexers)}/results`;
 
   // Jackett has no IMDB lookup for most trackers, so episodes go out as "Show S01E05".
-  const term = type === 'show' && season != null && episode != null
+  const term = type === 'show' && season != null && scope === 'season'
+    ? `${query} S${String(season).padStart(2, '0')}`
+    : type === 'show' && season != null && episode != null
     ? `${query} S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
     : query;
 
@@ -423,7 +425,16 @@ export async function resolveImdbId({ query, type = 'movie', tmdbId, imdbId } = 
   return { tmdbId: null, imdbId: null, type: wanted };
 }
 
-export async function search({ query, type = 'movie', tmdbId, imdbId, season, episode, limit } = {}) {
+// Conservative: a named season without an episode marker is a pack candidate.
+// File selection still verifies the requested season when the torrent is ready.
+export function isSeasonPack(title, season) {
+  const text = String(title || '');
+  if (/\bS\d{1,3}[ ._-]*E\d|\b\d{1,3}x\d{1,3}\b|\bepisode[ ._-]*\d/i.test(text)) return false;
+  const seasons = [...text.matchAll(/\b(?:S|season[ ._-]*)(\d{1,3})(?!\d)/gi)].map(match => Number(match[1]));
+  return seasons.includes(Number(season));
+}
+
+export async function search({ query, type = 'movie', tmdbId, imdbId, season, episode, scope = 'episode', limit } = {}) {
   if (!query && !tmdbId && !imdbId) {
     throw new SearchError('search requires a query or a tmdb_id', 400);
   }
@@ -437,16 +448,17 @@ export async function search({ query, type = 'movie', tmdbId, imdbId, season, ep
 
   // Search the type we actually resolved, not the one that was asked for: a
   // show found via the fallback has to reach Torrentio's series endpoint.
-  const context = { query, type: resolved.type, tmdbId, imdbId: resolvedImdb, season, episode };
+  const context = { query, type: resolved.type, tmdbId, imdbId: resolvedImdb, season, episode, scope };
 
   const settled = await Promise.all(active.map(async (source) => {
     const started = Date.now();
     try {
-      const results = await withTimeout(
+      const found = await withTimeout(
         (signal) => source.search({ ...context, signal }),
         config.search.sourceTimeoutMs,
         source.label
       );
+      const results = scope === 'season' ? found.filter(result => isSeasonPack(result.title, season)) : found;
       log.debug(`${source.id}: ${results.length} results in ${Date.now() - started}ms`);
       return { id: source.id, label: source.label, ok: true, count: results.length, ms: Date.now() - started, results };
     } catch (error) {

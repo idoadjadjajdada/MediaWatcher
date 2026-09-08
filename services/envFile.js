@@ -17,11 +17,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT_DIR, createLogger } from '../config/index.js';
+import { ROOT_DIR, DATA_DIR, createLogger } from '../config/index.js';
 
 const log = createLogger('env');
 
-export const ENV_PATH = path.join(ROOT_DIR, '.env');
+export const ENV_PATH = path.join(DATA_DIR, '.env');
 export const EXAMPLE_PATH = path.join(ROOT_DIR, '.env.example');
 
 /** What a masked value looks like coming back. Never a legal real value. */

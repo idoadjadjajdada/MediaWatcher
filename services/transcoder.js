@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import config, { createLogger } from '../config/index.js';
 import { parseBitrate } from './quality.js';
 import { SEGMENT_SECONDS } from './hls/playlist.js';
+import { findHardwareEncoder } from './hardwareEncoder.js';
 
 const log = createLogger('transcoder');
 
@@ -189,10 +190,9 @@ let hwEncoder;
 /**
  * An H.264 encoder that runs on the GPU, or null for libx264.
  *
- * Only worth the lookup for tone mapping, where the CPU is already busy doing
- * the colour conversion. Measured over 20s of 4K HDR on this machine: libx264
- * at 1080p runs 1.18x realtime, NVENC 1.56x, and NVENC with CUDA decode 1.70x.
- * Probed once and cached, like isAvailable().
+ * Runs a tiny encode to verify the installed hardware and driver. An encoder
+ * listed by FFmpeg may be compiled in but unusable on this machine.
+ * Concurrent callers share one probe, cached for the process lifetime.
  */
 export function hardwareEncoder() {
   if (hwEncoder !== undefined) return hwEncoder;
@@ -201,18 +201,9 @@ export function hardwareEncoder() {
     return hwEncoder;
   }
 
-  hwEncoder = new Promise((resolve) => {
-    const child = spawn(config.ffmpeg.ffmpegPath, ['-hide_banner', '-encoders'], { windowsHide: true });
-    let out = '';
-    child.stdout?.on('data', (chunk) => { out += chunk; });
-    child.stderr?.resume();
-    child.on('error', () => resolve(null));
-    child.on('close', () => {
-      // Ordered by how well each handles a realtime pipe on typical hardware.
-      const found = ['h264_nvenc', 'h264_qsv', 'h264_amf'].find((name) => out.includes(name));
-      if (found) log.info(`hardware H.264 encoder available: ${found}`);
-      resolve(found || null);
-    });
+  hwEncoder = findHardwareEncoder(config.ffmpeg.ffmpegPath).then((encoder) => {
+    log.info(encoder ? `hardware H.264 encoder verified: ${encoder}` : 'using software H.264 encoding');
+    return encoder;
   });
 
   return hwEncoder;
@@ -368,7 +359,8 @@ export function decide(info, caps = {}, options = {}) {
 
     if (tooTall || tooFat) {
       mode = 'transcode';
-      targetHeight = cap.height;
+      // A bitrate cap must not upscale a smaller source just to lower its rate.
+      targetHeight = tooTall ? cap.height : null;
       maxrate = cap.maxrate;
       reasons.push(tooTall
         ? `capped to ${cap.height}p for this connection (source is ${sourceHeight}p)`
@@ -452,7 +444,7 @@ export function buildArgs(filePath, {
       // rather than added separately — two scale filters would be wasteful and
       // the second would fight the first.
       args.push('-vf', tonemapChain(height, maxHeight ?? TONEMAP_MAX_HEIGHT));
-    } else if (maxHeight) {
+    } else if (maxHeight && (!Number.isFinite(height) || height > maxHeight)) {
       // -2 keeps the width even, which H.264 requires.
       args.push('-vf', `scale=-2:${maxHeight}`);
     }
@@ -552,7 +544,7 @@ export function buildSegmentArgs(filePath, {
 
   if (tonemap) {
     args.push('-vf', tonemapChain(height, maxHeight ?? TONEMAP_MAX_HEIGHT));
-  } else if (maxHeight) {
+  } else if (maxHeight && (!Number.isFinite(height) || height > maxHeight)) {
     args.push('-vf', `scale=-2:${maxHeight}`);
   }
 

@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'"><title>MediaWatcher updates</title><link rel="stylesheet" href="../public/css/base.css"><link rel="stylesheet" href="updates.css"><script defer src="updates.js"></script></head>
+<body><main>
+  <p class="eyebrow">MEDIAWATCHER</p><h1>App updates</h1>
+  <p class="version">Your version <strong id="current">…</strong><span id="latest"></span></p>
+  <section aria-live="polite"><h2 id="status">Checking update settings…</h2><p id="description"></p><progress id="progress" max="100" value="0" hidden></progress></section>
+  <div class="actions"><button class="btn btn--primary" id="check">Check for updates</button><button class="btn btn--primary" id="download" hidden>Download update</button><button class="btn btn--primary" id="install" hidden>Restart & install</button></div>
+  <p class="note">Checks automatically when the app opens and every six hours. Download and restart when you’re ready.</p>
+  <details id="source"><summary>GitHub release source</summary><label for="repository">Public repository</label><div class="source-row"><input class="input" id="repository" placeholder="owner/repository" spellcheck="false" autocomplete="off"><button class="btn btn--secondary" id="save">Save</button></div><p class="note">Use the official repository where your MediaWatcher updates are published.</p></details>
+  <p id="error" role="alert"></p>
+</main></body></html>

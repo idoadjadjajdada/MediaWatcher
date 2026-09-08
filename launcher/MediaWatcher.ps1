@@ -551,8 +551,15 @@ function Show-MwToast {
   try {
     if ($null -eq $script:TrayIcon) {
       Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+      Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
       $script:TrayIcon = New-Object System.Windows.Forms.NotifyIcon
+      # The project's own mark, falling back to Windows' information icon: a
+      # balloon that cannot find a picture should still be a balloon.
+      $trayIconFile = Join-Path $ProjectRoot "public\icons\app.ico"
       $script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Information
+      if (Test-Path $trayIconFile) {
+        try { $script:TrayIcon.Icon = New-Object System.Drawing.Icon($trayIconFile) } catch { }
+      }
       $script:TrayIcon.Visible = $true
     }
     $script:TrayIcon.BalloonTipTitle = $Title

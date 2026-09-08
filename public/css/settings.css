@@ -10,9 +10,10 @@
 .settings__head { margin-bottom: var(--space-6); }
 .settings__lede { color: var(--fg-3); font-size: 13px; max-width: 56ch; margin-top: var(--space-2); }
 
-.settings__group { margin-bottom: var(--space-7); }
+.settings__group { margin-bottom: var(--space-6); }
 .settings__heading {
-  font-size: 11px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase;
+  font-family: var(--font-mo); font-size: 10px; font-weight: 500;
+  letter-spacing: .14em; text-transform: uppercase;
   color: var(--fg-3); padding-bottom: var(--space-2);
   border-bottom: 1px solid var(--line); margin-bottom: var(--space-2);
 }
@@ -23,17 +24,28 @@
 .settings__actions { display: flex; gap: var(--space-2); margin-top: var(--space-4); }
 .settings__warn {
   margin-top: var(--space-4); padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--warn, #b4791f); border-radius: var(--radius);
+  border: 1px solid color-mix(in oklab, var(--warn), transparent 60%); border-radius: var(--r-card);
   font-size: 12px; line-height: 1.5;
 }
 .settings__warn code { font-family: inherit; opacity: .85; }
 
 /* A row is text on the left, its control hard right, and it must not reflow
    as values change width — hence the fixed-width value inside .stepper. */
+/*
+ * Rows are direct children of the group - there is no inner wrapper to draw a
+ * well around - so the separation stays a hairline between rows rather than a
+ * bordered card. The hover bleeds a little past the text on purpose, which is
+ * what gives the row an edge without one being drawn.
+ */
 .setting {
   display: flex; align-items: center; gap: var(--space-4);
-  padding: var(--space-3) 0; border-bottom: 1px solid var(--line-2, var(--line));
+  padding: var(--space-4) var(--space-3); min-height: 62px;
+  margin: 0 calc(var(--space-3) * -1);
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  transition: background var(--state);
 }
+.setting:hover { background: var(--surface-2); }
 .setting:last-child { border-bottom: 0; }
 .setting__text { flex: 1; min-width: 0; }
 .setting__label { font-size: 13px; font-weight: 600; }
@@ -42,42 +54,50 @@
 
 .stepper { display: flex; align-items: center; gap: var(--space-2); }
 .stepper__btn {
-  width: 28px; height: 28px; border-radius: var(--radius-sm);
+  width: 32px; height: 32px; border-radius: var(--radius-pill);
   border: 1px solid var(--line); font-size: 14px; line-height: 1;
+  transition: background var(--state), border-color var(--state), color var(--state);
 }
-.stepper__btn:hover:not([disabled]) { background: var(--surface-2); }
+.stepper__btn:hover:not([disabled]) { background: var(--surface-3); border-color: var(--line-2); }
 .stepper__btn[disabled] { opacity: .35; pointer-events: none; }
-.stepper__value { min-width: 52px; text-align: center; font-size: 12px; color: var(--fg-3); }
+.stepper__value { min-width: 52px; text-align: center; font-family: var(--font-mo); font-variant-numeric: tabular-nums; font-size: 12px; color: var(--fg-2); }
 
-.choices { display: flex; gap: 2px; padding: 2px; background: var(--surface-2); border-radius: var(--radius-sm); }
-.choices__item {
-  padding: 0 var(--space-3); min-height: 28px; border-radius: calc(var(--radius-sm) - 1px);
-  font-size: 12px; color: var(--fg-3); white-space: nowrap;
+.choices {
+  display: inline-flex; gap: 2px; padding: 3px;
+  border: 1px solid var(--line); border-radius: var(--radius-pill);
+  background: var(--surface);
 }
-.choices__item.is-active { background: var(--fg); color: #000; font-weight: 700; }
+.choices__item {
+  padding: 0 var(--space-3); min-height: 28px; border-radius: var(--radius-pill);
+  font-size: 11.5px; font-weight: 600; color: var(--fg-3); white-space: nowrap;
+  transition: color var(--state), background var(--state);
+}
+.choices__item:hover { color: var(--fg); }
+.choices__item.is-active { background: var(--paper); color: #0a0b0d; }
 
 /*
  * Not `.switch` — content.css already uses that name for the labelled
  * checkbox row in search, and its `min-height: 44px` turned this 42x24 pill
  * into a 42x44 oval that read as a circle.
  */
+/* On is paper, not green. Colour in this app means state — an error, a warning,
+   a healthy source — and a switch being on is none of those. */
 .toggle {
-  flex: none; width: 44px; height: 26px; border-radius: 13px;
-  background: var(--surface-2); border: 1px solid var(--line);
-  position: relative; transition: background var(--state), border-color var(--state);
+  flex: none; width: 46px; height: 27px; border-radius: var(--radius-pill);
+  background: rgba(226, 233, 245, .1); border: 1px solid var(--line-2);
+  position: relative; transition: background var(--t2) var(--ease), border-color var(--t2) var(--ease);
 }
-.toggle.is-on { background: #4ac97e; border-color: transparent; }
+.toggle.is-on { background: var(--paper); border-color: var(--paper); }
 .toggle__dot {
-  position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
-  border-radius: 50%; background: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, .4);
-  transition: transform var(--state);
+  position: absolute; top: 2px; left: 2px; width: 21px; height: 21px;
+  border-radius: var(--radius-pill); background: var(--fg-2);
+  transition: transform var(--t2) var(--spring), background var(--t2) var(--ease);
 }
-.toggle.is-on .toggle__dot { transform: translateX(18px); }
+.toggle.is-on .toggle__dot { transform: translateX(19px); background: #0a0b0d; }
 
 .swatches { display: flex; gap: var(--space-2); }
 .swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; }
-.swatch.is-active { border-color: var(--fg); box-shadow: 0 0 0 2px var(--surface); }
+.swatch.is-active { border-color: var(--paper); }
 
 /* Tables scroll inside themselves; the page body must never scroll sideways. */
 .table-scroll { overflow-x: auto; }
@@ -94,10 +114,10 @@
 .table tr.is-failure td { color: var(--fg-3); }
 
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: var(--space-2); }
-.dot--good { background: #4ac97e; }
-.dot--bad { background: #e5544b; }
+.dot--good { background: var(--ok); }
+.dot--bad { background: var(--danger); }
 
-.badge--lan { color: #4ac97e; }
+.badge--lan { color: var(--ok); }
 .badge--tailnet { color: #6fb6ff; }
 .badge--loopback { color: var(--fg-3); }
 
@@ -123,8 +143,8 @@
 .bar__title { flex: 1; min-width: 0; font-size: 13px; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar__size { font-size: 12px; color: var(--fg-3); flex: none; }
-.bar__track { height: 6px; border-radius: 3px; background: var(--surface-2); margin: var(--space-2) 0; overflow: hidden; }
-.bar__fill { display: block; height: 100%; border-radius: 3px; background: var(--fg); }
+.bar__track { height: 5px; border-radius: var(--radius-pill); background: rgba(226,233,245,.12); margin: var(--space-2) 0; overflow: hidden; }
+.bar__fill { display: block; height: 100%; border-radius: var(--radius-pill); background: var(--paper); }
 .bar__meta { font-size: 11px; color: var(--fg-3); }
 
 /* ---- running encoders ----

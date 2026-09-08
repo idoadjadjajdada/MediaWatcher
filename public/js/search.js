@@ -1,10 +1,4 @@
-/**
- * Search page: markup, filters, and the download action.
- *
- * renderSearch lives here rather than in views.js because the filter logic and
- * the markup are the same concern — views.js stays the home of the pages that
- * only read library state.
- */
+/** Release options, quality filters and downloads for a selected catalog title. */
 import * as api from './api.js';
 import { state, setState, patchSlice } from './state.js';
 import { esc, icon, emptyState, loadingState, toast, formatBytes } from './views.js';
@@ -53,7 +47,15 @@ function wholeOr(value, fallback) {
  * keyed on `imdb:season:episode`, and querying it without them returns an
  * empty list rather than an error.
  */
-export async function runSearch(query, type, season, episode) {
+let requestId = 0;
+export function resetSearch() {
+  requestId++;
+  closeInspect();
+  patchSlice('search', { status: 'idle', results: [], sources: [], error: null });
+}
+
+export async function runSearch(query, type, season, episode, { tmdbId = null, year = null, pack = false, episodeTitle = null } = {}) {
+  const token = ++requestId;
   const term = String(query || '').trim();
   if (!term) return;
 
@@ -62,33 +64,36 @@ export async function runSearch(query, type, season, episode) {
   const wantedEpisode = isShow ? wholeOr(episode, state.search.episode) : state.search.episode;
 
   patchSlice('search', {
-    query: term, type, season: wantedSeason, episode: wantedEpisode,
+    query: term, type, season: wantedSeason, episode: wantedEpisode, tmdbId, year, pack, episodeTitle,
     status: 'loading', error: null, results: [], sources: []
   });
 
-  const params = { q: term, type };
+  const params = { q: term, type, scope: pack ? 'season' : 'episode' };
   if (isShow) {
     params.season = wantedSeason;
     params.episode = wantedEpisode;
   }
-  // A picked suggestion carries its TMDB id, which the resolver treats as
+  // The selected title carries its TMDB id, which the resolver treats as
   // authoritative - no title matching, so no way for a typo to matter.
   if (state.search.tmdbId) params.tmdb_id = state.search.tmdbId;
 
   try {
     const outcome = await api.searchTorrents(params);
+    if (token !== requestId) return;
     patchSlice('search', {
       status: 'done',
       results: outcome.results || [],
       sources: outcome.sources || []
     });
   } catch (error) {
+    if (token !== requestId) return;
     patchSlice('search', { status: 'error', error: error.message, results: [], sources: [] });
   }
 }
 
 /** Send a chosen result to the downloader. */
-export async function downloadResult(index, { files = null, pack = false } = {}) {
+export async function downloadResult(index, { files = null, pack = state.search.pack,
+  season = state.search.season, episode = state.search.episode, episodeTitle = state.search.episodeTitle } = {}) {
   const result = state.search.results[index];
   if (!result) return null;
 
@@ -99,6 +104,9 @@ export async function downloadResult(index, { files = null, pack = false } = {})
       magnet: result.magnet,
       infoHash: result.infoHash,
       title: state.search.query || result.title,
+      tmdb_id: state.search.tmdbId || undefined,
+      year: state.search.year || undefined,
+      episodeTitle: !pack ? episodeTitle || undefined : undefined,
       /*
        * 'season' is its own thing, not an episode with the number left off. It
        * tells the server to read each file's own numbering rather than writing
@@ -107,8 +115,8 @@ export async function downloadResult(index, { files = null, pack = false } = {})
       type: pack ? 'season' : (isShow ? 'episode' : 'movie'),
       // Without these the organizer files every episode as S00E00 and picks
       // the largest file out of a season pack rather than the right one.
-      season: isShow ? state.search.season : undefined,
-      episode: isShow && !pack ? state.search.episode : undefined,
+      season: isShow ? season : undefined,
+      episode: isShow && !pack ? episode : undefined,
       files: files || undefined,
       source: result.source
     });
@@ -131,8 +139,10 @@ export async function downloadResult(index, { files = null, pack = false } = {})
 
 /** Which files are ticked, by filename. */
 const chosen = new Set();
+let inspectRequest = 0;
 
 export async function inspectResult(index) {
+  const token = ++inspectRequest;
   const result = state.search.results[index];
   if (!result) return;
 
@@ -141,11 +151,15 @@ export async function inspectResult(index) {
 
   try {
     const found = await api.inspectTorrent({ magnet: result.magnet, infoHash: result.infoHash });
+    if (token !== inspectRequest) return;
     // Everything worth having is ticked to start with: the common case is
     // wanting all of it, minus the sample.
-    for (const file of found.files) if (file.video && !file.sample) chosen.add(file.filename);
+    for (const file of found.files) {
+      if (file.video && !file.sample && (!state.search.pack || file.episode?.season === state.search.season)) chosen.add(file.filename);
+    }
     patchSlice('search', { inspecting: { index, status: 'done', ...found } });
   } catch (error) {
+    if (token !== inspectRequest) return;
     patchSlice('search', { inspecting: { index, status: 'error', error: error.message, files: [] } });
   }
 }
@@ -157,6 +171,7 @@ export function toggleInspectFile(filename) {
 }
 
 export function closeInspect() {
+  inspectRequest++;
   chosen.clear();
   patchSlice('search', { inspecting: null });
 }
@@ -173,8 +188,10 @@ export async function downloadChosen() {
    */
   const episodes = inspecting.files.filter((file) => chosen.has(file.filename) && file.episode);
   const pack = episodes.length > 1;
-
-  await downloadResult(inspecting.index, { files: [...chosen], pack });
+  const picked = episodes.length === 1 ? episodes[0].episode : null;
+  const sameEpisode = picked?.season === state.search.season && picked?.episode === state.search.episode;
+  await downloadResult(inspecting.index, { files: [...chosen], pack,
+    ...(picked ? { season: picked.season, episode: picked.episode, episodeTitle: sameEpisode ? state.search.episodeTitle : null } : {}) });
   closeInspect();
 }
 
@@ -231,103 +248,17 @@ export function renderInspect() {
  * Render
  * ----------------------------------------------------------------------- */
 
-export function renderSearch() {
-  const { query, type, season, episode, suggestions, filters, status, results, sources, error } = state.search;
+export function renderReleaseResults() {
+  const { filters, status, results, sources, error, pack } = state.search;
   const visible = applyFilters(results, filters);
-
-  const toolbar = `
-    <div class="search-toolbar">
-      <div class="search-toolbar__row">
-        <input class="input" id="search-input" placeholder="Title to search for…" value="${esc(query)}"
-               autocomplete="off" data-action="suggest-input"
-               role="combobox" aria-expanded="${suggestions.length > 0}">
-        <select class="select" id="search-type" data-action="set-search-type">
-          <option value="movie"${type === 'movie' ? ' selected' : ''}>Movie</option>
-          <option value="show"${type === 'show' ? ' selected' : ''}>Show</option>
-        </select>
-        ${type === 'show' ? `
-          <label class="episode-picker" title="Torrentio indexes shows one episode at a time">
-            <span class="episode-picker__label">S</span>
-            <input class="input input--num" id="search-season" type="number" min="0" max="99"
-                   value="${wholeOr(season, 1)}" aria-label="Season" autocomplete="off">
-            <span class="episode-picker__label">E</span>
-            <input class="input input--num" id="search-episode" type="number" min="0" max="999"
-                   value="${wholeOr(episode, 1)}" aria-label="Episode" autocomplete="off">
-          </label>` : ''}
-        <button class="btn btn--primary" data-action="run-search">${icon('search', 'icon-sm')}<span class="btn__label">Search</span></button>
-      </div>
-      ${suggestions.length ? `
-        <div class="suggestions" id="suggestions" role="listbox">
-          ${suggestions.map((entry, index) => `
-            <button class="suggestion" role="option" data-action="pick-suggestion" data-index="${index}">
-              ${entry.poster
-    ? `<img class="suggestion__poster" loading="lazy" alt="" src="${esc(entry.poster)}">`
-    : '<span class="suggestion__poster suggestion__poster--empty"></span>'}
-              <span class="suggestion__title">${esc(entry.title)}</span>
-              ${entry.year ? `<span class="suggestion__year">${entry.year}</span>` : ''}
-              <span class="badge suggestion__type">${entry.type === 'show' ? 'Show' : 'Movie'}</span>
-            </button>`).join('')}
-        </div>` : ''}
-      <div class="search-toolbar__row">
-        <div class="chips">
-          ${QUALITY_FILTERS.map((filter) => `
-            <button class="chip${filters.quality === filter.id ? ' is-active' : ''}" data-action="filter-quality" data-quality="${filter.id}">${filter.label}</button>`).join('')}
-        </div>
-        <label class="switch" style="margin-left:auto">
-          <input type="checkbox" id="hide-upscaled" data-action="toggle-upscaled"${filters.hideUpscaled ? ' checked' : ''}>
-          <span class="switch__track"><span class="switch__thumb"></span></span>
-          <span>Hide low-quality upscaled</span>
-        </label>
-      </div>
-      ${sources.length ? `
-        <div class="source-pills">
-          <span>Sources:</span>
-          ${sources.map((source) => `<span class="badge${source.ok ? '' : ' badge--error'}"${source.error ? ` title="${esc(source.error)}"` : ''}>${esc(source.label || source.id)} · ${source.ok ? source.count : 'failed'}</span>`).join('')}
-        </div>` : ''}
-    </div>`;
-
-  let body;
-  if (status === 'loading') {
-    body = loadingState('Searching all sources…');
-  } else if (status === 'error') {
-    body = emptyState({
-      iconName: 'warning',
-      title: 'Search failed',
-      text: error || 'Check connection and try again.',
-      action: { label: 'Try again', action: 'run-search' }
-    });
-  } else if (status === 'idle') {
-    body = emptyState({
-      iconName: 'search',
-      title: 'Find something to watch',
-      text: 'Search across your AllDebrid cache, Torrentio and any indexers you have configured.'
-    });
-  } else if (results.length === 0) {
-    body = emptyState({
-      iconName: 'search',
-      title: 'No results',
-      text: 'Try a different query.'
-    });
-  } else if (visible.length === 0) {
-    body = emptyState({
-      iconName: 'search',
-      title: 'Everything is filtered out',
-      text: `${results.length} result${results.length === 1 ? '' : 's'} found, but none match the current filters.`,
-      action: { label: 'Clear filters', action: 'clear-filters' }
-    });
-  } else {
-    body = `<div class="result-list">${visible.map(resultRow).join('')}</div>`;
-  }
-
-  return `
-    <div class="page__head">
-      <h1 class="t-hero">Search</h1>
-      ${status === 'done' && results.length
-    ? `<span class="t-meta">${visible.length} of ${results.length} shown</span>`
-    : ''}
-    </div>
-    ${toolbar}
-    ${body}
+  return `<div class="search-toolbar">
+    <div class="search-toolbar__row"><div class="chips">${QUALITY_FILTERS.map(filter => `<button class="chip${filters.quality === filter.id ? ' is-active' : ''}" data-action="filter-quality" data-quality="${filter.id}">${filter.label}</button>`).join('')}</div>
+      <label class="switch"><input type="checkbox" id="hide-upscaled" data-action="toggle-upscaled"${filters.hideUpscaled ? ' checked' : ''}><span class="switch__track"><span class="switch__thumb"></span></span><span>Hide low-quality upscaled</span></label></div>
+    ${sources.length ? `<div class="source-pills">${sources.map(source => `<span class="badge${source.ok ? '' : ' badge--error'}" title="${esc(source.error || '')}">${esc(source.label || source.id)} · ${source.ok ? source.count : 'failed'}</span>`).join('')}</div>` : ''}</div>
+    ${status === 'loading' ? loadingState('Finding download options…')
+      : status === 'error' ? emptyState({ iconName: 'warning', title: 'Could not find downloads', text: error, action: { label: 'Try again', action: 'catalog-retry-download' } })
+      : visible.length ? `<div class="result-list">${visible.map(resultRow).join('')}</div>`
+      : emptyState({ iconName: 'search', title: results.length ? 'Everything is filtered out' : pack ? 'No season packs found' : 'No downloads found', text: results.length ? 'Try clearing the quality filters.' : pack ? 'Try individual episodes below or another source in Settings.' : 'Try again later or check your sources in Settings.', ...(results.length ? { action: { label: 'Clear filters', action: 'clear-filters' } } : {}) })}
     ${renderInspect()}`;
 }
 
@@ -367,6 +298,6 @@ function resultRow(result) {
 }
 
 export default {
-  renderSearch, runSearch, downloadResult, applyFilters,
+  renderReleaseResults, runSearch, downloadResult, applyFilters,
   inspectResult, toggleInspectFile, closeInspect, downloadChosen, renderInspect
 };

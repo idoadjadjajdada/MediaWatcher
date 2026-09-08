@@ -40,6 +40,12 @@ export const state = {
     // a size, neither of which says whether it is one episode or a season.
     inspecting: null
   },
+  catalog: {
+    query: '', type: 'movie', genre: '', year: '', rating: '', sort: 'popular',
+    page: 1, totalPages: 0, results: [], genres: [], status: 'idle', error: null,
+    title: null, detailStatus: 'idle', detailError: null, selectedSeason: null,
+    seasonDetails: null, seasonStatus: 'idle', seasonError: null, downloadTarget: null
+  },
   // Browsable titles that are not in the library. Loaded once after the
   // library so Home never blocks on TMDB.
   discover: { rails: [], status: 'idle', error: null },

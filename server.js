@@ -42,6 +42,7 @@ import * as watcher from './services/watcher.js';
 import * as hls from './services/hls/manager.js';
 import * as cacheSweeper from './services/cacheSweeper.js';
 import * as warmup from './services/warmup.js';
+import * as ffmpegPool from './services/ffmpegPool.js';
 import { events as downloadEvents } from './services/downloader.js';
 
 ensureRuntimeDirs();
@@ -236,6 +237,9 @@ app.use(errorHandler(log));
  * ----------------------------------------------------------------------- */
 
 const server = app.listen(config.port, config.host, () => {
+  // Only the parent that started this server receives readiness. A different
+  // service already using the port can never be mistaken for our backend.
+  if (process.connected) process.send({ type: 'ready', port: server.address().port, host: config.host });
   log.info(`MediaWatcher listening on http://${config.host}:${config.port}`);
   if (config.host !== '127.0.0.1') {
     /*
@@ -303,6 +307,7 @@ function shutdown(signal, code = 0) {
   warmup.stop();
   // No ffmpeg should outlive the server.
   hls.shutdownAll();
+  for (const encoder of ffmpegPool.listRunning()) ffmpegPool.killRunning(encoder.id);
   server.close(() => {
     closeDatabase();
     process.exit(code);
@@ -320,6 +325,13 @@ onShutdown(shutdown);
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+// Windows has no graceful POSIX termination; the desktop parent uses IPC.
+if (process.send && process.env.MW_DESKTOP === '1') {
+  process.on('message', (message) => {
+    if (message?.type === 'shutdown') shutdown('desktop quit');
+  });
+  process.on('disconnect', () => shutdown('desktop disconnected'));
+}
 process.on('unhandledRejection', (reason) => {
   log.error('unhandled rejection:', reason instanceof Error ? reason.stack : reason);
 });

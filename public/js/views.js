@@ -40,6 +40,8 @@ const ICONS = {
   fullscreen: '<path d="M3 9V5a2 2 0 0 1 2-2h4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M21 15v4a2 2 0 0 1-2 2h-4"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
   cc: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9.5 10.5a2 2 0 1 0 0 3M15.5 10.5a2 2 0 1 0 0 3"/>',
+  // Sliders: the intro editor, which is two values on a track and nothing else.
+  tune: '<path d="M3 6h4M11 6h10M3 12h10M17 12h4M3 18h6M13 18h8"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="11" cy="18" r="2"/>',
   sync: '<path d="M4 8h12l-3-3M20 16H8l3 3"/><path d="M4 8v2M20 16v-2"/>',
   brightness: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.5 1.5M17.6 17.6l1.5 1.5M19.1 4.9l-1.5 1.5M6.4 17.6l-1.5 1.5"/>',
   // Circular arrow with a 10 in it — a real "jump back ten seconds", not the
@@ -164,7 +166,7 @@ export function loadingState(label = 'Loading…') {
  * The underline is the only thing distinguishing them: full bar = owned,
  * partial = watch progress, absent = discoverable.
  */
-export function posterCard(item, type, { owned = false, progress = null } = {}) {
+export function posterCard(item, type, { owned = false, progress = null, index = 0 } = {}) {
   const poster = item.poster
     ? `<img class="card__poster" loading="lazy" alt="${esc(item.title)}" src="${esc(item.poster)}">`
     : `<div class="card__placeholder">${esc(item.title)}</div>`;
@@ -173,15 +175,29 @@ export function posterCard(item, type, { owned = false, progress = null } = {}) 
     ? `data-action="open-detail" data-type="${esc(type)}" data-id="${item.tmdb_id}"`
     : `data-action="open-discover" data-type="${esc(type)}" data-id="${item.tmdb_id}"`;
 
-  const width = progress === null ? 100 : Math.max(2, Math.min(100, progress * 100));
-  const bar = owned
+  /*
+   * The old rule drew a full-width white bar under everything on disk, which
+   * turned a wall of posters into a wall of underlines. The bar is now kept
+   * for the one thing it reads well - how far in you are - and owning a title
+   * is said by a small mark in the corner instead.
+   */
+  const partial = typeof progress === 'number' && progress > 0 && progress < 1;
+  const width = partial ? Math.max(2, Math.min(100, progress * 100)) : 0;
+  const bar = partial
     ? `<div class="card__owned"><span style="width:${width.toFixed(1)}%"></span></div>`
+    : '';
+  const mark = owned && !partial
+    ? `<span class="card__mark" aria-label="In your library" title="In your library">${icon('check', 'icon-sm')}</span>`
     : '';
 
   return `
-    <article class="card" ${action} tabindex="0" aria-label="${esc(item.title)}">
+    <article class="card" ${action} style="--i:${index}" tabindex="0" aria-label="${esc(item.title)}">
       <div class="card__art">
         ${poster}
+        ${mark}
+        <!-- Affordance only: the whole card is the target, so this must not eat
+             the click that opens it. -->
+        <div class="card__over" aria-hidden="true"><span class="card__play">${playIcon('icon')}</span></div>
         ${bar}
       </div>
       <div class="card__title t-card">${esc(item.title)}</div>
@@ -261,38 +277,50 @@ export function renderShell() {
   app.innerHTML = `
     <div class="app-shell">
       <aside class="navrail" id="navrail">
-        <div class="navrail__mark">${playIcon()}</div>
-        <nav class="navrail__nav">
-          ${NAV.map((entry) => `
-            <button class="navrail__item" data-action="navigate" data-page="${entry.page}" aria-label="${entry.label}" title="${entry.label}">
-              ${icon(entry.iconName, 'icon')}
-              ${entry.page === 'downloads' ? '<span class="navrail__badge" id="jobs-badge" hidden>0</span>' : ''}
-            </button>`).join('')}
-        </nav>
-        <!--
-          Settings sits in the foot rather than the nav list: the tab bar on
-          mobile is already five items wide, and a sixth would shrink them all
-          to fit something reached once a month.
-        -->
-        <button class="navrail__item navrail__item--foot" data-action="navigate" data-page="settings"
-          aria-label="Settings" title="Settings">
-          ${icon('settings', 'icon')}
-        </button>
-        <button class="navrail__item navrail__item--foot" data-action="rescan" id="rescan-btn" aria-label="Rescan" title="Rescan library">
-          ${icon('refresh', 'icon')}
-        </button>
+        <div class="navrail__in">
+          <div class="navrail__mark"><img src="/icons/mark.png" alt="MediaWatcher" width="22" height="34"></div>
+          <nav class="navrail__nav">
+            <!-- One indicator slides between the items; app.js places it. -->
+            <div class="navrail__ind" id="navrail-ind" hidden></div>
+            ${NAV.map((entry) => `
+              <button class="navrail__item" data-action="navigate" data-page="${entry.page}" aria-label="${entry.label}" title="${entry.label}">
+                ${icon(entry.iconName, 'icon')}
+                ${entry.page === 'downloads' ? '<span class="navrail__badge" id="jobs-badge" hidden>0</span>' : ''}
+              </button>`).join('')}
+          </nav>
+          <!--
+            Add, settings and rescan sit in the foot rather than the nav list:
+            the tab bar on mobile is already five items wide, and a sixth would
+            shrink them all to fit something reached once a month. The rail
+            carrying all three is also why there is no header on desktop —
+            a second row holding the same controls was pure duplication.
+          -->
+          <div class="navrail__foot">
+            <div class="navrail__sep"></div>
+            <button class="navrail__item" data-action="add-torrent" aria-label="Add torrent" title="Add a torrent">
+              ${icon('plus', 'icon')}
+            </button>
+            <button class="navrail__item navrail__item--foot" data-action="navigate" data-page="settings"
+              aria-label="Settings" title="Settings">
+              ${icon('settings', 'icon')}
+            </button>
+            <button class="navrail__item navrail__item--foot" data-action="rescan" id="rescan-btn" aria-label="Rescan" title="Rescan library">
+              ${icon('refresh', 'icon')}
+            </button>
+          </div>
+        </div>
       </aside>
 
+      <!-- Phone only. On anything with a rail this is display:none. -->
       <header class="topbar">
         <div class="topbar__search">
           ${icon('search', 'icon-sm')}
           <input class="input topbar__input" id="global-search" type="search" placeholder="Search" autocomplete="off">
         </div>
-        <button class="btn btn--secondary topbar__add" data-action="add-torrent" aria-label="Add torrent">
-          ${icon('plus', 'icon-sm')}<span class="btn__label">Add</span>
+        <button class="btn btn--secondary btn--icon topbar__add" data-action="add-torrent" aria-label="Add torrent">
+          ${icon('plus', 'icon-sm')}
         </button>
-        <!-- The way in on mobile, where the nav rail's foot is not rendered. -->
-        <button class="btn btn--secondary topbar__settings" data-action="navigate" data-page="settings"
+        <button class="btn btn--secondary btn--icon topbar__settings" data-action="navigate" data-page="settings"
           aria-label="Settings" title="Settings">
           ${icon('settings', 'icon-sm')}
         </button>
@@ -301,14 +329,42 @@ export function renderShell() {
       <main class="main" id="main"></main>
 
       <nav class="tabbar" id="tabbar">
-        ${NAV.map((entry) => `
-          <button class="tabbar__item" data-action="navigate" data-page="${entry.page}">
-            ${icon(entry.iconName, 'icon')}
-            <span class="tabbar__label">${entry.label}</span>
-            ${entry.page === 'downloads' ? '<span class="tabbar__badge" id="jobs-badge-m" hidden>0</span>' : ''}
-          </button>`).join('')}
+        <div class="tabbar__in">
+          <div class="tabbar__ind" id="tabbar-ind"></div>
+          ${NAV.map((entry) => `
+            <button class="tabbar__item" data-action="navigate" data-page="${entry.page}">
+              ${icon(entry.iconName, 'icon')}
+              <span class="tabbar__label">${entry.label}</span>
+              ${entry.page === 'downloads' ? '<span class="tabbar__badge" id="jobs-badge-m" hidden>0</span>' : ''}
+            </button>`).join('')}
+        </div>
       </nav>
     </div>`;
+}
+
+/**
+ * Move the sliding markers onto the active item.
+ *
+ * Measured rather than computed from an index: the rail's step depends on the
+ * button height and the gap, and reading offsetTop means a change to either in
+ * CSS does not need a matching constant in here. Settings and Rescan live
+ * outside the nav list, so on those pages the rail marker hides rather than
+ * parking on whichever item it last sat under.
+ */
+export function placeIndicators() {
+  const rail = document.getElementById('navrail-ind');
+  if (rail) {
+    const active = document.querySelector(`.navrail__nav .navrail__item[data-page="${state.currentPage}"]`);
+    rail.hidden = !active;
+    if (active) rail.style.transform = `translateY(${active.offsetTop}px)`;
+  }
+
+  const tab = document.getElementById('tabbar-ind');
+  if (tab) {
+    const index = NAV.findIndex((entry) => entry.page === state.currentPage);
+    tab.style.opacity = index < 0 ? '0' : '1';
+    if (index >= 0) tab.style.transform = `translateX(${index * 100}%)`;
+  }
 }
 
 /** Cheap per-render updates that don't need the shell rebuilt. */
@@ -318,6 +374,7 @@ export function updateShell() {
     if (!node.dataset.page) return;
     node.classList.toggle('is-active', node.dataset.page === state.currentPage);
   });
+  placeIndicators();
 
   const count = activeJobCount();
   for (const id of ['jobs-badge', 'jobs-badge-m']) {
@@ -402,16 +459,9 @@ export function renderHome() {
 
   if (state.loading) return loadingState('Loading your library…');
 
-  if (all.length === 0) {
-    return emptyState({
-      iconName: 'inbox',
-      title: 'Your library is empty',
-      text: 'Drop video files into library/movies or library/shows, or search for something to download.',
-      action: { label: 'Search for something', action: 'navigate', page: 'search' }
-    });
-  }
-
-  const hero = pickHero(state.library, state.progress);
+  const heroes = heroCandidates(state.library, state.progress);
+  if (heroIndex >= heroes.length) heroIndex = 0;
+  const hero = heroes[heroIndex] || null;
   const ownedIds = new Set(all.map((entry) => entry.tmdb_id));
 
   const continueCards = state.progress
@@ -420,38 +470,39 @@ export function renderHome() {
     .map(continueCard)
     .join('');
 
-  /* Library rails, collapsed by size. With a handful of titles, "Recently
-     added" and "Your library" are the same posters twice, directly under
-     Continue watching showing them a third time. */
+  // Home gets a short recent row; the complete collection lives in Library.
   const byNewest = all.slice().sort((a, b) => newestAddedAt(b) - newestAddedAt(a));
-  const cardFor = (entry) =>
-    posterCard(entry, Array.isArray(entry.seasons) ? 'show' : 'movie', { owned: true });
+  const cardFor = (entry, index) =>
+    posterCard(entry, Array.isArray(entry.seasons) ? 'show' : 'movie', { owned: true, index });
 
-  const libraryRails = byNewest.length > 8
-    ? rail('Recently added', byNewest.slice(0, 20).map(cardFor).join(''))
-      + rail('Your library', byNewest.map(cardFor).join(''), { count: `${byNewest.length} titles` })
-    : rail('Your library', byNewest.map(cardFor).join(''), { count: `${byNewest.length} titles` });
+  const libraryRails = byNewest.length
+    ? rail('Recently added', byNewest.slice(0, 16).map(cardFor).join('')) : '';
 
   const discoverRails = (state.discover.rails || []).map((entry) => rail(
     entry.title,
-    (entry.items || []).map((title) => posterCard(
+    (entry.items || []).map((title, index) => posterCard(
       title,
       title.type === 'show' ? 'show' : 'movie',
-      { owned: ownedIds.has(title.tmdb_id) }
+      { owned: ownedIds.has(title.tmdb_id), index }
     )).join('')
   )).join('');
 
   return `
-    ${hero ? renderHero(hero) : ''}
+    ${hero ? renderHero(hero, heroIndex, heroes.length) : ''}
     <div class="page">
       ${renderChanges()}
       ${continueCards ? rail('Continue watching', continueCards) : ''}
       ${libraryRails}
       ${discoverRails}
+      ${!all.length && !discoverRails ? (state.discover.status === 'loading'
+    ? loadingState('Finding recommendations…')
+    : emptyState({ iconName: 'search', title: 'Find your next watch',
+      text: 'Explore movies and shows, or browse by genre.',
+      action: { label: 'Explore titles', action: 'navigate', page: 'search' } })) : ''}
     </div>`;
 }
 
-function renderHero(hero) {
+function renderHero(hero, index = 0, total = 1) {
   const { item, type, file, located } = hero;
   const isShow = type === 'show';
 
@@ -468,10 +519,23 @@ function renderHero(hero) {
     ? ` · ${formatTime(hero.resumeRow.duration - hero.resumeRow.position)} left`
     : '';
 
+  /*
+   * The dots are the only clue that the hero is going to change under you, and
+   * the fill inside the active one is how long you have before it does. They
+   * are also the way to stop waiting and go straight to one.
+   */
+  const dots = total > 1 ? `
+      <div class="hero__dots">
+        ${Array.from({ length: total }, (_, i) => `
+          <button class="hero__dot${i === index ? ' is-on' : ''}" data-action="hero-jump" data-index="${i}"
+            aria-label="Show ${i + 1} of ${total}"><i></i></button>`).join('')}
+      </div>` : '';
+
   return `
-    <section class="hero">
+    <section class="hero" id="hero">
       ${item.backdrop ? `<img class="hero__art" alt="" src="${esc(item.backdrop)}">` : ''}
       <div class="hero__scrim"></div>
+      ${dots}
       <div class="hero__body">
         <h1 class="hero__title t-hero">${esc(item.title)}</h1>
         <div class="hero__meta t-meta">${esc(line)}${esc(remaining)}</div>
@@ -485,6 +549,60 @@ function renderHero(hero) {
     </section>`;
 }
 
+/** Which of the candidates is up. Module-level so a re-render keeps its place. */
+let heroIndex = 0;
+const HERO_MAX = 5;
+
+/**
+ * The titles the hero cycles through.
+ *
+ * Resume entries lead, because "Resume" has to mean something the first time
+ * the page settles; the newest arrivals fill the rest. Only titles with a
+ * backdrop are eligible past the first - a rotation that lands on an empty
+ * frame is worse than not rotating.
+ */
+export function heroCandidates(library, progress) {
+  const all = [...library.movies, ...library.shows];
+  if (all.length === 0) return [];
+
+  const out = [];
+  const seen = new Set();
+  const push = (entry) => {
+    if (!entry || seen.has(entry.item.tmdb_id)) return;
+    seen.add(entry.item.tmdb_id);
+    out.push(entry);
+  };
+
+  for (const row of progress) {
+    if (out.length >= 3) break;
+    const located = locateFile(row.file_path);
+    if (!located) continue;
+    push({
+      item: located.item,
+      type: located.type === 'episode' ? 'show' : 'movie',
+      file: { file_path: row.file_path },
+      resumeRow: row,
+      located
+    });
+  }
+
+  const withArt = all.filter((entry) => entry.backdrop);
+  const pool = (withArt.length > 0 ? withArt : all)
+    .slice().sort((a, b) => newestAddedAt(b) - newestAddedAt(a));
+  for (const item of pool) {
+    if (out.length >= HERO_MAX) break;
+    const isShow = Array.isArray(item.seasons);
+    push({
+      item,
+      type: isShow ? 'show' : 'movie',
+      file: isShow ? firstEpisodeFile(item) : (item.files || [])[0],
+      resumeRow: null,
+      located: null
+    });
+  }
+  return out;
+}
+
 /**
  * Which title leads the page.
  *
@@ -493,32 +611,55 @@ function renderHero(hero) {
  * actually means something.
  */
 export function pickHero(library, progress) {
-  const all = [...library.movies, ...library.shows];
-  if (all.length === 0) return null;
+  return heroCandidates(library, progress)[0] || null;
+}
 
-  for (const row of progress) {
-    const located = locateFile(row.file_path);
-    if (!located) continue;
-    return {
-      item: located.item,
-      type: located.type === 'episode' ? 'show' : 'movie',
-      file: { file_path: row.file_path },
-      resumeRow: row,
-      located
-    };
+/** How many the hero can cycle through right now. */
+export function heroCount() {
+  return heroCandidates(state.library, state.progress).length;
+}
+
+/**
+ * Move the hero on without re-rendering the page.
+ *
+ * A full render would reset the scroll position and restart every card's
+ * entrance, for a change that touches one section. This swaps the artwork and
+ * the copy in place and leaves the rest of the page alone.
+ */
+export function showHero(next) {
+  const heroes = heroCandidates(state.library, state.progress);
+  if (heroes.length < 2) return;
+  heroIndex = ((next % heroes.length) + heroes.length) % heroes.length;
+
+  const section = document.getElementById('hero');
+  if (!section) return;
+  const markup = renderHero(heroes[heroIndex], heroIndex, heroes.length);
+  const next$ = document.createElement('div');
+  next$.innerHTML = markup;
+  const fresh = next$.firstElementChild;
+
+  const art = section.querySelector('.hero__art');
+  const freshArt = fresh.querySelector('.hero__art');
+  // Cross-fade the picture, swap everything else outright: the copy changing
+  // mid-fade reads as a glitch, the picture changing mid-fade reads as a cut.
+  if (art && freshArt) {
+    art.classList.add('is-out');
+    setTimeout(() => {
+      art.src = freshArt.getAttribute('src') || '';
+      art.classList.remove('is-out');
+    }, 180);
+  } else {
+    section.replaceChildren(...fresh.childNodes);
+    return;
   }
+  section.querySelector('.hero__body')?.replaceWith(fresh.querySelector('.hero__body'));
+  section.querySelector('.hero__dots')?.replaceWith(fresh.querySelector('.hero__dots'));
+  section.querySelector('.hero__body')?.classList.add('is-swapping');
+}
 
-  const withArt = all.filter((entry) => entry.backdrop);
-  const pool = withArt.length > 0 ? withArt : all;
-  const item = pool.slice().sort((a, b) => newestAddedAt(b) - newestAddedAt(a))[0];
-  const isShow = Array.isArray(item.seasons);
-  return {
-    item,
-    type: isShow ? 'show' : 'movie',
-    file: isShow ? firstEpisodeFile(item) : (item.files || [])[0],
-    resumeRow: null,
-    located: null
-  };
+/** Where the hero currently is, so a caller can step it on. */
+export function currentHeroIndex() {
+  return heroIndex;
 }
 
 function newestAddedAt(item) {
@@ -961,6 +1102,42 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
         </dl>
       </div>
 
+      <!--
+        Intro editor. The strip is not the seek bar zoomed in - it is a
+        different window on the file, a couple of minutes wide, so a second is
+        worth dragging. Everything inside it is written by player.js, which
+        owns the draft being edited.
+      -->
+      <div class="introedit" id="intro-editor" hidden>
+        <div class="introedit__head">
+          <div class="introedit__titles">
+            <strong>Intro timings</strong>
+            <div class="introedit__scope" id="intro-scope"></div>
+          </div>
+          <div class="introedit__zoom">
+            <button class="introedit__zoombtn" data-action="intro-zoom" data-direction="-1"
+              aria-label="Zoom in">&minus;</button>
+            <span class="introedit__span t-num" id="intro-span">2m</span>
+            <button class="introedit__zoombtn" data-action="intro-zoom" data-direction="1"
+              aria-label="Zoom out">+</button>
+          </div>
+          <button class="player__btn" data-action="close-intro-editor" aria-label="Close">${icon('close', 'icon')}</button>
+        </div>
+
+        <div class="introedit__strip" id="intro-strip">
+          <div class="introedit__frames" id="intro-frames" aria-hidden="true"></div>
+          <div class="introedit__region" id="intro-region" aria-hidden="true"></div>
+          <div class="introedit__playhead" id="intro-playhead" aria-hidden="true" hidden></div>
+          <div class="introedit__handle introedit__handle--start" id="intro-handle-start"
+            data-handle="start" role="slider" tabindex="0" aria-label="Intro start"></div>
+          <div class="introedit__handle introedit__handle--end" id="intro-handle-end"
+            data-handle="end" role="slider" tabindex="0" aria-label="Intro end"></div>
+        </div>
+        <div class="introedit__scale t-num" id="intro-scale" aria-hidden="true"></div>
+
+        <div class="introedit__rows" id="intro-rows"></div>
+      </div>
+
       <div class="player__top">
         <button class="player__btn" data-action="close-player" aria-label="Back">${icon('back', 'icon-lg')}</button>
         <div class="player__heading">
@@ -970,9 +1147,18 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
         ${modeLabel ? `<span class="badge${lossless ? '' : ' badge--warn'} player__mode">${esc(modeLabel)}</span>` : ''}
       </div>
 
-      <button class="player__skip-intro" id="skip-intro" data-action="skip-intro" hidden>
-        Skip intro
-      </button>
+      <!--
+        The offer and the way to correct it, together: the moment the button
+        lands in the wrong place is the moment anyone wants to move it, and
+        hunting through a menu then means watching the titles again first.
+      -->
+      <div class="player__skip-wrap" id="skip-intro-wrap" hidden>
+        <button class="player__skip-intro" id="skip-intro" data-action="skip-intro">
+          Skip intro
+        </button>
+        <button class="player__skip-tune" data-action="open-intro-editor"
+          aria-label="Adjust intro timings" title="Adjust intro timings">${icon('tune', 'icon')}</button>
+      </div>
 
       <div class="next-up" id="next-up" hidden>
         <div class="next-up__label">Up next</div>
@@ -1008,10 +1194,6 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
             <div class="player__card-time t-num" id="preview-time">0:00</div>
           </div>
         </div>
-        <div class="player__times t-num">
-          <span id="time-current">0:00</span>
-          <span id="time-total">0:00</span>
-        </div>
         <div class="player__buttons">
           <div class="player__buttons-left">
             <div class="player__volume">
@@ -1020,12 +1202,25 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
             </div>
           </div>
 
+          <!--
+            The clock rides with the transport rather than sitting in a row of
+            its own. The ghost after the buttons is an invisible copy of it, so
+            the play button lands on the bar's exact centre instead of the
+            centre of clock-plus-transport. Below 920px CSS lifts the clock
+            back out to a row above, where there is room for it.
+          -->
           <div class="player__transport">
+            <span class="player__times t-num">
+              <span id="time-current">0:00</span>
+              <span class="player__times-sep" aria-hidden="true">/</span>
+              <span id="time-total">0:00</span>
+            </span>
             <button class="player__btn player__btn--ep" data-action="prev-episode" aria-label="Previous episode" title="Previous episode">${icon('prevEp', 'icon')}</button>
             <button class="player__btn" data-action="seek-back" aria-label="Back 10 seconds" title="Back 10s">${icon('back10', 'icon-lg')}</button>
             <button class="player__btn player__btn--play" data-action="toggle-play" id="play-btn" aria-label="Play">${playIcon('icon-lg')}</button>
             <button class="player__btn" data-action="seek-forward" aria-label="Forward 10 seconds" title="Forward 10s">${icon('fwd10', 'icon-lg')}</button>
             <button class="player__btn player__btn--ep" data-action="next-episode" aria-label="Next episode" title="Next episode">${icon('nextEp', 'icon')}</button>
+            <span class="player__times player__times--ghost t-num" aria-hidden="true">0:00 / 0:00</span>
           </div>
 
           <div class="player__buttons-right" id="player-settings">
@@ -1044,6 +1239,8 @@ export function renderPlayer({ title, subtitle, modeLabel, lossless }) {
                 aria-label="Playback speed" title="Playback speed" id="rate-btn">1&times;</button>
               <div class="player__pop-panel" id="popover-speed" hidden></div>
             </div>
+            <button class="player__btn" data-action="open-intro-editor" id="intro-btn"
+              aria-label="Intro timings" title="Intro timings" hidden>${icon('tune', 'icon')}</button>
             <div class="player__pop">
               <button class="player__btn" data-action="toggle-popover" data-popover="picture"
                 aria-label="Picture" title="Brightness and contrast">${icon('brightness', 'icon')}</button>

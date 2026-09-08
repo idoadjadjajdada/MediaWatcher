@@ -13,8 +13,10 @@
  * Run: node tests/intro.test.mjs
  */
 import {
-  introKey, isCandidateSkip, agreeOnIntro, shouldOfferSkip,
-  INTRO_WINDOW_SECONDS, MIN_INTRO_SECONDS, MAX_INTRO_SECONDS, AGREEMENT_TOLERANCE
+  introKey, episodeIntroKey, isCandidateSkip, agreeOnIntro, shouldOfferSkip,
+  canReplaceMarker, normaliseManualMarker,
+  INTRO_WINDOW_SECONDS, MIN_INTRO_SECONDS, MAX_INTRO_SECONDS, AGREEMENT_TOLERANCE,
+  MANUAL_MAX_LENGTH, MANUAL_LATEST_END
 } from '../services/intro.js';
 
 let total = 0;
@@ -38,6 +40,25 @@ check('a movie has no intro to learn', introKey({ type: 'movie', item: { tmdb_id
 check('an unlocated file has no key', introKey(null) === null);
 check('a show with no id has no key',
   introKey({ type: 'episode', item: {}, season: 1 }) === null);
+
+console.log('\nepisodeIntroKey');
+check('an episode keys on itself, under its season',
+  episodeIntroKey({ ...episode, episode: { episode_number: 4 } }) === 'show:1234:s1:e4');
+check('a bare episode number works too',
+  episodeIntroKey({ ...episode, episode: 4 }) === 'show:1234:s1:e4');
+/*
+ * The point of the whole scope. Two episodes of one season that open
+ * differently — a cold open one week, none the next — must be able to hold
+ * different timings.
+ */
+check('two episodes of a season do not share a key',
+  episodeIntroKey({ ...episode, episode: 4 }) !== episodeIntroKey({ ...episode, episode: 5 }));
+check('and neither is the season key',
+  episodeIntroKey({ ...episode, episode: 4 }) !== introKey(episode));
+check('no episode number, no episode key',
+  episodeIntroKey(episode) === null);
+check('a movie has no episode to mark',
+  episodeIntroKey({ type: 'movie', item: { tmdb_id: 9 }, episode: 1 }) === null);
 
 console.log('\nisCandidateSkip');
 const skip = (over) => isCandidateSkip({ from: 20, to: 90, duration: 1400, ...over });
@@ -99,6 +120,51 @@ check('not offered right at the end', shouldOfferSkip(marker, 92) === false);
 check('not offered long before', shouldOfferSkip(marker, 0) === true);
 check('no marker means no offer', shouldOfferSkip(null, 50) === false);
 check('a nonsense position never offers', shouldOfferSkip(marker, NaN) === false);
+
+console.log('\ncanReplaceMarker');
+check('anything may be written when nothing is known',
+  canReplaceMarker(null, 'detected') === true);
+// Someone actually skipping beats two episodes sounding alike.
+check('learning replaces a detected marker',
+  canReplaceMarker('detected', 'learned') === true);
+check('detection does not replace a learned one',
+  canReplaceMarker('learned', 'detected') === false);
+/*
+ * The one that matters. A marker placed by hand is someone looking at the
+ * frame, and a background analysis — or two later skips — quietly reverting it
+ * would be a bug with no symptom anyone could describe.
+ */
+check('a hand-placed marker survives detection',
+  canReplaceMarker('manual', 'detected') === false);
+check('and survives learning', canReplaceMarker('manual', 'learned') === false);
+check('but can be edited again', canReplaceMarker('manual', 'manual') === true);
+check('detection may refine its own answer',
+  canReplaceMarker('detected', 'detected') === true);
+
+console.log('\nnormaliseManualMarker');
+const manual = (over) => normaliseManualMarker({ start: 12, end: 95, ...over });
+
+check('an ordinary intro is accepted', manual().ok === true);
+check('and comes back as given', manual().start === 12 && manual().end === 95);
+// Tenths are the finest thing the editor can express, and the finest anyone can
+// see; more than that would be recording the mouse rather than the intro.
+check('finer than tenths is rounded away',
+  normaliseManualMarker({ start: 0, end: 90.4567 }).end === 90.5);
+check('an intro must run forwards', manual({ start: 90, end: 30 }).ok === false);
+check('and cannot be an instant', manual({ start: 60, end: 60 }).ok === false);
+check('it cannot begin before the episode', manual({ start: -5 }).ok === false);
+check('it cannot run longer than an intro could',
+  manual({ start: 0, end: MANUAL_MAX_LENGTH + 60 }).ok === false);
+check('nor arrive an hour in',
+  manual({ start: MANUAL_LATEST_END + 10, end: MANUAL_LATEST_END + 100 }).ok === false);
+check('text is not a timestamp', normaliseManualMarker({ start: 'x', end: 90 }).ok === false);
+check('a rejection says why', typeof manual({ start: 90, end: 30 }).error === 'string');
+/*
+ * Deliberately looser than the automatic rules. A cold open can run past the
+ * window detection searches, and the person watching it can see that it did.
+ */
+check('a late intro after a long cold open is allowed',
+  manual({ start: 500, end: 590 }).ok === true);
 
 console.log(`\n${total - failures}/${total} passed`);
 process.exit(failures > 0 ? 1 : 0);

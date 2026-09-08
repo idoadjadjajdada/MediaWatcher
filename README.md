@@ -1,12 +1,35 @@
 # MediaWatcher
 
+<img src="public/icons/icon-192.png" alt="" width="96" align="right">
+
 A self-hosted library for your movies and TV shows: it scans your files, enriches
 them with metadata from TMDB, finds new releases through a debrid service and
 public indexers, and plays everything back in the browser with resume, subtitles
 and next-episode autoplay.
 
-No build step, no framework, no bundler. Node on the back, vanilla ES modules on
-the front.
+Node on the back, vanilla ES modules on the front. The web server needs no
+frontend build step; the Windows desktop edition packages the same UI in Electron.
+
+## Windows desktop application
+
+Build a Windows installer with `npm install` followed by `npm run dist`.
+The result is `dist/MediaWatcher-Setup-1.0.2-x64.exe`, with Node.js, SQLite,
+FFmpeg and FFprobe included. Installed users do not need Node, npm, a terminal,
+or the old PowerShell launcher.
+
+On first launch, choose **Use existing library** and select your existing
+MediaWatcher project folder. Stop the server in the old launcher first.
+This reuses your `.env`, database, watch history and media in place. For a new
+installation, expand **Set up a new library** and enter your API keys and password.
+
+The website's visuals and player are served directly from the existing `public/`
+files. Closing the window keeps downloads and remote access running in the tray;
+right-click the tray icon and choose **Quit MediaWatcher** to stop everything.
+Use **Open in browser** for Chromecast and browser web push integrations.
+
+Run `npm run desktop` for desktop development, or `npm run desktop:pack` for an
+unpacked executable. Build prerequisites, data locations, tests and distribution
+notes are in [docs/desktop.md](docs/desktop.md).
 
 ---
 
@@ -203,6 +226,23 @@ everything behind the tunnel is behind a password.
 
 `tailscale serve` configuration does not always survive a Tailscale upgrade. If
 remote access stops working, re-run step 3 before looking anywhere else.
+
+### On a phone's home screen
+
+Open the site and use **Add to Home Screen**. It opens without browser chrome
+from then on, which is the point and also the catch: with no address bar and no
+toolbar, the page owns the whole screen — including the strip under the clock
+and the island, and the strip the home indicator sits on. iOS reports those four
+distances as safe-area insets, and every bar in the app is held off them: the
+top bar grows by the top inset rather than sharing a strip with the clock, the
+tab bar pads out past the home indicator, and in landscape — where the island
+moves to the side of the screen, beside the back button — the player's controls
+come in from both edges. The video itself still bleeds to every edge, because
+that is what a video should do.
+
+A browser tab reports all four as zero, so none of this shows up until the app
+is actually installed. `npm run ui-standalone` writes the insets itself and
+measures where everything lands, in both orientations.
 
 ### The password gate
 
@@ -430,9 +470,32 @@ share is the intro. Measured against chapter marks it never sees, this finds
 season one's titles at 1-30s and season two's at 149-179s — the latter after a
 cold open.
 
-A learned marker always beats a detected one: someone actually skipping is
-better evidence than two episodes sounding alike. `DELETE /api/intro` forgets a
-season if it ever gets it wrong.
+**By being told.** Both of those are guesses, and a guess thirty seconds out puts
+the button in the middle of a line of dialogue. The control bar has an intro
+editor for saying exactly where the titles are. It scrubs a *window* — a minute
+or two of the episode across the full width of the panel, not the whole forty —
+because that is the difference between an intro four pixels wide on the seek bar
+and one that can be dragged a second at a time. A handle sits on each end; moving
+one seeks the video to it, so the frame under the timestamp is the frame being
+judged. The nudge buttons move an edge by a tenth of a second, which the seek bar
+cannot express at all, and the − and + beside the heading zoom the strip between
+30 seconds and 10 minutes. Generated thumbnails run along it where they exist.
+
+The three sources rank: set by hand beats learned beats detected, so no
+background analysis ever overwrites a correction.
+
+**Seasons are guessed at; episodes are edited.** What is learned is a season —
+the same titles every week is the pattern being looked for, and one episode
+cannot establish it. What the editor saves is a single episode, because a run
+that opens cold one week and not the next puts its titles in a different place
+each time, and applying one person's correction to twenty-one other episodes
+would replace a guess that is sometimes wrong with an assertion that is
+confidently wrong. An episode that has been edited uses its own timings; every
+other episode of the season falls back to what the season learned.
+
+`PUT /api/intro` sets one episode's timings. `DELETE /api/intro` naming an
+episode gives those up and falls back to the season's; without an episode it
+forgets the season's timings and the skips behind them.
 
 ### Subtitles
 
@@ -775,7 +838,25 @@ way to learn something the account says outright.
 
 ## Search and downloads
 
-Searching queries every configured source in parallel and merges the results,
+Home keeps Recently Added and recommendations; the full collection stays on the
+Movies and Shows library pages. Search browses title posters with movie/series,
+genre, year and rating filters. Enter a title, or a genre name such as `Drama`.
+Open a poster for its full cover page, synopsis, cast and download status.
+Catalog entries do not become library entries until their files are downloaded.
+
+For a series, select a season and choose **Download entire season** to find season
+packs, or **Download** beside an individual episode. Select a release in the
+download options below; existing quality filters and the **Files** picker remain
+available. Season packs depend on your configured sources; if none are found,
+use individual episodes. Specials are supported; unaired episodes are labeled
+Upcoming. A pack only saves numbered episodes from the selected season.
+
+Title searches use TMDB relevance ordering. Genre/year/rating browsing supports
+Popular, Top rated and Newest ordering. TMDB title search applies genre and
+rating filters to each result page, so a filtered page can be empty while later
+pages still have matches.
+
+Finding download options queries every configured source in parallel and merges the results,
 deduplicating by infohash. One dead source never fails a search — you only get an
 error if *every* source fails.
 

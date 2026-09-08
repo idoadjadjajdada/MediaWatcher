@@ -1,26 +1,40 @@
 /**
- * Generate the PWA icons.
+ * Generate the icons and the favicon from the project mark.
  *
  * Kept as a script rather than committing only its output, so the icons can be
  * regenerated if the mark changes, and so nobody has to wonder where a binary
- * in the repo came from.
+ * in the repo came from. The mark itself is `public/icons/logo.png`, committed
+ * beside the icons it produces — replace that file, run this, and every size
+ * the app declares follows.
  *
- * Written by hand rather than with a library: a PNG is a zlib stream plus four
- * chunks, and adding an image dependency to a media server to draw a rounded
- * square with a triangle on it would be the wrong trade.
+ * The PNG writer is still by hand: a PNG is a zlib stream plus four chunks, and
+ * adding an image library to a media server for that would be the wrong trade.
+ * The *resampling* is ffmpeg's, which is a different job and one this project
+ * already depends on for every thumbnail it draws — writing a JPEG-quality
+ * downscaler by hand would be the wrong trade in the other direction.
  *
- * The design matches the inline favicon in index.html - a purple-to-pink
- * gradient with a play triangle - so the installed icon and the tab icon are
- * recognisably the same thing.
+ * This also rewrites the inline favicon in index.html and login.html. It has to:
+ * the login page is served before the gate, so a favicon it had to *fetch* from
+ * /icons would answer 401 to anyone not signed in, and the tab would fall back
+ * to a blank sheet on the one page every new device sees first. Inlining it
+ * keeps that request from existing, and rewriting both files here keeps them
+ * from drifting from the mark.
  *
  * Run: node tools/make-icons.mjs
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const OUT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'icons');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const OUT_DIR = path.join(ROOT, 'public', 'icons');
+const SOURCE = path.join(OUT_DIR, 'logo.png');
+const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
+
+/** Pages carrying an inline favicon, both of which this script keeps current. */
+const PAGES = [path.join(ROOT, 'public', 'index.html'), path.join(ROOT, 'public', 'login.html')];
 
 /* CRC-32, table built once. Every PNG chunk carries one. */
 const CRC_TABLE = (() => {
@@ -75,76 +89,373 @@ function encodePng(width, height, rgba) {
 }
 
 /**
- * Draw the mark at a given size.
+ * Decode part of the mark to raw pixels at a given size.
  *
- * `padding` is what separates a maskable icon from a normal one: Android may
- * crop an installed icon to a circle, so the maskable variant keeps the mark
- * inside the safe zone and lets the gradient bleed to the edges.
+ * `crop` is applied before the scale so the filter sees only the region that
+ * survives, which is what keeps a heavy downscale from averaging in margins
+ * that were never going to be drawn.
  */
-function drawIcon(size, { padding = 0, radius = size * 0.22 } = {}) {
-  const rgba = Buffer.alloc(size * size * 4);
+function decode(width, height, crop = null) {
+  const filters = [];
+  if (crop) filters.push(`crop=${crop.w}:${crop.h}:${crop.x}:${crop.y}`);
+  filters.push(`scale=${width}:${height}:flags=lanczos`);
 
-  const inner = size - padding * 2;
-  const triW = inner * 0.30;
-  const triH = inner * 0.36;
-  const triX = padding + inner * 0.40;
-  const triY = padding + (inner - triH) / 2;
+  const result = spawnSync(FFMPEG, [
+    '-v', 'error',
+    '-i', SOURCE,
+    '-vf', filters.join(','),
+    '-frames:v', '1',
+    '-f', 'rawvideo', '-pix_fmt', 'rgba', '-'
+  ], { maxBuffer: 1 << 28 });
 
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const i = (y * size + x) * 4;
+  if (result.error) {
+    throw new Error(`could not run ${FFMPEG}: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`ffmpeg failed: ${String(result.stderr).trim() || `exit ${result.status}`}`);
+  }
+  if (result.stdout.length !== width * height * 4) {
+    throw new Error(`expected ${width * height * 4} bytes from ffmpeg, got ${result.stdout.length}`);
+  }
+  return result.stdout;
+}
 
-      // Rounded-square mask. Only the corners need the distance check.
-      let inside = true;
-      const cx = Math.min(x, size - 1 - x);
-      const cy = Math.min(y, size - 1 - y);
-      if (cx < radius && cy < radius) {
-        const dx = radius - cx;
-        const dy = radius - cy;
-        inside = Math.hypot(dx, dy) <= radius;
-      }
-      if (!inside) continue;
+/**
+ * The mark's field colour and the box the drawing actually occupies.
+ *
+ * Measured rather than written down, so replacing logo.png reframes everything
+ * on its own. The field is taken from a corner: a mark is never drawn into the
+ * very corner of its own canvas, and everything that differs from it is the
+ * mark. Alpha counts too, for a source that arrives cut out rather than on a
+ * background of its own.
+ */
+function measure(sourceWidth, sourceHeight) {
+  // Big enough that a thin outline is several pixels wide, small enough to scan
+  // in no time at all.
+  const probe = 512;
+  const pixels = decode(probe, probe);
+  const field = [pixels[0], pixels[1], pixels[2]];
 
-      // Diagonal gradient, purple to pink, matching the favicon.
-      const t = (x / size + y / size) / 2;
-      const r = Math.round(168 + (236 - 168) * t);
-      const g = Math.round(85 + (72 - 85) * t);
-      const b = Math.round(247 + (153 - 247) * t);
+  const differs = (i) => pixels[i + 3] < 8
+    || Math.max(
+      Math.abs(pixels[i] - field[0]),
+      Math.abs(pixels[i + 1] - field[1]),
+      Math.abs(pixels[i + 2] - field[2])
+    ) > 24;
 
-      // The triangle: a point is inside when it is left of the hypotenuse and
-      // within the vertical span that narrows towards the tip.
-      const ty = y - triY;
-      const tx = x - triX;
-      const half = triH / 2;
-      const inTriangle = tx >= 0 && tx <= triW
-        && Math.abs(ty - half) <= half * (1 - tx / triW);
+  let minX = probe;
+  let minY = probe;
+  let maxX = -1;
+  let maxY = -1;
 
-      rgba[i] = inTriangle ? 255 : r;
-      rgba[i + 1] = inTriangle ? 255 : g;
-      rgba[i + 2] = inTriangle ? 255 : b;
-      rgba[i + 3] = 255;
+  for (let y = 0; y < probe; y += 1) {
+    for (let x = 0; x < probe; x += 1) {
+      if (!differs((y * probe + x) * 4)) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
     }
   }
 
-  return encodePng(size, size, rgba);
+  if (maxX < 0) throw new Error('the mark appears to be a single flat colour');
+
+  // Back to source pixels, rounded outward so nothing at the edge is shaved.
+  const scaleX = sourceWidth / probe;
+  const scaleY = sourceHeight / probe;
+  return {
+    field,
+    box: {
+      x: Math.floor(minX * scaleX),
+      y: Math.floor(minY * scaleY),
+      w: Math.min(sourceWidth, Math.ceil((maxX + 1) * scaleX)) - Math.floor(minX * scaleX),
+      h: Math.min(sourceHeight, Math.ceil((maxY + 1) * scaleY)) - Math.floor(minY * scaleY)
+    }
+  };
 }
+
+/**
+ * Draw the mark on a square of its own field colour, at a given size.
+ *
+ * `fill` is how tall the drawing stands as a fraction of the icon, and it is
+ * the only number that separates the variants. A launcher may crop an installed
+ * icon to a circle, so the maskable ones stand shorter to keep every corner of
+ * the mark inside that circle; the ordinary ones stand tall because nothing is
+ * going to cut them.
+ */
+function drawPixels(size, { field, box }, fill) {
+  const drawnHeight = Math.max(1, Math.round(size * fill));
+  const drawnWidth = Math.max(1, Math.round(drawnHeight * (box.w / box.h)));
+  const mark = decode(drawnWidth, drawnHeight, box);
+
+  const rgba = Buffer.alloc(size * size * 4);
+  for (let i = 0; i < rgba.length; i += 4) {
+    rgba[i] = field[0];
+    rgba[i + 1] = field[1];
+    rgba[i + 2] = field[2];
+    rgba[i + 3] = 255;
+  }
+
+  const left = Math.round((size - drawnWidth) / 2);
+  const top = Math.round((size - drawnHeight) / 2);
+
+  for (let y = 0; y < drawnHeight; y += 1) {
+    const canvasY = top + y;
+    if (canvasY < 0 || canvasY >= size) continue;
+
+    for (let x = 0; x < drawnWidth; x += 1) {
+      const canvasX = left + x;
+      if (canvasX < 0 || canvasX >= size) continue;
+
+      const from = (y * drawnWidth + x) * 4;
+      const to = (canvasY * size + canvasX) * 4;
+      const alpha = mark[from + 3] / 255;
+
+      // Composited rather than copied, so a mark with soft or cut-out edges
+      // meets the field instead of carrying a grey fringe onto it.
+      rgba[to] = Math.round(mark[from] * alpha + rgba[to] * (1 - alpha));
+      rgba[to + 1] = Math.round(mark[from + 1] * alpha + rgba[to + 1] * (1 - alpha));
+      rgba[to + 2] = Math.round(mark[from + 2] * alpha + rgba[to + 2] * (1 - alpha));
+      rgba[to + 3] = 255;
+    }
+  }
+
+  return rgba;
+}
+
+const drawIcon = (size, mark, fill) => encodePng(size, size, drawPixels(size, mark, fill));
+
+/** How tall the mark stands in each kind of icon. */
+const FULL = 0.82;
+/*
+ * A maskable icon may be cropped to a circle of 80% of its width, and the
+ * corners of a tall mark are the first thing that circle takes. 0.6 keeps the
+ * whole of this one inside it with room to spare.
+ */
+const SAFE = 0.6;
+/** Tab-sized, where every pixel of the mark is worth having. */
+const TAB = 0.88;
+
+/** What Windows asks for: the title bar, the task bar, and the tray. */
+const ICO_SIZES = [16, 32, 48];
+
+if (!fs.existsSync(SOURCE)) {
+  console.error(`no mark at ${path.relative(ROOT, SOURCE)}`);
+  process.exit(1);
+}
+
+const size = spawnSync(FFMPEG.replace(/ffmpeg(\.exe)?$/i, (m) => m.replace('ffmpeg', 'ffprobe')), [
+  '-v', 'error', '-select_streams', 'v:0',
+  '-show_entries', 'stream=width,height',
+  '-of', 'csv=p=0:s=x', SOURCE
+], { encoding: 'utf8' });
+
+const [sourceWidth, sourceHeight] = size.status === 0
+  ? String(size.stdout).trim().split('x').map(Number)
+  // ffprobe sits beside ffmpeg in every distribution, but it is not worth
+  // failing over: the measurement below only needs the source's proportions to
+  // map a probe back onto it, and a square guess is right for any icon source.
+  : [1024, 1024];
+
+const mark = measure(sourceWidth, sourceHeight);
+console.log(`mark: ${mark.box.w}x${mark.box.h} at ${mark.box.x},${mark.box.y} `
+  + `on rgb(${mark.field.join(', ')})`);
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
 const ICONS = [
-  ['icon-192.png', 192, {}],
-  ['icon-512.png', 512, {}],
-  // Maskable: the mark sits inside the safe zone and the square is not rounded,
-  // because the launcher applies its own shape.
-  ['icon-192-maskable.png', 192, { padding: 192 * 0.14, radius: 0 }],
-  ['icon-512-maskable.png', 512, { padding: 512 * 0.14, radius: 0 }],
-  // iOS ignores the manifest's icons and uses apple-touch-icon, which is also
-  // composited on an opaque background - so it gets the rounded, unpadded one.
-  ['apple-touch-icon.png', 180, {}]
+  ['icon-192.png', 192, FULL],
+  ['icon-512.png', 512, FULL],
+  ['icon-192-maskable.png', 192, SAFE],
+  ['icon-512-maskable.png', 512, SAFE],
+  // iOS ignores the manifest's icons and uses apple-touch-icon, which it rounds
+  // and composites itself - so it gets the full-size framing.
+  ['apple-touch-icon.png', 180, FULL],
+  // Not declared anywhere: this one is inlined into the pages below.
+  ['favicon.png', 64, TAB]
 ];
 
-for (const [name, size, options] of ICONS) {
+for (const [name, pixels, fill] of ICONS) {
   const file = path.join(OUT_DIR, name);
-  fs.writeFileSync(file, drawIcon(size, options));
-  console.log(`${name}  ${size}x${size}  ${fs.statSync(file).size} bytes`);
+  fs.writeFileSync(file, drawIcon(pixels, mark, fill));
+  console.log(`${name}  ${pixels}x${pixels}  ${fs.statSync(file).size} bytes`);
+}
+
+/* --------------------------------------------------------------------------
+ * The mark on its own
+ *
+ * The icons keep their field: a launcher composites an app icon onto whatever
+ * it likes, and a transparent one picks up a white sheet on someone's home
+ * screen. Inside the app the opposite is true - a black square sitting on a
+ * near-black page reads as a tile someone forgot to style - so the pages get a
+ * cut-out instead.
+ *
+ * Cut out by flooding in from the edges rather than by keying the colour out,
+ * because the two are not the same picture. This mark is black *around* the
+ * skull and black *inside* it - the sockets, the eye patch, the open mouth -
+ * and keying every black pixel would punch the face out along with the
+ * background. Only what the border can reach is background.
+ * ----------------------------------------------------------------------- */
+
+function cutOut(height, { field, box }, sourceHeight) {
+  // Worked at full frame, not cropped: the flood needs a border it can be sure
+  // is background, and the tight box around the mark has the mark on its edge.
+  const frame = Math.max(64, Math.round(height * (sourceHeight / box.h)));
+  const pixels = decode(frame, frame);
+
+  const isField = (i) => Math.max(
+    Math.abs(pixels[i] - field[0]),
+    Math.abs(pixels[i + 1] - field[1]),
+    Math.abs(pixels[i + 2] - field[2])
+  ) <= 40;
+
+  // Iterative rather than recursive: a background this size is hundreds of
+  // thousands of pixels and every one of them would be a stack frame.
+  const outside = new Uint8Array(frame * frame);
+  const stack = [];
+  for (let x = 0; x < frame; x += 1) {
+    stack.push(x, (frame - 1) * frame + x);
+  }
+  for (let y = 0; y < frame; y += 1) {
+    stack.push(y * frame, y * frame + frame - 1);
+  }
+
+  while (stack.length) {
+    const at = stack.pop();
+    if (outside[at] || !isField(at * 4)) continue;
+    outside[at] = 1;
+
+    const x = at % frame;
+    const y = (at - x) / frame;
+    if (x > 0) stack.push(at - 1);
+    if (x < frame - 1) stack.push(at + 1);
+    if (y > 0) stack.push(at - frame);
+    if (y < frame - 1) stack.push(at + frame);
+  }
+
+  // Crop to the mark itself, in this frame's coordinates.
+  const scale = frame / sourceHeight;
+  const left = Math.round(box.x * scale);
+  const top = Math.round(box.y * scale);
+  const width = Math.max(1, Math.round(box.w * scale));
+  const tall = Math.max(1, Math.round(box.h * scale));
+
+  const rgba = Buffer.alloc(width * tall * 4);
+  for (let y = 0; y < tall; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const from = ((top + y) * frame + (left + x));
+      const to = (y * width + x) * 4;
+      if (from < 0 || from >= frame * frame) continue;
+      rgba[to] = pixels[from * 4];
+      rgba[to + 1] = pixels[from * 4 + 1];
+      rgba[to + 2] = pixels[from * 4 + 2];
+      rgba[to + 3] = outside[from] ? 0 : 255;
+    }
+  }
+
+  return { png: encodePng(width, tall, rgba), width, height: tall };
+}
+
+const cut = cutOut(512, mark, sourceHeight);
+fs.writeFileSync(path.join(OUT_DIR, 'mark.png'), cut.png);
+console.log(`mark.png  ${cut.width}x${cut.height}  `
+  + `${fs.statSync(path.join(OUT_DIR, 'mark.png')).size} bytes  (no background)`);
+
+/* --------------------------------------------------------------------------
+ * The Windows icon
+ *
+ * The launcher and the desktop window are WinForms, and WinForms takes an .ico
+ * through GDI+, which is older than the PNG-inside-ICO convention every web
+ * tool emits now. So this writes the classic thing: a bitmap per size, bottom
+ * up, in BGRA, each one followed by the 1-bit mask that predates the alpha
+ * channel and is still required to be there. Every byte of the mask is zero -
+ * the icon is opaque, and the alpha channel is what actually gets used.
+ * ----------------------------------------------------------------------- */
+
+/** One BITMAPINFOHEADER image, as an .ico entry expects to find it. */
+function icoImage(size, rgba) {
+  const header = Buffer.alloc(40);
+  header.writeUInt32LE(40, 0);          // header size
+  header.writeInt32LE(size, 4);         // width
+  header.writeInt32LE(size * 2, 8);     // height: the image and its mask
+  header.writeUInt16LE(1, 12);          // planes
+  header.writeUInt16LE(32, 14);         // bits per pixel
+
+  const pixels = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y += 1) {
+    // Bottom-up: row 0 of the file is the last row of the picture.
+    const from = (size - 1 - y) * size * 4;
+    for (let x = 0; x < size; x += 1) {
+      const source = from + x * 4;
+      const target = (y * size + x) * 4;
+      pixels[target] = rgba[source + 2];      // B
+      pixels[target + 1] = rgba[source + 1];  // G
+      pixels[target + 2] = rgba[source];      // R
+      pixels[target + 3] = rgba[source + 3];  // A
+    }
+  }
+
+  // Mask rows are 1 bit per pixel, padded to four bytes, and all zero.
+  const mask = Buffer.alloc(Math.ceil(size / 32) * 4 * size);
+  return Buffer.concat([header, pixels, mask]);
+}
+
+function writeIco(file, sizes) {
+  const images = sizes.map((size) => icoImage(size, drawPixels(size, mark, FULL)));
+
+  const directory = Buffer.alloc(6 + images.length * 16);
+  directory.writeUInt16LE(0, 0);                 // reserved
+  directory.writeUInt16LE(1, 2);                 // type: icon
+  directory.writeUInt16LE(images.length, 4);
+
+  let offset = directory.length;
+  images.forEach((image, index) => {
+    const entry = 6 + index * 16;
+    directory[entry] = sizes[index] >= 256 ? 0 : sizes[index];
+    directory[entry + 1] = sizes[index] >= 256 ? 0 : sizes[index];
+    directory[entry + 2] = 0;                    // palette size
+    directory[entry + 3] = 0;                    // reserved
+    directory.writeUInt16LE(1, entry + 4);       // planes
+    directory.writeUInt16LE(32, entry + 6);      // bits per pixel
+    directory.writeUInt32LE(image.length, entry + 8);
+    directory.writeUInt32LE(offset, entry + 12);
+    offset += image.length;
+  });
+
+  fs.writeFileSync(file, Buffer.concat([directory, ...images]));
+  return fs.statSync(file).size;
+}
+
+const icoFile = path.join(OUT_DIR, 'app.ico');
+console.log(`app.ico  ${ICO_SIZES.join('/')}  ${writeIco(icoFile, ICO_SIZES)} bytes`);
+
+/* --------------------------------------------------------------------------
+ * The inline favicon
+ * ----------------------------------------------------------------------- */
+
+const favicon = fs.readFileSync(path.join(OUT_DIR, 'favicon.png'));
+const href = `data:image/png;base64,${favicon.toString('base64')}`;
+
+const LINK = /<link rel="icon" href="[^"]*">/;
+
+for (const page of PAGES) {
+  const html = fs.readFileSync(page, 'utf8');
+  const name = path.relative(ROOT, page);
+
+  // Tested rather than inferred from whether the text changed: running this
+  // twice leaves the second run with nothing to do, and "already correct" must
+  // not report itself as "the link is missing".
+  if (!LINK.test(html)) {
+    console.warn(`! no favicon link found in ${name}`);
+    continue;
+  }
+
+  const replaced = html.replace(LINK, `<link rel="icon" href="${href}">`);
+  if (replaced === html) {
+    console.log(`${name}  favicon already current`);
+    continue;
+  }
+
+  fs.writeFileSync(page, replaced);
+  console.log(`${name}  favicon inlined (${href.length} chars)`);
 }

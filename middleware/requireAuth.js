@@ -19,6 +19,9 @@ const PUBLIC_GET = new Set([
   '/login.html',
   '/js/login.js',
   '/css/login.css',
+  // The mark on the login page. Everything else about that page is already
+  // public, and a logo says nothing a stranger cannot read off the title.
+  '/icons/mark.png',
   '/api/health'
 ]);
 

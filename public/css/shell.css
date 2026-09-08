@@ -1,68 +1,114 @@
-/* Desktop icon rail, mobile tab bar, top bar, toasts. */
+/* Desktop icon rail, mobile tab bar, phone header, toasts.
+ *
+ * Flat outlined throughout: no backdrop blur, no drop shadows, no lit edges.
+ * A panel reads as a panel because its surface is a step off the ground and a
+ * hairline draws its edge.
+ */
 
 .app-shell {
   display: grid;
   min-height: 100vh;
+  /* dvh is the viewport that excludes the browser's retracting chrome; vh
+     above it is what everything before Safari 15.4 understands. */
+  min-height: 100dvh;
   grid-template-columns: var(--rail-w) 1fr;
-  grid-template-rows: var(--topbar-h) 1fr;
-  grid-template-areas:
-    "navrail topbar"
-    "navrail main";
+  grid-template-rows: 1fr;
+  grid-template-areas: "navrail main";
+  background: var(--bg);
 }
 
-/* ---- desktop rail ---- */
+/* ---- desktop rail ----
+   A detached panel rather than a strip welded to the edge. The inset is small
+   on purpose: at 68px anything more leaves the buttons nowhere to go. */
 .navrail {
   grid-area: navrail;
-  display: flex; flex-direction: column; align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-4) 0;
-  border-right: 1px solid var(--line);
-  position: sticky; top: 0; height: 100vh;
+  position: sticky; top: 0; height: 100vh; height: 100dvh;
+  padding: calc(var(--safe-top) + 6px) 6px calc(var(--safe-bottom) + 6px);
+  padding-left: calc(var(--safe-left) + 6px);
 }
+.navrail__in {
+  height: 100%; padding: var(--space-2) 0;
+  border: 1px solid var(--line); border-radius: var(--r-panel);
+  background: var(--surface);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+
+/* Sized on the image itself, not as a percentage of the box: the box is a grid
+   item with no definite height for a percentage to resolve against, so
+   height:100% fell back to the natural size and the mark came out twice the
+   height of the rail's icons. */
 .navrail__mark {
-  width: 28px; height: 28px; border-radius: var(--radius-sm);
-  background: var(--fg); color: #000;
-  display: grid; place-items: center; margin-bottom: var(--space-3);
+  display: grid; place-items: center; flex: none;
+  margin-bottom: var(--space-2);
 }
-.navrail__mark svg { width: 14px; height: 14px; }
-.navrail__nav { display: flex; flex-direction: column; gap: var(--space-2); }
+.navrail__mark img { height: 34px; width: auto; display: block; }
+
+.navrail__nav { display: flex; flex-direction: column; gap: 4px; position: relative; }
+
+/*
+ * One indicator slides between the items instead of five backgrounds fading in
+ * and out. Positioned by app.js from the active button's offsetTop, so it
+ * survives a density change without a hard-coded step.
+ */
+.navrail__ind {
+  position: absolute; left: 0; right: 0; top: 0; height: 44px;
+  border-radius: var(--r-nav);
+  background: var(--surface-3); border: 1px solid var(--line-2);
+  transition: transform var(--t2) var(--spring), opacity var(--t1);
+  pointer-events: none;
+}
+.navrail__ind[hidden] { display: block; opacity: 0; }
+
+/* Squarer than the pills elsewhere: the rail is a column of targets, and pills
+   in a stack read as loose beads. */
 .navrail__item {
-  position: relative;
-  width: 44px; height: 44px; border-radius: var(--radius);
+  position: relative; z-index: 1;
+  width: 46px; height: 44px; border-radius: var(--r-nav);
   display: grid; place-items: center;
-  color: var(--fg-3);
-  transition: color var(--state), background var(--state);
+  color: var(--fg-3); border: 1px solid transparent;
+  transition: color var(--state), background var(--state), transform var(--t1) var(--spring);
 }
-.navrail__item:hover { color: var(--fg); background: var(--surface-2); }
-.navrail__item.is-active { color: var(--fg); background: rgba(255, 255, 255, .14); }
-.navrail__item--foot { margin-top: auto; }
+.navrail__item:hover { color: var(--fg); }
+.navrail__item:not(.is-active):hover { background: var(--surface-2); }
+.navrail__item:active { transform: scale(.9); }
+.navrail__item.is-active { color: var(--fg); }
+.navrail__item--foot { margin-top: 0; }
 .navrail__item.is-busy svg { animation: spin 1s linear infinite; }
+.navrail__foot { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.navrail__sep { width: 22px; height: 1px; background: var(--line-2); margin: var(--space-2) 0; flex: none; }
 
 .navrail__badge, .tabbar__badge {
-  position: absolute; top: 5px; right: 5px;
+  position: absolute; top: 4px; right: 4px;
   min-width: 16px; height: 16px; padding: 0 4px;
   border-radius: var(--radius-pill);
-  background: var(--fg); color: #000;
-  font-size: 9px; font-weight: 700;
+  background: var(--paper); color: #0a0b0d;
+  font-family: var(--font-mo); font-size: 9px; font-weight: 600;
   display: grid; place-items: center;
+  transition: transform var(--t2) var(--spring);
 }
 /* An explicit display beats the hidden attribute, so the badge sat there
    reading "0" with nothing downloading. */
 .navrail__badge[hidden], .tabbar__badge[hidden] { display: none; }
 
-/* ---- top bar ---- */
+/* ---- phone header ----
+   Hidden wherever the rail is. The rail already carries search, add and
+   settings; a second row holding the same three was pure duplication. It comes
+   back only on a phone, which has no rail to carry them. */
 .topbar {
+  display: none;
   grid-area: topbar;
-  display: flex; align-items: center; gap: var(--space-3);
-  padding: 0 var(--space-5);
+  height: calc(var(--topbar-h) + var(--safe-top));
+  padding: var(--safe-top) calc(var(--gutter) + var(--safe-right)) 0 calc(var(--gutter) + var(--safe-left));
+  align-items: center; gap: var(--space-2);
   border-bottom: 1px solid var(--line);
+  background: var(--bg);
   position: sticky; top: 0; z-index: var(--z-sticky);
-  background: rgba(0, 0, 0, .82);
 }
-.topbar__search { position: relative; flex: 1; max-width: 420px; display: flex; align-items: center; }
-.topbar__search svg { position: absolute; left: var(--space-3); color: var(--fg-3); pointer-events: none; }
-.topbar__input { padding-left: 38px; }
-.topbar__add { flex: none; }
+.topbar__search { position: relative; flex: 1; display: flex; align-items: center; }
+.topbar__search svg { position: absolute; left: 15px; color: var(--fg-3); pointer-events: none; transition: color var(--state); }
+.topbar__search:focus-within svg { color: var(--fg); }
+.topbar__input { padding-left: 42px; }
+.topbar__add, .topbar__settings { flex: none; }
 
 /* ---- main ---- */
 .main { grid-area: main; min-width: 0; }
@@ -72,58 +118,75 @@
 
 /* ---- toasts ---- */
 .toast-stack {
-  position: fixed; right: var(--space-5); bottom: var(--space-5);
+  position: fixed;
+  right: calc(var(--space-5) + var(--safe-right));
+  bottom: calc(var(--space-5) + var(--safe-bottom));
   z-index: var(--z-toast); display: flex; flex-direction: column; gap: var(--space-2);
 }
 .toast {
   min-width: 260px; padding: var(--space-3) var(--space-4);
-  background: var(--surface-2); border: 1px solid var(--line);
-  border-radius: var(--radius); box-shadow: var(--shadow);
+  background: var(--surface-2); border: 1px solid var(--line-2);
+  border-radius: var(--r-card);
   animation: rise-in var(--enter) both;
 }
 .toast.is-leaving { animation: fade-in var(--state) reverse both; }
-.toast__title { font-weight: 700; font-size: 12px; }
-.toast__text { color: var(--fg-2); font-size: 11px; margin-top: 2px; }
+.toast__title { font-weight: 700; font-size: 12.5px; letter-spacing: -.01em; }
+.toast__text { color: var(--fg-2); font-size: 11.5px; margin-top: 2px; }
 .toast--error .toast__title { color: var(--danger); }
 .toast--warn .toast__title { color: var(--warn); }
 
-.boot { display: grid; place-items: center; gap: var(--space-4); min-height: 100vh; }
-.boot__label { color: var(--fg-3); }
+.boot { display: grid; place-items: center; gap: var(--space-4); min-height: 100vh; min-height: 100dvh; }
+.boot__label { color: var(--fg-3); font-family: var(--font-mo); font-size: 12px; }
 .noscript { padding: var(--space-5); color: var(--fg); }
 
 /* ---- mobile ---- */
 @media (max-width: 767px) {
   .app-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: var(--topbar-h) 1fr auto;
+    grid-template-rows: calc(var(--topbar-h) + var(--safe-top)) 1fr auto;
     grid-template-areas: "topbar" "main" "tabbar";
   }
   .navrail { display: none; }
+  .topbar { display: flex; }
 
-  .topbar { padding: 0 var(--space-4); }
-  .topbar__search { max-width: none; }
-  .topbar__add .btn__label { display: none; }
-  .topbar__add { width: 44px; padding: 0; }
-
+  /* The tab bar is the rail's counterpart: same panel, same button radius. */
   .tabbar {
     grid-area: tabbar;
-    display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+    display: block;
     position: sticky; bottom: 0; z-index: var(--z-tabbar);
-    border-top: 1px solid var(--line);
-    background: rgba(0, 0, 0, .92);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding: 6px calc(var(--gutter) + var(--safe-right)) calc(6px + var(--safe-bottom)) calc(var(--gutter) + var(--safe-left));
+    background: var(--bg);
+  }
+  .tabbar__in {
+    border: 1px solid var(--line); border-radius: var(--r-panel);
+    background: var(--surface); padding: 5px;
+    display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+    position: relative;
+  }
+  .tabbar__ind {
+    position: absolute; top: 5px; bottom: 5px; left: 5px;
+    width: calc((100% - 10px) / 5);
+    border-radius: var(--r-nav);
+    background: var(--surface-3); border: 1px solid var(--line-2);
+    transition: transform var(--t2) var(--spring);
+    pointer-events: none;
   }
   .tabbar__item {
-    position: relative;
-    min-height: var(--tabbar-h);
+    position: relative; z-index: 1;
+    min-height: 50px; border-radius: var(--r-nav);
     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
     color: var(--fg-3);
-    transition: color var(--state);
+    transition: color var(--t2) var(--ease), transform var(--t1) var(--spring);
   }
   .tabbar__item.is-active { color: var(--fg); }
-  .tabbar__label { font-size: 10px; font-weight: 600; }
-  .tabbar__badge { top: 6px; right: 50%; margin-right: -22px; }
+  .tabbar__item:active { transform: scale(.93); }
+  .tabbar__label { font-size: 9.5px; font-weight: 600; }
+  .tabbar__badge { top: 4px; right: 50%; margin-right: -20px; }
 
-  .toast-stack { left: var(--space-3); right: var(--space-3); bottom: calc(var(--tabbar-h) + var(--space-3)); }
+  .toast-stack {
+    left: calc(var(--gutter) + var(--safe-left));
+    right: calc(var(--gutter) + var(--safe-right));
+    bottom: calc(var(--tabbar-h) + var(--space-3) + var(--safe-bottom));
+  }
   .toast { min-width: 0; }
 }

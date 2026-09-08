@@ -14,7 +14,6 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import express from 'express';
@@ -32,15 +31,10 @@ const log = createLogger('api:diagnostics');
 const router = express.Router();
 const run = promisify(execFile);
 
-/*
- * Derived from this file's own location rather than from config, so the two
- * cache directories are found the same way whether or not a given install
- * declares them in its configuration.
- */
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Use the writable data paths, including when running from an installation.
 const CACHE_DIRS = {
-  mp4: path.join(ROOT, 'cache', 'mp4'),
-  thumbs: path.join(ROOT, 'cache', 'thumbs')
+  mp4: config.mp4Cache.dir,
+  thumbs: config.thumbCache.dir
 };
 
 /**

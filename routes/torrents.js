@@ -39,6 +39,7 @@ async function searchHandler(req, res) {
       query,
       type,
       tmdbId,
+      scope: req.query.scope === 'season' ? 'season' : 'episode',
       imdbId: req.query.imdb_id || undefined,
       season: req.query.season != null ? Number(req.query.season) : undefined,
       episode: req.query.episode != null ? Number(req.query.episode) : undefined,

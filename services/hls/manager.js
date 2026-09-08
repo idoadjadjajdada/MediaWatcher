@@ -47,16 +47,34 @@ function segmentIndices(dir) {
   }
 }
 
+function publishCompleted(session) {
+  if (!session.started) return;
+  const indices = segmentIndices(session.dir);
+  // A failed or killed process may leave its last segment truncated.
+  const through = completedThrough(indices, session.startSegment,
+    session.exited && session.exitCode === 0);
+  for (const index of indices) {
+    if (index >= session.startSegment && index <= through) {
+      segmentStore.publish(session.contentKey, index, segmentPath(session, index));
+    }
+  }
+}
+
 function killEncoder(session) {
-  if (!session.proc) return;
+  publishCompleted(session);
+  if (!session.proc) return session.stopping;
   const proc = session.proc;
   session.proc = null;
+  // Wait for file handles to close before a replacement rewrites these paths.
+  session.stopping = new Promise((resolve) => proc.once('close', resolve));
   try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+  return session.stopping;
 }
 
 /** Start (or restart) the encoder at a segment boundary. */
 async function startEncoder(session, startSegment) {
-  killEncoder(session);
+  await killEncoder(session);
+  if (session.destroyed) return;
 
   /*
    * Segments from the previous run are numbered on the same timeline, but the
@@ -89,6 +107,7 @@ async function startEncoder(session, startSegment) {
   );
 
   const encoder = await hardwareEncoder();
+  if (session.destroyed) return;
   const args = buildSegmentArgs(session.filePath, {
     startSegment,
     outputPattern: path.join(session.dir, '%d.ts'),
@@ -176,6 +195,7 @@ ${text}`.slice(-400);
     // Zero means ffmpeg reached the end of what it was asked for. Anything else
     // is a failure, and the two are handled very differently below.
     session.exitCode = code;
+    publishCompleted(session);
     /*
      * A non-zero exit here is the difference between "the encoder is still
      * working" and "no segment is ever coming", and it used to be invisible:
@@ -199,8 +219,9 @@ export async function openSession(spec) {
     return existing;
   }
 
-  const dir = path.join(config.hls.dir, id);
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(config.hls.dir, { recursive: true });
+  // A reopened session must not share files with its still-closing predecessor.
+  const dir = fs.mkdtempSync(path.join(config.hls.dir, `${id}-`));
 
   const session = {
     id,
@@ -292,6 +313,10 @@ function prune(session, current) {
     if (session.proc && index >= session.startSegment) continue;
     try { fs.unlinkSync(segmentPath(session, index)); } catch { /* already gone */ }
   }
+  const borrowedDir = path.join(session.dir, 'borrowed');
+  for (const index of segmentsToPrune(segmentIndices(borrowedDir), current, config.hls.keepBehind)) {
+    try { fs.unlinkSync(path.join(borrowedDir, `${index}.ts`)); } catch { /* already gone */ }
+  }
 }
 
 /**
@@ -334,7 +359,12 @@ export function isEndOfSource(session, producedThrough) {
  * looks exactly like a slow encoder.
  */
 async function restartTo(session, index, { continuation = false } = {}) {
-  while (session.restarting) await session.restarting;
+  if (session.restarting) {
+    await session.restarting;
+    // Re-evaluate against the new run instead of acting on a stale decision.
+    return;
+  }
+  if (session.destroyed) return;
 
   // The winner of that wait may have already moved the encoder somewhere that
   // serves us, in which case moving it again would undo their work.
@@ -361,7 +391,9 @@ async function restartTo(session, index, { continuation = false } = {}) {
  * ago, costs a hard link rather than an encoder restart.
  */
 function serveFromPool(session, index) {
-  const file = segmentPath(session, index);
+  // Borrowed files must never masquerade as output from the active encoder,
+  // or overwrite a segment it is still writing.
+  const file = path.join(session.dir, 'borrowed', `${index}.ts`);
   if (!segmentStore.borrow(session.contentKey, index, file)) return null;
   return file;
 }
@@ -377,7 +409,7 @@ function serveFromPool(session, index) {
 export async function requestSegment(id, index, signal, viewer) {
   const session = ownedBy(id, viewer);
   if (!session) return null;
-  if (index < 0 || index >= session.count) return null;
+  if (!Number.isInteger(index) || index < 0 || index >= session.count) return null;
   // Already established that the file ends before here; see `endOfStream`.
   if (session.endOfStream !== null && index > session.endOfStream) return null;
 
@@ -386,7 +418,15 @@ export async function requestSegment(id, index, signal, viewer) {
   const deadline = Date.now() + config.hls.segmentTimeoutMs;
 
   for (;;) {
-    if (signal?.aborted) return null;
+    if (signal?.aborted || session.destroyed) return null;
+    if (Date.now() > deadline) {
+      log.warn(`session ${id}: segment ${index} timed out`);
+      return null;
+    }
+    if (session.restarting) {
+      await session.restarting;
+      continue;
+    }
 
     /*
      * The pool first, always. A finished segment is a finished segment whoever
@@ -408,7 +448,8 @@ export async function requestSegment(id, index, signal, viewer) {
       continue;
     }
 
-    const through = completedThrough(segmentIndices(session.dir), session.startSegment, session.exited);
+    const through = completedThrough(segmentIndices(session.dir), session.startSegment,
+      session.exited && session.exitCode === 0);
     const action = nextAction({
       requested: index,
       startSegment: session.startSegment,
@@ -452,10 +493,6 @@ export async function requestSegment(id, index, signal, viewer) {
     }
 
     // 'wait' — the encoder is heading there.
-    if (Date.now() > deadline) {
-      log.warn(`session ${id}: segment ${index} timed out`);
-      return null;
-    }
     /*
      * The encoder has stopped short of what was asked for. Normally that is
      * simply the end of its bounded run, so the answer is to start the next one
@@ -506,9 +543,14 @@ export async function requestSegment(id, index, signal, viewer) {
 }
 
 function destroy(session) {
-  killEncoder(session);
+  session.destroyed = true;
+  const stopped = killEncoder(session);
   sessions.delete(session.id);
-  try { fs.rmSync(session.dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  const remove = () => {
+    try { fs.rmSync(session.dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  };
+  if (stopped) stopped.then(remove);
+  else remove();
   log.info(`session ${session.id}: reaped`);
 }
 

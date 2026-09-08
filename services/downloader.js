@@ -136,7 +136,9 @@ export function selectFiles(links, request) {
    * from its own name, in planPlacements below — this only decides what is
    * worth transferring.
    */
-  if (request.type === 'season') return pool.sort((a, b) => a.filename.localeCompare(b.filename));
+  if (request.type === 'season') return pool
+    .filter(entry => request.season == null || parseEpisodeName(entry.filename)?.season === Number(request.season))
+    .sort((a, b) => a.filename.localeCompare(b.filename));
 
   if (request.type === 'episode' && request.season != null && request.episode != null) {
     const tag = organizer.episodeTag(request.season, request.episode);

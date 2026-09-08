@@ -117,6 +117,10 @@ const fat720 = {
 const fatCapped = decide(fat720, {}, { quality: resolveQuality('high', 'tailscale') });
 check('an over-bitrate source is capped even when short enough',
   fatCapped.mode === 'transcode');
+check('a bitrate-only cap never enlarges a 720p source', fatCapped.targetHeight === null);
+check('the bitrate limit is still applied', fatCapped.maxrate === '12M');
+check('a 720p source with a 1080p ceiling needs no resize',
+  !buildArgs('movie.mkv', { mode: 'transcode', height: 720, maxHeight: 1080 }).includes('-vf'));
 
 // HDR already forces a transcode; the cap must tighten the height, not fight it.
 const hdrCapped = decide(mkv_4k_hdr, {}, { quality: resolveQuality('medium', 'tailscale') });

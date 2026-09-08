@@ -25,6 +25,11 @@ import { attachHls } from './hls-player.js';
 import * as mediaSession from './media-session.js';
 import { introKey, shouldOfferSkip } from './intro.js';
 import {
+  ZOOM_SPANS, DEFAULT_START, DEFAULT_END, defaultSpan, stepSpan, editorWindow,
+  fractionOf, timeAt, withinWindow, moveEdge, nearestEdge, formatPrecise, describeLength,
+  ticksFor, framesFor
+} from './intro-edit.js';
+import {
   loadSubtitleStyle, saveSubtitleStyle, normaliseStyle, cueCss, applyCuePosition,
   COLOURS, SIZE_MIN, SIZE_MAX, OPACITY_MIN, OPACITY_MAX, POSITION_MIN, POSITION_MAX
 } from './subtitle-style.js';
@@ -249,9 +254,11 @@ async function openInner(filePath) {
     api.getStreamInfo(filePath).catch(() => null),
     api.getProgressFor(filePath).catch(() => null),
     api.listSubtitles(filePath).catch(() => []),
-    // Only shows have a repeating intro to have learned anything about.
+    // Only shows have a repeating intro to have learned anything about, and
+    // the episode is named because its own timings, if it has any, win.
     located?.type === 'episode' && located.item?.tmdb_id
-      ? api.getIntro(located.item.tmdb_id, located.season).then((r) => r.marker).catch(() => null)
+      ? api.getIntro(located.item.tmdb_id, located.season, located.episode?.episode_number)
+        .then((r) => r.marker).catch(() => null)
       : Promise.resolve(null),
     trackKey ? api.getTrackPrefs(trackKey).then((r) => r.prefs).catch(() => null) : Promise.resolve(null),
     // A saved copy short-circuits everything below — no probe decision, no
@@ -316,6 +323,10 @@ async function openInner(filePath) {
     // Latch for the automatic setting: taken once per open, so seeking back
     // into the titles on purpose is not immediately undone.
     introSkipped: false,
+    // The intro editor's working copy while it is open, and null the rest of
+    // the time. Several things read it as "is the marker being edited right
+    // now", because during that the player must stop acting on the marker.
+    introEdit: null,
     // Global, not per-file: brightness tracks the room, not the master.
     picture: loadPicture(),
     // Same reasoning: how big subtitles need to be is a property of the screen
@@ -371,6 +382,7 @@ async function openInner(filePath) {
 
   buildMenu();
   buildEpisodes();
+  offerIntroEditing();
 
   // Deliberately not awaited: opening the player must never wait on ffmpeg.
   loadThumbMeta();
@@ -420,6 +432,13 @@ async function openInner(filePath) {
  */
 export async function close({ save = true, keepPage = false } = {}) {
   if (!ctx) return;
+
+  /*
+   * Leaving with the editor open must not save the intro as your progress. The
+   * handles drag the playhead around by design, so the position on screen is
+   * wherever the last one landed - put it back before anything is written.
+   */
+  if (ctx.introEdit) closeIntroEditor({ resume: false });
 
   if (save) await persist(true);
 
@@ -627,6 +646,7 @@ function tick() {
   maybeOfferNext(total, current);
 
   updateIntroOffer(current);
+  if (ctx.introEdit) drawIntroPlayhead();
 }
 
 /**
@@ -637,9 +657,20 @@ function tick() {
  * be undone on the very next frame, which is the app fighting the viewer.
  */
 function updateIntroOffer(current) {
-  const skipButton = el('skip-intro');
+  const skipButton = el('skip-intro-wrap');
   const inWindow = shouldOfferSkip(ctx.intro, current);
   const behaviour = loadDevicePrefs().introBehaviour;
+
+  /*
+   * The editor owns the marker while it is open. Offering the jump would put a
+   * button over the strip being dragged, and on `auto` the player would take
+   * the offer and pull playback away from the frame being looked at - which is
+   * the one thing someone editing the timings is trying to see.
+   */
+  if (ctx.introEdit) {
+    if (skipButton) skipButton.hidden = true;
+    return;
+  }
 
   if (behaviour === 'off') {
     if (skipButton) skipButton.hidden = true;
@@ -770,6 +801,10 @@ async function loadThumbMeta() {
       if (status === 'missing') thumbs.frames.delete(index);
     }
 
+    // The editor may be open and showing an empty strip: it was opened before
+    // any of this was known.
+    if (ctx.introEdit) buildIntroFrames();
+
     // A file opened for the first time reports ready:false while ffmpeg works.
     // Ask once more so sitting still eventually gets frames.
     if (!thumbs.ready) ctx.thumbRetry = setTimeout(loadThumbMeta, 20000);
@@ -829,7 +864,7 @@ function markIdle(after) {
   ctx.idleTimer = setTimeout(() => {
     // A panel left open over a hidden control bar floats unanchored — and the
     // bar must not vanish out from under a finger that is dragging it.
-    if (ctx && !ctx.video.paused && !ctx.scrubbing) {
+    if (ctx && !ctx.video.paused && !ctx.scrubbing && !ctx.introEdit) {
       closePopovers();
       ctx.node.classList.add('is-idle');
     }
@@ -1152,7 +1187,7 @@ function renderStats() {
 export function skipIntro() {
   if (!ctx?.intro) return;
   seekTo(ctx.intro.end);
-  const button = el('skip-intro');
+  const button = el('skip-intro-wrap');
   if (button) button.hidden = true;
   markIdle();
 }
@@ -1166,6 +1201,12 @@ export function skipIntro() {
  */
 function reportPossibleIntroSkip(from, to) {
   if (!ctx || ctx.located?.type !== 'episode') return;
+  /*
+   * Dragging a handle seeks, over and over, around exactly the stretch the
+   * learner is watching for. Filing those as evidence would let the editor
+   * teach the marker it is being used to correct.
+   */
+  if (ctx.introEdit) return;
   const showId = ctx.located.item?.tmdb_id;
   if (!showId) return;
   // The app's own skip must not teach the app.
@@ -1182,6 +1223,506 @@ function reportPossibleIntroSkip(from, to) {
     // A marker can appear on the very episode that completed the pattern.
     if (result?.marker && ctx) ctx.intro = result.marker;
   }).catch(() => {});
+}
+
+/* --------------------------------------------------------------------------
+ * Intro editor
+ *
+ * Both automatic routes guess, and a guess lands the button in the middle of a
+ * line of dialogue often enough to matter. Correcting it needs one thing the
+ * seek bar cannot give: resolution. An intro is ninety seconds of a
+ * forty-minute episode, which is a handful of pixels of the bar — fine for
+ * finding a scene, hopeless for saying which frame the titles end on.
+ *
+ * So the editor scrubs a *window* instead: a couple of minutes of the episode
+ * across the full width of the panel, where a second is a comfortable drag and
+ * a tenth is a nudge. Every move seeks the video to the handle, because the
+ * question being answered is always "what is on screen at this exact moment",
+ * and the answer is the picture, not the number.
+ * ----------------------------------------------------------------------- */
+
+/** Fine adjustments, in seconds. The drag is the coarse control. */
+const INTRO_NUDGES = [-1, -0.1, 0.1, 1];
+
+/** Keyboard steps for a focused handle, plain and with Shift. */
+const INTRO_KEY_STEP = 0.5;
+const INTRO_KEY_STEP_BIG = 5;
+
+/** Roughly how wide one filmstrip cell wants to be. */
+const INTRO_FRAME_PX = 104;
+
+/** Seeking faster than this during a drag only queues up work. */
+const INTRO_SEEK_THROTTLE_MS = 110;
+
+/** Playing from an edge starts a moment before it, to see it arrive. */
+const INTRO_PLAY_LEAD = 3;
+
+/** Only an episode of an identified show has a marker to edit. */
+function introEditable() {
+  const located = ctx?.located;
+  return Boolean(located?.type === 'episode'
+    && located.item?.tmdb_id
+    && Number.isFinite(Number(located.season)));
+}
+
+/** Hide the control bar's way in on anything that has no intro to mark. */
+function offerIntroEditing() {
+  const button = el('intro-btn');
+  if (button) button.hidden = !introEditable();
+}
+
+export function openIntroEditor() {
+  if (!ctx || !introEditable()) return;
+  const panel = el('intro-editor');
+  if (!panel) return;
+
+  closePopovers();
+  closeEpisodes();
+
+  const marker = ctx.intro;
+  const total = duration();
+  const start = Number.isFinite(marker?.start) ? marker.start : DEFAULT_START;
+  const end = Number.isFinite(marker?.end)
+    ? marker.end
+    : Math.min(DEFAULT_END, total > 0 ? total : DEFAULT_END);
+
+  ctx.introEdit = {
+    start,
+    end,
+    span: defaultSpan(start, end),
+    window: null,
+    /*
+     * Where the episode was before any of this. The editor seeks constantly,
+     * and without putting it back, closing would leave you wherever the last
+     * handle happened to land — and save that as your progress.
+     */
+    resumeAt: position(),
+    wasPlaying: !ctx.video.paused,
+    dragging: null,
+    lastSeek: 0
+  };
+
+  // Paused because this is measuring, not watching: a running video moves the
+  // frame out from under the timestamp being read off it.
+  ctx.video.pause();
+  panel.hidden = false;
+  recomputeIntroWindow();
+  renderIntroEditor();
+  markIdle();
+}
+
+/**
+ * Put the editor away.
+ *
+ * The restore happens while the draft is still in place, because seeking back
+ * is a forward jump as often as not, and a forward jump with the draft already
+ * cleared would be filed as someone skipping the intro.
+ */
+export function closeIntroEditor({ restore = true, resume = true } = {}) {
+  const panel = el('intro-editor');
+  if (panel) panel.hidden = true;
+  if (!ctx?.introEdit) return;
+
+  const { resumeAt, wasPlaying } = ctx.introEdit;
+  if (restore && Number.isFinite(resumeAt)) seekTo(resumeAt);
+  ctx.introEdit = null;
+
+  // `resume` is off when the player itself is closing: the element is about to
+  // be torn down, and starting playback into that is only a dropped promise.
+  if (resume && restore && wasPlaying) ctx.video.play().catch(() => {});
+  markIdle();
+}
+
+export function toggleIntroEditor() {
+  if (ctx?.introEdit) closeIntroEditor();
+  else openIntroEditor();
+}
+
+/** Re-centre the strip on the draft and redraw what the scale depends on. */
+function recomputeIntroWindow() {
+  const editing = ctx?.introEdit;
+  if (!editing) return;
+  editing.window = editorWindow({
+    start: editing.start,
+    end: editing.end,
+    duration: duration(),
+    span: editing.span
+  });
+  buildIntroFrames();
+  drawIntroScale();
+}
+
+export function zoomIntro(direction) {
+  const editing = ctx?.introEdit;
+  if (!editing) return;
+  editing.span = stepSpan(editing.span, Number(direction) || 0);
+  recomputeIntroWindow();
+  renderIntroEditor();
+  markIdle();
+}
+
+/* --------------------------------------------------------------------------
+ * Drawing
+ * ----------------------------------------------------------------------- */
+
+const introSpanLabel = (span) => (span >= 60 ? `${Math.round(span / 60)}m` : `${Math.round(span)}s`);
+
+/**
+ * Where the numbers on screen came from.
+ *
+ * Worth saying, because the two answers behave differently: the season's
+ * timings are a guess that applies to every episode, and this episode's are
+ * something someone looked at and decided.
+ */
+function introScopeText() {
+  const marker = ctx?.intro;
+  const season = ctx?.located?.season;
+
+  if (marker?.scope === 'episode') return 'Set by hand, for this episode';
+  if (!marker) return `Nothing marked for season ${season} yet`;
+
+  const origin = marker.source === 'learned' ? `learned from ${marker.observations || 2} skips`
+    : marker.source === 'manual' ? 'set by hand'
+    : 'found by comparing episodes';
+  return `From season ${season} — ${origin}`;
+}
+
+function renderIntroEditor() {
+  const editing = ctx?.introEdit;
+  const panel = el('intro-editor');
+  if (!editing || !panel || panel.hidden) return;
+
+  const view = editing.window;
+  el('intro-scope').textContent = introScopeText();
+  el('intro-span').textContent = introSpanLabel(editing.span);
+
+  const left = fractionOf(editing.start, view) * 100;
+  const right = fractionOf(editing.end, view) * 100;
+  const region = el('intro-region');
+  region.style.left = `${left.toFixed(3)}%`;
+  region.style.width = `${Math.max(0, right - left).toFixed(3)}%`;
+
+  positionIntroHandle('start', editing.start, view);
+  positionIntroHandle('end', editing.end, view);
+  drawIntroPlayhead();
+
+  el('intro-rows').innerHTML = introRows(editing);
+}
+
+function positionIntroHandle(edge, time, view) {
+  const handle = el(`intro-handle-${edge}`);
+  if (!handle) return;
+  handle.style.left = `${(fractionOf(time, view) * 100).toFixed(3)}%`;
+  handle.dataset.time = formatPrecise(time);
+  handle.setAttribute('aria-valuemin', view.from.toFixed(1));
+  handle.setAttribute('aria-valuemax', view.to.toFixed(1));
+  handle.setAttribute('aria-valuenow', time.toFixed(1));
+  handle.setAttribute('aria-valuetext', formatPrecise(time));
+}
+
+/** Where playback is, when that is somewhere the strip can show. */
+function drawIntroPlayhead() {
+  const editing = ctx?.introEdit;
+  const head = el('intro-playhead');
+  if (!head || !editing?.window) return;
+
+  const at = position();
+  const inside = withinWindow(at, editing.window);
+  head.hidden = !inside;
+  if (inside) head.style.left = `${(fractionOf(at, editing.window) * 100).toFixed(3)}%`;
+}
+
+function drawIntroScale() {
+  const scale = el('intro-scale');
+  const editing = ctx?.introEdit;
+  if (!scale || !editing?.window) return;
+
+  scale.innerHTML = ticksFor(editing.window, 6)
+    .map((tick) => `<span class="introedit__tick" style="left:${(tick.fraction * 100).toFixed(3)}%">`
+      + `${formatTime(tick.time)}</span>`)
+    .join('');
+}
+
+/**
+ * Lay the generated thumbnails across the strip.
+ *
+ * Built as elements rather than markup so a frame that ffmpeg has not reached
+ * yet can fail quietly into an empty cell. The strip is an aid to finding the
+ * right second; the times underneath are what is actually being edited, and
+ * they work with no pictures at all.
+ */
+function buildIntroFrames() {
+  const holder = el('intro-frames');
+  const editing = ctx?.introEdit;
+  if (!holder || !editing?.window) return;
+
+  holder.innerHTML = '';
+  const thumbs = ctx.thumbs;
+  const width = el('intro-strip')?.getBoundingClientRect().width || 0;
+  if (!thumbs?.interval || !width) return;
+
+  const count = Math.max(4, Math.min(18, Math.round(width / INTRO_FRAME_PX)));
+  for (const frame of framesFor({
+    window: editing.window, count, interval: thumbs.interval, total: thumbs.total
+  })) {
+    const cell = document.createElement('div');
+    cell.className = 'introedit__frame';
+
+    const image = new Image();
+    image.alt = '';
+    image.decoding = 'async';
+    image.addEventListener('error', () => cell.classList.add('is-blank'));
+    image.src = api.thumbUrl(ctx.filePath, frame.index);
+
+    cell.appendChild(image);
+    holder.appendChild(cell);
+  }
+}
+
+const introNudgeLabel = (delta) => `${delta > 0 ? '+' : '−'}${Math.abs(delta)}`;
+
+function introRow(edge, label, value) {
+  return `
+    <div class="introedit__row">
+      <span class="introedit__label">${label}</span>
+      <b class="introedit__value t-num">${formatPrecise(value)}</b>
+      <div class="introedit__nudges">
+        ${INTRO_NUDGES.map((delta) => `
+          <button class="introedit__nudge t-num" data-action="intro-nudge"
+            data-edge="${edge}" data-delta="${delta}">${introNudgeLabel(delta)}</button>`).join('')}
+      </div>
+      <button class="introedit__set" data-action="intro-here" data-edge="${edge}"
+        title="Put this edge where playback is">Set to playhead</button>
+      <button class="introedit__set" data-action="intro-play" data-edge="${edge}"
+        title="Play from three seconds before">Play</button>
+    </div>`;
+}
+
+/** Forget means two different things depending on what is in force. */
+const introForgetHint = () => (ctx?.intro?.scope === 'episode'
+  ? "Drop this episode's own timings and go back to the season's"
+  : "Forget the season's timings and let them be worked out again");
+
+function introRows(editing) {
+  return `
+    ${introRow('start', 'Start', editing.start)}
+    ${introRow('end', 'End', editing.end)}
+    <div class="introedit__foot">
+      <span class="introedit__length">${describeLength(editing.start, editing.end)} long · saved for this episode only</span>
+      <button class="btn btn--ghost" data-action="intro-forget" title="${introForgetHint()}">Forget</button>
+      <button class="btn btn--primary" data-action="intro-save">Save for this episode</button>
+    </div>`;
+}
+
+/* --------------------------------------------------------------------------
+ * Editing
+ * ----------------------------------------------------------------------- */
+
+/** Nudges and the playhead may leave the strip; the strip follows them. */
+const introFileBounds = () => {
+  const total = duration();
+  return { min: 0, max: total > 0 ? total : (ctx?.introEdit?.window?.to ?? 0) };
+};
+
+/** A drag cannot leave what it can see. */
+const introViewBounds = () => ({
+  min: ctx?.introEdit?.window?.from ?? 0,
+  max: ctx?.introEdit?.window?.to ?? 0
+});
+
+/**
+ * Move one edge of the draft and show the result.
+ *
+ * `seek` is what makes the editor worth using rather than a pair of number
+ * boxes: the video follows the handle, so the frame under the timestamp is
+ * always the one being judged.
+ */
+function applyIntroEdge(edge, value, { bounds, seek = false } = {}) {
+  const editing = ctx?.introEdit;
+  if (!editing) return;
+
+  const moved = moveEdge({
+    start: editing.start,
+    end: editing.end,
+    edge,
+    to: value,
+    bounds: bounds || introViewBounds()
+  });
+  editing.start = moved.start;
+  editing.end = moved.end;
+
+  const at = edge === 'start' ? moved.start : moved.end;
+  // A nudge can walk an edge off the strip. Follow it rather than leaving the
+  // handle pinned to a wall it has already gone through.
+  if (!withinWindow(at, editing.window)) recomputeIntroWindow();
+
+  renderIntroEditor();
+  if (seek) seekIntroPreview(at);
+}
+
+/**
+ * Put the picture where the handle is.
+ *
+ * Pipe-mode streams restart ffmpeg on every seek, so a drag there would launch
+ * an encoder per frame of movement. Those get one seek, when the handle is let
+ * go, which `force` asks for.
+ */
+function seekIntroPreview(time, { force = false } = {}) {
+  if (!ctx) return;
+  if (!ctx.seekable && !force) return;
+  seekTo(Math.max(0, time));
+}
+
+export function nudgeIntroEdge(edge, delta) {
+  const editing = ctx?.introEdit;
+  if (!editing || (edge !== 'start' && edge !== 'end')) return;
+  const from = edge === 'start' ? editing.start : editing.end;
+  applyIntroEdge(edge, from + Number(delta), { bounds: introFileBounds(), seek: true });
+  markIdle();
+}
+
+/** Take the edge from where playback is: watch to the cut, then say "there". */
+export function setIntroEdgeHere(edge) {
+  if (!ctx?.introEdit) return;
+  applyIntroEdge(edge, position(), { bounds: introFileBounds() });
+  markIdle();
+}
+
+/** Play into the edge, which is the only way to know it is in the right place. */
+export function playFromIntroEdge(edge) {
+  const editing = ctx?.introEdit;
+  if (!editing) return;
+  const at = edge === 'start' ? editing.start : editing.end;
+  seekIntroPreview(Math.max(0, at - INTRO_PLAY_LEAD), { force: true });
+  ctx.video.play().catch(() => {});
+  markIdle();
+}
+
+/* --------------------------------------------------------------------------
+ * Pointer and keyboard on the strip
+ * ----------------------------------------------------------------------- */
+
+/** Where along the strip a pointer is, as a fraction. */
+function introFractionAt(event, strip) {
+  const rect = strip.getBoundingClientRect();
+  if (rect.width <= 0) return 0;
+  return Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+}
+
+function onIntroPointerDown(event) {
+  const editing = ctx?.introEdit;
+  const strip = el('intro-strip');
+  if (!editing || !strip) return;
+  event.preventDefault();
+
+  const grabbed = event.target.closest?.('.introedit__handle')?.dataset.handle;
+  const time = timeAt(introFractionAt(event, strip), editing.window);
+  // A click on bare track means the nearer edge. It saves hunting for a handle
+  // that may be a few pixels from where the finger landed, and there is nothing
+  // else a click in here could sensibly mean.
+  const edge = grabbed || nearestEdge({ start: editing.start, end: editing.end, time });
+
+  editing.dragging = edge;
+  strip.setPointerCapture?.(event.pointerId);
+  el(`intro-handle-${edge}`)?.focus?.({ preventScroll: true });
+
+  if (!grabbed) applyIntroEdge(edge, time, { seek: true });
+  markIdle();
+}
+
+function onIntroPointerMove(event) {
+  const editing = ctx?.introEdit;
+  if (!editing?.dragging) return;
+
+  const strip = el('intro-strip');
+  if (!strip) return;
+
+  const now = Date.now();
+  const seek = now - editing.lastSeek > INTRO_SEEK_THROTTLE_MS;
+  if (seek) editing.lastSeek = now;
+
+  applyIntroEdge(editing.dragging, timeAt(introFractionAt(event, strip), editing.window), { seek });
+  markIdle();
+}
+
+function onIntroPointerUp(event) {
+  const editing = ctx?.introEdit;
+  if (!editing?.dragging) return;
+
+  const edge = editing.dragging;
+  editing.dragging = null;
+  el('intro-strip')?.releasePointerCapture?.(event.pointerId);
+  // The seek a throttled drag — or a pipe-mode stream, which took none at all —
+  // still owes the picture.
+  seekIntroPreview(edge === 'start' ? editing.start : editing.end, { force: true });
+}
+
+/** Arrows on a focused handle: a tenth of a second is not a draggable distance. */
+function onIntroKeyDown(event) {
+  const edge = event.target?.dataset?.handle;
+  if (!edge || !ctx?.introEdit) return;
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+
+  event.preventDefault();
+  const step = event.shiftKey ? INTRO_KEY_STEP_BIG : INTRO_KEY_STEP;
+  nudgeIntroEdge(edge, event.key === 'ArrowLeft' ? -step : step);
+}
+
+/* --------------------------------------------------------------------------
+ * Saving
+ * ----------------------------------------------------------------------- */
+
+export async function saveIntroEdits() {
+  const editing = ctx?.introEdit;
+  if (!editing || !introEditable()) return;
+
+  const { start, end } = editing;
+  const { item, season, episode } = ctx.located;
+
+  try {
+    const { marker } = await api.saveIntro(
+      item.tmdb_id, season, episode?.episode_number, { start, end }
+    );
+    ctx.intro = marker;
+    // New timings deserve their own chance at the automatic setting, whatever
+    // the old ones already did on this episode.
+    ctx.introSkipped = false;
+    closeIntroEditor();
+    toast('success', 'Intro timings saved',
+      `${formatPrecise(start)} to ${formatPrecise(end)} on this episode.`);
+  } catch (error) {
+    toast('error', 'Could not save the timings', error.message);
+  }
+}
+
+/**
+ * Throw away whatever is in force.
+ *
+ * An episode that has been edited gives up its own timings and drops back to
+ * the season's, which is the undo anyone reaches for first. With nothing but
+ * the season's left, the same button forgets those - and the skips behind them,
+ * so the next episode opened starts over rather than immediately re-deriving
+ * the marker that was just discarded.
+ */
+export async function forgetIntroMarker() {
+  if (!ctx || !introEditable()) return;
+  const { item, season, episode } = ctx.located;
+
+  try {
+    const answer = await api.forgetIntro(item.tmdb_id, season, episode?.episode_number);
+    ctx.intro = answer?.marker || null;
+    closeIntroEditor();
+
+    if (answer?.scope === 'episode' && ctx.intro) {
+      toast('info', 'Back to the season timings', "This episode's own timings are gone.");
+    } else if (answer?.scope === 'episode') {
+      toast('info', 'Timings forgotten', 'This episode has no intro marked now.');
+    } else {
+      toast('info', 'Intro forgotten', 'Nothing is marked for this season now.');
+    }
+  } catch (error) {
+    toast('error', 'Could not forget the intro', error.message);
+  }
 }
 
 /** How long the "resumed from" pill stays before it gets out of the way. */
@@ -2501,6 +3042,21 @@ function attach() {
   scrub.addEventListener('pointerup', hidePreview);
   scrub.addEventListener('pointercancel', hidePreview);
 
+  /*
+   * The intro strip drags its own handles rather than driving a range input:
+   * two values on one track is not something <input type="range"> can express,
+   * and the pointer has to be captured so a fast drag that leaves the strip
+   * keeps moving the handle instead of dropping it wherever the finger left.
+   */
+  const introStrip = el('intro-strip');
+  if (introStrip) {
+    introStrip.addEventListener('pointerdown', onIntroPointerDown);
+    introStrip.addEventListener('pointermove', onIntroPointerMove);
+    introStrip.addEventListener('pointerup', onIntroPointerUp);
+    introStrip.addEventListener('pointercancel', onIntroPointerUp);
+    introStrip.addEventListener('keydown', onIntroKeyDown);
+  }
+
   el('volume').addEventListener('input', (event) => {
     const value = Number(event.target.value) / 100;
     ctx.video.volume = value;
@@ -2829,6 +3385,14 @@ function onKeyDown(event) {
     return;
   }
 
+  /*
+   * The intro editor's own keys win while focus is inside it. Arrows nudge a
+   * handle by half a second there; letting these shortcuts see them too would
+   * skip the video ten seconds on every nudge, and Space would start playback
+   * as well as pressing the button under the cursor.
+   */
+  if (ctx.introEdit && event.target.closest?.('#intro-editor') && event.key !== 'Escape') return;
+
   switch (event.key) {
     case ' ':
     case 'k': case 'K':
@@ -2859,7 +3423,8 @@ function onKeyDown(event) {
       // Peel one layer at a time: sidebar, then popovers, then fullscreen,
       // then the player itself. Closing everything at once would make Escape
       // unusable for dismissing a panel you opened by mistake.
-      if (!el('shortcuts-card')?.hidden) toggleShortcuts();
+      if (ctx.introEdit) closeIntroEditor();
+      else if (!el('shortcuts-card')?.hidden) toggleShortcuts();
       else if (!el('ep-panel')?.hidden) closeEpisodes();
       else if (POPOVERS.some((name) => el(`popover-${name}`) && !el(`popover-${name}`).hidden)) closePopovers();
       else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -2893,6 +3458,8 @@ export default {
   skip, setSubtitle, setSpeed, setQuality, setAudioTrack, toggleStats,
   togglePitchMode, pitchControlAvailable, resetSpeed,
   answerResume, toggleShortcuts, showAirplayPicker, skipIntro,
+  openIntroEditor, closeIntroEditor, toggleIntroEditor, zoomIntro,
+  nudgeIntroEdge, setIntroEdgeHere, playFromIntroEdge, saveIntroEdits, forgetIntroMarker,
   togglePopover, closePopovers, setPicture,
   playNext, cancelNext
 };

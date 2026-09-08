@@ -47,6 +47,23 @@ export function introKey(located) {
   return `show:${showId}:s${season}`;
 }
 
+/**
+ * What one episode's own marker belongs to.
+ *
+ * Seasons are the right unit for a guess and the wrong unit for a correction.
+ * Runs recut their titles episode to episode - a cold open one week and none
+ * the next moves the whole sequence by a minute - so someone who has looked at
+ * the frames and says "here" is describing this episode, not twenty-two of
+ * them. A season marker stays the fallback; this outranks it when it exists.
+ */
+export function episodeIntroKey(located) {
+  const season = introKey(located);
+  if (!season) return null;
+  const number = Number(located.episode?.episode_number ?? located.episode);
+  if (!Number.isFinite(number)) return null;
+  return `${season}:e${number}`;
+}
+
 /** Does this seek look like someone skipping a title sequence? */
 export function isCandidateSkip({ from, to, duration }) {
   if (![from, to, duration].every(Number.isFinite)) return false;
@@ -111,8 +128,71 @@ export function shouldOfferSkip(marker, position) {
   return position >= marker.start - OFFER_LEAD_SECONDS && position < marker.end;
 }
 
+/* --------------------------------------------------------------------------
+ * Markers set by hand
+ *
+ * Both automatic routes are guesses, and a guess that is thirty seconds out is
+ * worse than none: the button lands mid-scene, or leaves the last bars of the
+ * titles playing every episode. Someone watching can see exactly where the
+ * intro ends, so they are allowed to say so, and what they say outranks both.
+ * ----------------------------------------------------------------------- */
+
+/** How late in an episode a hand-placed intro may still end. */
+export const MANUAL_LATEST_END = 3600;
+
+/** And how long it may run. Longer than this is not a title sequence. */
+export const MANUAL_MAX_LENGTH = 900;
+
+/**
+ * Which markers may overwrite which.
+ *
+ * Detection is two episodes sounding alike; learning is someone skipping the
+ * same place twice; manual is someone looking at the frame. Rank them and the
+ * rule that a marker set by hand survives the next background analysis stops
+ * being a special case anyone has to remember to write.
+ */
+const SOURCE_RANK = { detected: 0, learned: 1, manual: 2 };
+
+const rankOf = (source) => SOURCE_RANK[source] ?? 0;
+
+/** May a `next` marker be written over an `existing` one? */
+export function canReplaceMarker(existing, next) {
+  if (!existing) return true;
+  return rankOf(next) >= rankOf(existing);
+}
+
+/**
+ * Check a hand-placed marker before it is stored.
+ *
+ * The bounds are deliberately loose - far looser than the ones detection works
+ * within - because this is a person describing an episode they are watching,
+ * and the only judgements worth making here are the ones no episode could
+ * disagree with: an intro runs forwards, it is longer than a moment, and it is
+ * over before the episode is.
+ */
+export function normaliseManualMarker({ start, end }) {
+  const from = Number(start);
+  const to = Number(end);
+
+  if (!Number.isFinite(from) || !Number.isFinite(to)) {
+    return { ok: false, error: 'start and end must be numbers' };
+  }
+  if (from < 0) return { ok: false, error: 'start cannot be before the episode' };
+  if (to <= from) return { ok: false, error: 'the intro has to end after it starts' };
+  if (to - from > MANUAL_MAX_LENGTH) {
+    return { ok: false, error: `an intro longer than ${MANUAL_MAX_LENGTH / 60} minutes is not an intro` };
+  }
+  if (to > MANUAL_LATEST_END) return { ok: false, error: 'that is too late in the episode to be an intro' };
+
+  // Tenths are the finest thing the editor can express and the finest anyone
+  // can see; storing more would be recording the mouse, not the intro.
+  return { ok: true, start: Math.round(from * 10) / 10, end: Math.round(to * 10) / 10 };
+}
+
 export default {
   INTRO_WINDOW_SECONDS, MIN_INTRO_SECONDS, MAX_INTRO_SECONDS,
   AGREEMENT_TOLERANCE, REQUIRED_AGREEMENT,
-  introKey, isCandidateSkip, agreeOnIntro, shouldOfferSkip
+  MANUAL_LATEST_END, MANUAL_MAX_LENGTH,
+  introKey, episodeIntroKey, isCandidateSkip, agreeOnIntro, shouldOfferSkip,
+  canReplaceMarker, normaliseManualMarker
 };

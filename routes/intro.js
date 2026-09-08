@@ -1,17 +1,28 @@
 /**
- * GET  /api/intro?path=      — the intro marker for this episode, if one exists
- * POST /api/intro/skip       — record a skip that might teach us one
- * DELETE /api/intro?path=    — forget what was learned for this season
+ * GET    /api/intro?show=&season=&episode=  — the marker to use for this episode
+ * POST   /api/intro/skip                    — record a skip that might teach us one
+ * PUT    /api/intro                         — set one episode's timings by hand
+ * DELETE /api/intro?show=&season=&episode=  — forget an episode's, or the season's
  *
  * The player reports every forward jump that looks like someone skipping a
  * title sequence. Two that agree become a marker, and from then on the episode
  * offers a Skip Intro button.
+ *
+ * Markers live at two scopes and the narrower one wins. What is *learned* is a
+ * season: the same titles every week is the pattern being looked for, and one
+ * episode cannot establish it. What is *edited* is a single episode, because a
+ * run that opens cold one week and not the next puts its titles in a different
+ * place each time, and someone who has looked at the frames is describing the
+ * episode in front of them.
  */
 import express from 'express';
 import path from 'node:path';
 import { createLogger } from '../config/index.js';
 import { isInsideLibrary } from '../services/organizer.js';
-import { introKey, isCandidateSkip, agreeOnIntro } from '../services/intro.js';
+import {
+  introKey, episodeIntroKey, isCandidateSkip, agreeOnIntro,
+  canReplaceMarker, normaliseManualMarker
+} from '../services/intro.js';
 import { recordSkip, skipsFor, markerFor, saveMarker, forgetIntro } from '../db/intro.js';
 import { detectIntroForSeason } from '../services/introDetect.js';
 import * as scanner from '../services/scanner.js';
@@ -29,6 +40,15 @@ function keyFrom(query) {
   const season = Number(query.season);
   if (!Number.isFinite(showId) || !Number.isFinite(season)) return null;
   return introKey({ type: 'episode', item: { tmdb_id: showId }, season });
+}
+
+/** The key for one episode's own timings, when the player named an episode. */
+function episodeKeyFrom(query) {
+  const showId = Number(query.show);
+  const season = Number(query.season);
+  const episode = Number(query.episode);
+  if (![showId, season, episode].every(Number.isFinite)) return null;
+  return episodeIntroKey({ type: 'episode', item: { tmdb_id: showId }, season, episode });
 }
 
 /** Refuse anything outside the library, exactly as the stream routes do. */
@@ -89,9 +109,10 @@ function detectInBackground(key, showId, seasonNumber) {
         log.info(`no shared intro found for ${key}`);
         return;
       }
-      // Never over a learned marker: someone actually skipping is better
-      // evidence than two episodes sounding alike.
-      if (markerFor(key)?.source === 'learned') return;
+      // Never over better evidence. Someone actually skipping, and above that
+      // someone placing the marker themselves, both outrank two episodes
+      // sounding alike.
+      if (!canReplaceMarker(markerFor(key)?.source, 'detected')) return;
       saveMarker(key, { ...marker, source: 'detected', observations: 1 });
       log.info(`detected intro for ${key}: ${marker.start.toFixed(0)}s-${marker.end.toFixed(0)}s`);
     })
@@ -103,10 +124,19 @@ router.get('/', (req, res) => {
   const key = keyFrom(req.query);
   if (!key) return res.json({ marker: null });
 
+  /*
+   * An episode's own timings win outright, and stop the season being analysed
+   * on its behalf: the question detection would answer has already been
+   * answered here, better.
+   */
+  const episodeKey = episodeKeyFrom(req.query);
+  const own = episodeKey ? markerFor(episodeKey) : null;
+  if (own) return res.json({ marker: { ...own, scope: 'episode' } });
+
   const marker = markerFor(key);
   if (!marker) detectInBackground(key, Number(req.query.show), Number(req.query.season));
 
-  return res.json({ marker });
+  return res.json({ marker: marker ? { ...marker, scope: 'season' } : null });
 });
 
 router.post('/skip', (req, res) => {
@@ -129,10 +159,16 @@ router.post('/skip', (req, res) => {
 
   recordSkip({ key, filePath, from: Number(from), to: Number(to) });
 
-  // Recomputed from every observation rather than nudged, so one odd skip
-  // cannot drag an established marker along with it.
+  /*
+   * Recomputed from every observation rather than nudged, so one odd skip
+   * cannot drag an established marker along with it - and never written over a
+   * marker that was placed by hand. Skipping a title sequence that is already
+   * marked is ordinary watching, not a correction, and a hand-placed marker
+   * that quietly reverted to a learned one would be a bug with no symptom
+   * anyone could describe.
+   */
   const agreed = agreeOnIntro(skipsFor(key));
-  if (agreed) {
+  if (agreed && canReplaceMarker(markerFor(key)?.source, 'learned')) {
     saveMarker(key, { ...agreed, source: 'learned' });
     log.info(`learned intro for ${key}: ${agreed.start.toFixed(0)}s-${agreed.end.toFixed(0)}s `
       + `from ${agreed.observations} episodes`);
@@ -141,12 +177,58 @@ router.post('/skip', (req, res) => {
   return res.json({ recorded: true, marker: markerFor(key) });
 });
 
+/**
+ * Set one episode's timings by hand.
+ *
+ * Written against the episode, never the season. The two automatic routes both
+ * generalise - they have to, because a guess is only worth making where a
+ * pattern repeats - but a correction generalises to nothing: it is one person
+ * looking at one episode, and applying it to twenty-one others would replace a
+ * guess that is sometimes wrong with an assertion that is confidently wrong.
+ *
+ * Deliberately unconditional otherwise: this is the one route allowed to
+ * overwrite whatever sits at its key, because it is the only one where anyone
+ * has actually seen the frames.
+ */
+router.put('/', (req, res) => {
+  const { show, season, episode, start, end } = req.body || {};
+
+  const key = episodeKeyFrom({ show, season, episode });
+  if (!key) return res.status(400).json({ error: 'show, season and episode are required' });
+
+  const checked = normaliseManualMarker({ start, end });
+  if (!checked.ok) return res.status(400).json({ error: checked.error });
+
+  saveMarker(key, { start: checked.start, end: checked.end, source: 'manual', observations: 0 });
+  log.info(`intro set by hand for ${key}: ${checked.start.toFixed(1)}s-${checked.end.toFixed(1)}s`);
+
+  return res.json({ marker: { ...markerFor(key), scope: 'episode' } });
+});
+
+/**
+ * Forget an episode's own timings, or the whole season's.
+ *
+ * Which one depends on what exists: an episode that has been edited gives that
+ * up first and falls back to the season, and only then does asking again clear
+ * the season itself. Two meanings for one button, but they are the two the
+ * viewer wants in the order they want them - undo my edit, then forget the
+ * thing that was wrong in the first place.
+ */
 router.delete('/', (req, res) => {
   const key = keyFrom(req.query);
   if (!key) return res.status(400).json({ error: 'show and season are required' });
+
+  const episodeKey = episodeKeyFrom(req.query);
+  if (episodeKey && markerFor(episodeKey)) {
+    forgetIntro(episodeKey);
+    log.info(`forgot the hand-set intro for ${episodeKey}`);
+    const fallback = markerFor(key);
+    return res.json({ ok: true, scope: 'episode', marker: fallback ? { ...fallback, scope: 'season' } : null });
+  }
+
   forgetIntro(key);
   log.info(`forgot intro for ${key}`);
-  return res.json({ ok: true });
+  return res.json({ ok: true, scope: 'season', marker: null });
 });
 
 export default router;

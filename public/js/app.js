@@ -11,6 +11,7 @@ import {
 } from './state.js';
 import * as views from './views.js';
 import * as search from './search.js';
+import * as catalog from './catalog.js';
 import * as player from './player.js';
 import * as settings from './settings.js';
 import * as preview from './preview.js';
@@ -30,7 +31,7 @@ const RENDERERS = {
   home: views.renderHome,
   movies: views.renderMovies,
   shows: views.renderShows,
-  search: search.renderSearch,
+  search: catalog.renderCatalog,
   downloads: views.renderDownloads,
   settings: settings.renderSettings
 };
@@ -52,6 +53,29 @@ function render() {
   }
 }
 
+/* ---- entrance and hero rotation ----
+   Both are page-scoped: they start when Home is on screen and stop the moment
+   it is not, so nothing keeps ticking behind a player or a settings page. */
+let lastRenderedPage = null;
+let enterTimer = null;
+let heroTimer = null;
+
+const HERO_INTERVAL = 10000;
+
+function syncHeroRotation() {
+  clearInterval(heroTimer);
+  heroTimer = null;
+  if (state.currentPage !== 'home' || views.heroCount() < 2) return;
+  heroTimer = setInterval(() => {
+    // Not while a modal or the player is over it, and not while it is being
+    // read: the dot's fill pauses on hover, so the timer has to as well or the
+    // two would disagree about how long is left.
+    if (document.querySelector('#modal-root > *') || document.querySelector('#player-root > *')) return;
+    if (document.querySelector('.hero:hover')) return;
+    views.showHero(views.currentHeroIndex() + 1);
+  }, HERO_INTERVAL);
+}
+
 function renderInner(main) {
 
   // Rendering replaces the page wholesale, which drops focus and the caret.
@@ -66,6 +90,22 @@ function renderInner(main) {
   const renderer = RENDERERS[state.currentPage] || views.renderHome;
   main.innerHTML = `<div class="page">${renderer()}</div>`;
   views.updateShell();
+
+  /*
+   * Entrance animations belong to a page change, not to a render. Polling
+   * re-renders this element every few seconds, and without the gate every card
+   * on screen would restart its entrance each time - a page that flickers on
+   * its own is worse than one that never animates at all.
+   */
+  if (state.currentPage !== lastRenderedPage) {
+    lastRenderedPage = state.currentPage;
+    main.classList.remove('is-entering');
+    void main.offsetWidth;
+    main.classList.add('is-entering');
+    clearTimeout(enterTimer);
+    enterTimer = setTimeout(() => main.classList.remove('is-entering'), 1200);
+  }
+  syncHeroRotation();
 
   if (focusedId) {
     const restored = document.getElementById(focusedId);
@@ -214,6 +254,13 @@ function navigate(page) {
 const ACTIONS = {
   navigate: (el) => navigate(el.dataset.page),
 
+  /* Jumping to a dot also restarts the clock — otherwise the title you just
+     chose could be replaced a moment later by the tick already in flight. */
+  'hero-jump': (el) => {
+    views.showHero(Number(el.dataset.index) || 0);
+    syncHeroRotation();
+  },
+
 
   rescan: async () => {
     setState({ scanning: true });
@@ -273,57 +320,30 @@ const ACTIONS = {
    * Search for a title by TMDB id.
    *
    * Works for both library items and discovery items: the id is authoritative,
-   * so no title matching happens at all. Shows land on the Search page with the
-   * season and episode fields ready, which is the one place in the app that
-   * picks an episode.
+   * so no title matching happens at all. Shows open their season and episode list.
    */
-  'find-torrents': (el) => {
-    const type = el.dataset.type === 'show' ? 'show' : 'movie';
-    const title = el.dataset.title || '';
-    const tmdbId = Number(el.dataset.id) || null;
-
+  'find-torrents': (el) => ACTIONS['open-catalog'](el),
+  'open-discover': (el) => ACTIONS['open-catalog'](el),
+  'open-catalog': (el) => {
     setState({ currentItem: null });
-    patchSlice('search', { type, tmdbId, suggestions: [] });
     navigate('search');
-    search.runSearch(title, type, state.search.season, state.search.episode);
+    catalog.openTitle(Number(el.dataset.id), el.dataset.type === 'show' ? 'show' : 'movie');
   },
-
-  'open-discover': async (el) => {
-    const type = el.dataset.type === 'show' ? 'show' : 'movie';
-    const tmdbId = Number(el.dataset.id);
-    if (!Number.isFinite(tmdbId)) return;
-
-    try {
-      const details = await api.getDiscoverDetail(type, tmdbId);
-      const released = type === 'show' ? details.first_air_date : details.release_date;
-
-      setState({
-        currentItem: {
-          tmdb_id: details.id,
-          media_type: type,
-          owned: false,
-          title: type === 'show' ? details.name : details.title,
-          year: Number(String(released || '').slice(0, 4)) || null,
-          // Built here because the detail endpoint returns raw TMDB records;
-          // the sizes match config.tmdb posterSize/backdropSize/profileSize.
-          poster: details.poster_path ? `https://image.tmdb.org/t/p/w500${details.poster_path}` : null,
-          backdrop: details.backdrop_path ? `https://image.tmdb.org/t/p/w1280${details.backdrop_path}` : null,
-          rating: typeof details.vote_average === 'number' ? Number(details.vote_average.toFixed(1)) : null,
-          overview: details.overview || '',
-          genres: (details.genres || []).map((genre) => genre.name),
-          runtime: details.runtime || (details.episode_run_time || [])[0] || null,
-          cast: (details.credits?.cast || []).slice(0, 10).map((person) => ({
-            id: person.id,
-            name: person.name,
-            character: person.character || null,
-            profile: person.profile_path ? `https://image.tmdb.org/t/p/w185${person.profile_path}` : null
-          }))
-        }
-      });
-    } catch (error) {
-      views.toast('error', 'Could not load that title', error.message);
-    }
-  },
+  'catalog-query': (el) => patchSlice('catalog', { query: el.value }),
+  'catalog-year': (el) => patchSlice('catalog', { year: el.value }),
+  'catalog-filter': (el) => catalog.browse({ [el.dataset.field]: el.value, ...(el.dataset.field === 'type' ? { genre: '', genres: [] } : {}) }),
+  'catalog-reset': () => catalog.browse({ query: '', genre: '', year: '', rating: '', sort: 'popular' }),
+  'catalog-page': (el) => catalog.browse({ page: Number(el.dataset.page) }),
+  'catalog-back': () => { catalog.back(); catalog.ensureLoaded(); },
+  'catalog-genre-link': (el) => catalog.browse({ query: '', type: el.dataset.type, genre: el.dataset.genre }),
+  'catalog-season': (el) => catalog.selectSeason(Number(el.dataset.season)),
+  'catalog-retry-season': () => catalog.selectSeason(state.catalog.selectedSeason),
+  'catalog-retry-title': () => catalog.openTitle(state.catalog.title.id, state.catalog.title.type),
+  'catalog-download-movie': () => catalog.chooseDownload(),
+  'catalog-download-season': () => catalog.chooseDownload(null, true),
+  'catalog-download-episode': (el) => catalog.chooseDownload(Number(el.dataset.episode)),
+  'catalog-retry-download': () => catalog.retryDownload(),
+  'catalog-scroll-seasons': () => document.getElementById('catalog-seasons')?.scrollIntoView({ behavior: 'smooth' }),
 
   'add-torrent': () => {
     const magnet = window.prompt('Paste a magnet link or infohash');
@@ -338,46 +358,16 @@ const ACTIONS = {
       .catch((error) => views.toast('error', 'Could not add torrent', error.message));
   },
 
-  'run-search': () => {
-    const live = liveSearch();
-    patchSlice('search', { suggestions: [] });
-    search.runSearch(live.query, live.type, live.season, live.episode);
-  },
-
-  // Deliberately does not patch state on every keystroke: that would re-render
-  // the page under the caret. The typed value lives in the DOM and is read by
-  // liveSearch(); it is folded into state when suggestions land.
-  'suggest-input': (el) => {
-    if (state.search.tmdbId) patchSlice('search', { tmdbId: null });
-    scheduleSuggest(el.value);
-  },
-
-  'pick-suggestion': (el) => {
-    const entry = state.search.suggestions[Number(el.dataset.index)];
-    if (!entry) return;
-    const live = liveSearch();
-    patchSlice('search', {
-      query: entry.title, type: entry.type, tmdbId: entry.tmdb_id, suggestions: []
-    });
-    search.runSearch(entry.title, entry.type, live.season, live.episode);
-  },
-
-  // Switching to Show reveals the season/episode boxes, so this has to
-  // re-render rather than wait for the next search.
-  'set-search-type': (el) => {
-    patchSlice('search', { ...liveSearch(), type: el.value });
-  },
+  'run-search': () => catalog.browse(),
 
   'filter-quality': (el) => {
     patchSlice('search', {
-      ...liveSearch(),
       filters: { ...state.search.filters, quality: el.dataset.quality }
     });
   },
 
   'toggle-upscaled': (el) => {
     patchSlice('search', {
-      ...liveSearch(),
       filters: { ...state.search.filters, hideUpscaled: el.checked }
     });
   },
@@ -551,6 +541,14 @@ const ACTIONS = {
   'airplay': () => player.showAirplayPicker(),
   'cast': () => player.castToDevice(),
   'skip-intro': () => player.skipIntro(),
+  'open-intro-editor': () => player.openIntroEditor(),
+  'close-intro-editor': () => player.closeIntroEditor(),
+  'intro-zoom': (el) => player.zoomIntro(Number(el.dataset.direction)),
+  'intro-nudge': (el) => player.nudgeIntroEdge(el.dataset.edge, Number(el.dataset.delta)),
+  'intro-here': (el) => player.setIntroEdgeHere(el.dataset.edge),
+  'intro-play': (el) => player.playFromIntroEdge(el.dataset.edge),
+  'intro-save': () => player.saveIntroEdits(),
+  'intro-forget': () => player.forgetIntroMarker(),
   'prev-episode': () => player.playPrevious(),
   'next-episode': () => player.playNextEpisode(),
   'audio-nudge': (el) => player.nudgeAudioOffset(Number(el.dataset.delta)),
@@ -741,59 +739,6 @@ async function loadHoverFrame(card) {
   }
 }
 
-const SUGGEST_DEBOUNCE_MS = 250;
-let suggestTimer = null;
-let suggestSeq = 0;
-
-/**
- * Fetch suggestions 250ms after typing stops. Replies carry a sequence number
- * so a slow response for an older query cannot overwrite a newer one.
- */
-function scheduleSuggest(value) {
-  clearTimeout(suggestTimer);
-  const term = String(value || '').trim();
-
-  if (term.length < 2) {
-    if (state.search.suggestions.length > 0) patchSlice('search', { suggestions: [] });
-    return;
-  }
-
-  suggestTimer = setTimeout(async () => {
-    const seq = ++suggestSeq;
-    try {
-      const suggestions = await api.suggest(term);
-      // Carry the query too: the re-render reads it back out of state, and
-      // without it the box would revert to whatever was last searched.
-      if (seq === suggestSeq) patchSlice('search', { suggestions, query: term });
-    } catch {
-      // A failed lookup just leaves the dropdown closed.
-    }
-  }, SUGGEST_DEBOUNCE_MS);
-}
-
-/**
- * Whatever is in the search controls right now. Re-rendering the page would
- * otherwise discard anything the user has typed but not submitted yet, so
- * every action that triggers a re-render folds this back into state first.
- */
-function liveSearch() {
-  const read = (id, fallback) => {
-    const node = document.getElementById(id);
-    return node ? node.value : fallback;
-  };
-  const whole = (value, fallback) => {
-    const parsed = Number.parseInt(value, 10);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-  };
-
-  return {
-    query: read('search-input', state.search.query),
-    type: read('search-type', state.search.type),
-    season: whole(read('search-season', state.search.season), state.search.season),
-    episode: whole(read('search-episode', state.search.episode), state.search.episode)
-  };
-}
-
 /** Poll the library until a background scan finishes. */
 async function waitForScan(attempts = 40) {
   for (let i = 0; i < attempts; i += 1) {
@@ -874,14 +819,26 @@ function onKeyDown(event) {
       const value = event.target.value.trim();
       if (!value) return;
       navigate('search');
-      search.runSearch(value, state.search.type);
+      catalog.browse({ query: value, genre: '', year: '', rating: '' });
     }
     return;
   }
 
   if (event.key === '/' ) {
     event.preventDefault();
-    document.getElementById('global-search')?.focus();
+    /*
+     * The header field only exists on a phone now — on desktop the rail
+     * carries search instead. offsetParent is null for a display:none element,
+     * so this is how we tell whether there is anything to focus; without the
+     * check the shortcut silently did nothing on the widest screens.
+     */
+    const global = document.getElementById('global-search');
+    if (global && global.offsetParent !== null) {
+      global.focus();
+      return;
+    }
+    navigate('search');
+    requestAnimationFrame(() => document.getElementById('search-input')?.focus());
   }
 }
 
@@ -905,6 +862,7 @@ function onStateChange() {
   if (state.currentPage !== previousPage) {
     previousPage = state.currentPage;
     syncJobPolling();
+    if (state.currentPage === 'search') catalog.ensureLoaded();
 
     // Devices, login history and diagnostics are only worth fetching when the
     // page that shows them is open. Diagnostics walks the cache directories,
@@ -994,6 +952,7 @@ async function boot() {
     settings.startEncoderWatch();
   }
 
+  if (state.currentPage === 'search') catalog.ensureLoaded();
   await loadLibrary();
   await loadJobs();
 

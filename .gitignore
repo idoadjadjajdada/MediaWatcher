@@ -37,3 +37,8 @@ desktop.ini
 
 # Brainstorming artifacts
 .superpowers/
+
+# Desktop build staging and Windows executables
+.desktop-build/
+dist/
+test-results/

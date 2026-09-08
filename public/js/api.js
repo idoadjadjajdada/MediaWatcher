@@ -72,6 +72,8 @@ export const health = () => get('/api/health');
 export const getLibrary = () => get('/api/media/library');
 export const getDiscover = (force = false) => get(`/api/discover?${q({ force: force ? 1 : '' })}`);
 export const getDiscoverDetail = (type, tmdbId) => get(`/api/discover/${type}/${tmdbId}`);
+export const getCatalog = (params) => get(`/api/discover/catalog?${q(params)}`);
+export const getCatalogSeason = (id, season) => get(`/api/discover/show/${id}/season/${season}`);
 export const rescan = (force = false) => post(`/api/media/rescan?${q({ force: force ? 1 : '' })}`);
 export const refreshItem = (tmdbId, type) => get(`/api/media/refresh/${tmdbId}?${q({ type })}`);
 
@@ -273,14 +275,30 @@ export const endHlsSession = (sessionId) => del(`/api/hls/${sessionId}`);
  * Intro markers
  * ----------------------------------------------------------------------- */
 
-/** The learned intro for a show and season, or null. */
-export const getIntro = (show, season) => get(`/api/intro?${q({ show, season })}`);
+/**
+ * The timings to use for one episode, or null.
+ *
+ * The episode is part of the question, not decoration: an episode that has been
+ * edited by hand answers with its own timings, and only an episode that has not
+ * falls back to what the season learned.
+ */
+export const getIntro = (show, season, episode) => get(`/api/intro?${q({ show, season, episode })}`);
 
 /** Report a jump that might be someone skipping the title sequence. */
 export const reportSkip = (payload) => post('/api/intro/skip', payload);
 
-/** Forget what was learned, when the offer turns out to be wrong. */
-export const forgetIntro = (show, season) => del(`/api/intro?${q({ show, season })}`);
+/** Set one episode's timings by hand. Outranks anything learned or detected. */
+export const saveIntro = (show, season, episode, { start, end }) =>
+  put('/api/intro', { show, season, episode, start, end });
+
+/**
+ * Forget the offer when it turns out to be wrong.
+ *
+ * Naming an episode gives up that episode's own timings first and falls back to
+ * the season's; asking again, with the season now in force, forgets that too.
+ */
+export const forgetIntro = (show, season, episode) =>
+  del(`/api/intro?${q({ show, season, episode })}`);
 
 /* --------------------------------------------------------------------------
  * Remembered track choices
@@ -469,7 +487,7 @@ export default {
   subtitleCapabilities, searchSubtitles, fetchSubtitle, fetchSeasonSubtitles,
   getQuality, setQuality, QUALITY_LEVELS,
   thumbMetaUrl, thumbUrl, touchHlsSession, endHlsSession,
-  getIntro, reportSkip, forgetIntro,
+  getIntro, reportSkip, saveIntro, forgetIntro,
   getTrackPrefs, saveTrackPrefs, forgetTrackPrefs,
   getDevices, revokeDevice, getLoginHistory, createEnrolment, cancelEnrolments, qrUrl, createEnrolment, cancelEnrolments, qrUrl, getDiagnostics, getEncoders, killEncoder,
   getServerLog, getEnv, saveEnv, restartServer, getBenchmark, runBenchmark,

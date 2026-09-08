@@ -211,6 +211,33 @@ export async function suggest(query, limit = 8) {
     .slice(0, limit);
 }
 
+/** Genre IDs differ between movies and TV; never reuse one type's list. */
+export function getGenres(type) {
+  const kind = type === 'show' ? 'tv' : 'movie';
+  return memo(`genres:${kind}`, async () => (await request(`/genre/${kind}/list`)).genres || []);
+}
+
+/** A page of titles, separate from the release/indexer search. */
+export function catalogPage({ query = '', type = 'movie', genre = '', year = '', rating = 0, sort = 'popular', page = 1 } = {}) {
+  const kind = type === 'show' ? 'tv' : 'movie';
+  const params = { page, include_adult: false };
+  const searching = Boolean(query.trim());
+  if (searching) {
+    params.query = query.trim();
+    if (year) params[kind === 'tv' ? 'first_air_date_year' : 'primary_release_year'] = year;
+  } else {
+    if (genre) params.with_genres = genre;
+    if (year) params[kind === 'tv' ? 'first_air_date_year' : 'primary_release_year'] = year;
+    if (rating) params['vote_average.gte'] = rating;
+    params.sort_by = sort === 'rating' ? 'vote_average.desc'
+      : sort === 'newest' ? (kind === 'tv' ? 'first_air_date.desc' : 'primary_release_date.desc') : 'popularity.desc';
+    if (rating || sort === 'rating') params['vote_count.gte'] = 50;
+    params[kind === 'tv' ? 'first_air_date.lte' : 'primary_release_date.lte'] = new Date().toISOString().slice(0, 10);
+  }
+  const endpoint = `/${searching ? 'search' : 'discover'}/${kind}`;
+  return memo(`catalog:${endpoint}:${JSON.stringify(params)}`, () => request(endpoint, params));
+}
+
 /* --------------------------------------------------------------------------
  * Discovery lists
  *

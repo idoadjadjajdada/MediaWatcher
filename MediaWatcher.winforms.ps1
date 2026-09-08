@@ -130,6 +130,13 @@ $form.BackColor = $C.Bg
 $form.ForeColor = $C.Text
 $form.Font = $FontUi
 
+# The mark, for the title bar and the task bar. Guarded rather than assumed:
+# the window has to open on a checkout where the icons were never generated.
+$IconFile = Join-Path $Root "public\icons\app.ico"
+if (Test-Path $IconFile) {
+  try { $form.Icon = New-Object System.Drawing.Icon($IconFile) } catch { }
+}
+
 # --- header ---------------------------------------------------------------
 $header = New-Object System.Windows.Forms.Panel
 $header.Size = New-Object System.Drawing.Size(1000, 62)
@@ -138,14 +145,40 @@ $header.BackColor = $C.Panel
 $header.Anchor = "Top,Left,Right"
 $form.Controls.Add($header)
 
-$mark = New-Object System.Windows.Forms.Label
-$mark.Text = [char]0x25B6
-$mark.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
-$mark.ForeColor = [System.Drawing.Color]::White
-$mark.BackColor = $C.Accent
-$mark.TextAlign = "MiddleCenter"
-$mark.Size = New-Object System.Drawing.Size(34, 34)
-$mark.Location = New-Object System.Drawing.Point(18, 14)
+# The mark itself where the icons exist, and the play glyph it used to be where
+# they do not, so the header is never an empty hole on a fresh checkout.
+#
+# Read through a stream rather than Image.FromFile, which holds the file open
+# for as long as the picture lives - that would lock the very file
+# tools/make-icons.mjs rewrites, and the launcher is exactly what is open when
+# someone changes the logo.
+$MarkFile = Join-Path $Root "public\icons\mark.png"
+$markImage = $null
+if (Test-Path $MarkFile) {
+  try {
+    $markBytes = [System.IO.File]::ReadAllBytes($MarkFile)
+    $markStream = New-Object System.IO.MemoryStream(,$markBytes)
+    $markImage = [System.Drawing.Image]::FromStream($markStream)
+  } catch { $markImage = $null }
+}
+
+if ($null -ne $markImage) {
+  $mark = New-Object System.Windows.Forms.PictureBox
+  $mark.Image = $markImage
+  # Zoom keeps the mark's proportions inside the box, and the panel colour shows
+  # through the cut-out background rather than a black square sitting on it.
+  $mark.SizeMode = "Zoom"
+  $mark.BackColor = $C.Panel
+} else {
+  $mark = New-Object System.Windows.Forms.Label
+  $mark.Text = [char]0x25B6
+  $mark.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+  $mark.ForeColor = [System.Drawing.Color]::White
+  $mark.BackColor = $C.Accent
+  $mark.TextAlign = "MiddleCenter"
+}
+$mark.Size = New-Object System.Drawing.Size(30, 44)
+$mark.Location = New-Object System.Drawing.Point(20, 9)
 $header.Controls.Add($mark)
 
 $title = New-Object System.Windows.Forms.Label
