@@ -35,6 +35,9 @@ desktop.ini
 .vscode/
 .idea/
 
+# Local reference notes; kept on disk, out of the repository
+docs/claude info.md
+
 # Brainstorming artifacts
 .superpowers/
 
