@@ -329,8 +329,9 @@ const ACTIONS = {
     navigate('search');
     catalog.openTitle(Number(el.dataset.id), el.dataset.type === 'show' ? 'show' : 'movie');
   },
-  'catalog-query': (el) => patchSlice('catalog', { query: el.value }),
-  'catalog-year': (el) => patchSlice('catalog', { year: el.value }),
+  // Typing is not a state change; see the note on the draft in catalog.js.
+  'catalog-query': (el) => catalog.edit('query', el.value),
+  'catalog-year': (el) => catalog.edit('year', el.value),
   'catalog-filter': (el) => catalog.browse({ [el.dataset.field]: el.value, ...(el.dataset.field === 'type' ? { genre: '', genres: [] } : {}) }),
   'catalog-reset': () => catalog.browse({ query: '', genre: '', year: '', rating: '', sort: 'popular' }),
   'catalog-page': (el) => catalog.browse({ page: Number(el.dataset.page) }),

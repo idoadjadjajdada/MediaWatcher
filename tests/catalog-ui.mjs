@@ -167,6 +167,49 @@ try {
   await page.evaluate(async () => { const { setState } = await import('/js/state.js'); setState({ library: { movies: [], shows: [], unknown: [] }, currentPage: 'home' }); });
   await page.getByText('Recommended for you', { exact: true }).waitFor();
   assert.equal(await page.getByText('Recently added', { exact: true }).count(), 0);
+
+  // Typing must not rebuild the page under the caret.
+  await page.evaluate(async () => { const { setState } = await import('/js/state.js'); setState({ currentPage: 'search' }); });
+  await page.locator('.catalog-card').first().waitFor();
+  await page.locator('[data-action="catalog-reset"]').click();
+  await page.locator('.catalog-card').first().waitFor();
+  const stability = await page.evaluate(async () => {
+    const input = document.getElementById('search-input');
+    const grid = document.querySelector('.catalog-grid');
+    const poster = document.querySelector('.catalog-card');
+    input.focus();
+    for (const character of 'aliens') {
+      input.value += character;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    // Deleting from the middle: "aliens" without the "en".
+    input.setSelectionRange(3, 5);
+    input.setRangeText('', 3, 5, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    return {
+      value: input.value, caret: input.selectionStart,
+      sameGrid: grid === document.querySelector('.catalog-grid'),
+      samePoster: poster === document.querySelector('.catalog-card'),
+      focused: document.activeElement === input
+    };
+  });
+  assert.deepEqual(stability, { value: 'alis', caret: 3, sameGrid: true, samePoster: true, focused: true });
+  // What was typed is what gets searched for, whether by Enter or by a filter.
+  await page.locator('#search-input').press('Enter');
+  await page.locator('.catalog-card').first().waitFor();
+  assert.equal(queries.at(-1).q, 'alis');
+  await page.locator('#search-input').fill('aliens');
+  await page.locator('#catalog-rating').selectOption('7');
+  await page.locator('.catalog-card').first().waitFor();
+  assert.equal(queries.at(-1).q, 'aliens', 'a filter carries the text already typed');
+  assert.equal(queries.at(-1).rating, '7');
+  await page.locator('[data-action="catalog-reset"]').click();
+  await page.locator('.catalog-card').first().waitFor();
+  assert.equal(await page.locator('#search-input').inputValue(), '');
+  assert.equal(queries.at(-1).q, undefined, 'reset clears the field and the search');
+  console.log('PASS: typing in search leaves the results, the posters and the caret alone');
+
   assert.deepEqual(errors, []);
   console.log('PASS: Home, title catalog, filters, paging, movie/season/episode payloads, specials, upcoming episodes, status, stale details, retry and mobile layout');
 } catch (error) {

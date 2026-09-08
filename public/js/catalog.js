@@ -11,6 +11,25 @@ const artwork = (path, size = 'w500') => path ? `https://image.tmdb.org/t/p/${si
 const ownedTitle = (id, type) => type === 'show' ? findShow(Number(id)) : findMovie(Number(id));
 const aired = date => Boolean(date && date <= new Date().toISOString().slice(0, 10));
 
+/*
+ * What is typed in the toolbar, before anything is searched for.
+ *
+ * Deliberately not state. Rendering replaces the page wholesale, so putting a
+ * keystroke in state meant every letter threw away the results grid and every
+ * poster in it and built them again — the caret survived, the flicker did not
+ * go unnoticed. Nothing reads the half-typed text until a search runs, so the
+ * fields keep their own value and the page stays still while you type.
+ */
+const draft = { query: '', year: '' };
+
+export function edit(field, value) {
+  if (field in draft) draft[field] = String(value ?? '');
+}
+
+export function drafted(field) {
+  return draft[field];
+}
+
 export function ensureLoaded() {
   if (state.catalog.status === 'idle' && !state.catalog.title) browse();
 }
@@ -18,8 +37,12 @@ export function ensureLoaded() {
 export async function browse(patch = {}) {
   const token = ++browseRequest;
   back();
-  patchSlice('catalog', { ...patch, page: patch.page || 1, status: 'loading', error: null, results: [] });
+  // Whatever is in the fields is part of every search, whether it was typed
+  // and submitted or typed and then filtered by; an explicit patch still wins.
+  patchSlice('catalog', { query: draft.query, year: draft.year, ...patch, page: patch.page || 1, status: 'loading', error: null, results: [] });
   const c = state.catalog;
+  draft.query = c.query;
+  draft.year = c.year;
   try {
     const data = await api.getCatalog({ q: c.query, type: c.type, genre: c.genre, year: c.year, rating: c.rating, sort: c.sort, page: c.page });
     if (token !== browseRequest) return;
@@ -110,12 +133,12 @@ export function renderCatalog() {
   const option = (value, label, current) => `<option value="${esc(value)}"${String(value) === String(current) ? ' selected' : ''}>${esc(label)}</option>`;
   return `<div class="page__head"><div><h1 class="t-hero">Search</h1><p class="t-meta">Find your next watch. Browse by title, genre, year, or rating.</p></div></div>
     <div class="search-toolbar catalog-toolbar">
-      <div class="search-toolbar__row"><input class="input" id="search-input" data-action="catalog-query" value="${esc(c.query)}" placeholder="Search a title or genre…" aria-label="Search titles or genres" autocomplete="off">
+      <div class="search-toolbar__row"><input class="input" id="search-input" data-action="catalog-query" value="${esc(drafted('query'))}" placeholder="Search a title or genre…" aria-label="Search titles or genres" autocomplete="off">
         <button class="btn btn--primary" data-action="run-search">${icon('search', 'icon-sm')} Search</button></div>
       <div class="catalog-filters">
         <label>Type<select class="select" id="catalog-type" data-action="catalog-filter" data-field="type">${option('movie', 'Movies', c.type)}${option('show', 'Series', c.type)}</select></label>
         <label>Genre<select class="select" id="catalog-genre" data-action="catalog-filter" data-field="genre">${option('', 'All genres', c.genre)}${c.genres.map(g => option(g.id, g.name, c.genre)).join('')}</select></label>
-        <label>Year<input class="input" id="catalog-year" data-action="catalog-year" value="${esc(c.year)}" type="number" min="1870" max="2200" placeholder="Any year"></label>
+        <label>Year<input class="input" id="catalog-year" data-action="catalog-year" value="${esc(drafted('year'))}" type="number" min="1870" max="2200" placeholder="Any year"></label>
         <label>Rating<select class="select" id="catalog-rating" data-action="catalog-filter" data-field="rating">${option('', 'Any rating', c.rating)}${[6, 7, 8, 9].map(r => option(r, `${r}+ stars`, c.rating)).join('')}</select></label>
         <label>Sort<select class="select" id="catalog-sort" data-action="catalog-filter" data-field="sort"${c.query ? ' disabled title="Title searches are ordered by relevance"' : ''}>${c.query ? option(c.sort, 'Relevance', c.sort) : option('popular', 'Popular', c.sort) + option('rating', 'Top rated', c.sort) + option('newest', 'Newest', c.sort)}</select></label>
         <button class="btn btn--ghost" data-action="catalog-reset">Reset</button>
