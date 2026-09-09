@@ -21,14 +21,13 @@
 !include LogicLib.nsh
 !include FileFunc.nsh
 
-Var mwDialog
-Var mwUpdateOption
-Var mwRepairOption
-Var mwUninstallOption
-Var mwInstalledVersion
-Var mwUninstallCommand
-
 !macro customWelcomePage
+  Var mwUpdateOption
+  Var mwRepairOption
+  Var mwUninstallOption
+  Var mwInstalledVersion
+  Var mwUninstallCommand
+
   Page custom mwMaintenanceShow mwMaintenanceLeave
 
   Function mwMaintenanceShow
@@ -60,8 +59,8 @@ Var mwUninstallCommand
     ${EndIf}
 
     nsDialogs::Create 1018
-    Pop $mwDialog
-    ${If} $mwDialog == error
+    Pop $0
+    ${If} $0 == error
       Abort
     ${EndIf}
 
