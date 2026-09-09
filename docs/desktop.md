@@ -102,10 +102,28 @@ in one place and the app and the build follow.
   anything else, and is stored in `desktop.json`. It cannot be changed while an
   update is downloaded and waiting.
 
-To publish an update: raise `version` in `package.json`, run `npm run dist`, and
-attach `dist/MediaWatcher-Setup-<version>-x64.exe`, `latest.yml` and the
-installer's `.blockmap` to a public GitHub release. A release missing
-`latest.yml` is invisible to the app.
+### Publishing one
+
+```powershell
+# raise "version" in package.json, then write that version's section in CHANGELOG.md
+npm run release
+```
+
+`tools/release.mjs` builds the installer and creates the GitHub release from
+one commit, and refuses rather than publishing something half-formed:
+
+- the working tree must be clean and pushed, so the tag names a commit that
+  exists somewhere other than this machine;
+- `CHANGELOG.md` must have a `## <version>` section, which becomes the release
+  notes verbatim — an installer with no notes asks people to close what they
+  are watching without saying what for;
+- the build must have produced the installer, its `.blockmap` and a
+  `latest.yml` that names that installer. A release missing `latest.yml` is
+  invisible to every installed copy, and one whose `latest.yml` names a
+  different build sends them after a file that is not there;
+- the version must not already be released.
+
+`--dry-run` builds and checks all of that without publishing.
 
 ## Desktop behavior
 

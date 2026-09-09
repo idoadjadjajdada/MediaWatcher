@@ -32,7 +32,7 @@ frontend build step; the Windows desktop edition packages the same UI in Electro
 ## Windows desktop application
 
 Build a Windows installer with `npm install` followed by `npm run dist`.
-The result is `dist/MediaWatcher-Setup-1.0.2-x64.exe`, with Node.js, SQLite,
+The result is `dist/MediaWatcher-Setup-<version>-x64.exe`, with Node.js, SQLite,
 FFmpeg and FFprobe included. Installed users do not need Node, npm, a terminal,
 or the old PowerShell launcher.
 
