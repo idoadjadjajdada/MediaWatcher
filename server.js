@@ -296,6 +296,17 @@ const server = app.listen(config.port, config.host, () => {
     log.info(available
       ? 'ffmpeg found — incompatible files will be remuxed on the fly'
       : 'ffmpeg NOT found — files will be served as raw bytes only, so MKV/HEVC/DTS may not play. Install ffmpeg or set FFMPEG_PATH.');
+    if (!available) return;
+    /*
+     * Ask what this machine can do now, rather than while somebody waits.
+     *
+     * Both answers are cached for the life of the process and both cost a real
+     * ffmpeg run to establish — seconds, spent on the first play, in front of a
+     * black player. They are wanted by then, and nobody is waiting for them
+     * here.
+     */
+    transcoder.hardwareEncoder().catch(() => {});
+    transcoder.gpuTonemap().catch(() => {});
   });
 });
 

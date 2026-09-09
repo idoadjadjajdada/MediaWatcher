@@ -31,6 +31,7 @@ const SUITES = [
   { file: 'player-nextup.test.mjs' },
   { file: 'player-gestures.test.mjs' },
   { file: 'tonemap.test.mjs' },
+  { file: 'gpu-tonemap.test.mjs' },
   { file: 'thumbnails.test.mjs' },
   { file: 'mp4cache.test.mjs' },
   { file: 'encoder-registry.test.mjs' },

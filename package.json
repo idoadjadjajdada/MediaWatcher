@@ -1,6 +1,6 @@
 {
   "name": "mediawatcher",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "private": true,
   "description": "Self-hosted media library with TMDB metadata enrichment, file organization and a built-in player.",
   "type": "module",

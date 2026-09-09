@@ -22,7 +22,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import config, { createLogger } from '../config/index.js';
-import { probe, isAvailable, hardwareEncoder, isHdr, tonemapChain } from './transcoder.js';
+import { probe, isAvailable, hardwareEncoder, gpuTonemap, isHdr, tonemapChain } from './transcoder.js';
+import { gpuTonemapInputArgs, gpuTonemapChain } from './gpuTonemap.js';
 import { cacheKey } from './thumbnails.js';
 import * as ffmpegPool from './ffmpegPool.js';
 import { createProgressReader } from './ffmpegProgress.js';
@@ -74,9 +75,14 @@ export function pickVariant(video, caps = {}) {
  * output, which is why this is a background job rather than something done in
  * the request path.
  */
-export function variantArgs(input, output, variant, { video, audioIndex = 0, encoder = null } = {}) {
+export function variantArgs(input, output, variant, { video, audioIndex = 0, encoder = null, gpu = false } = {}) {
+  // The whole point of this cache is that it is paid once, ahead of time — but
+  // an HDR film tone mapped on the CPU takes longer than the film runs, so it
+  // is worth doing here too.
+  const onGpu = gpu && variant !== VARIANT_COPY && isHdr(video);
   const args = [
     '-hide_banner', '-loglevel', 'error', '-y',
+    ...(onGpu ? gpuTonemapInputArgs() : []),
     '-i', input,
     '-map', '0:v:0', '-map', `0:a:${audioIndex}?`,
     '-sn', '-dn'
@@ -86,7 +92,9 @@ export function variantArgs(input, output, variant, { video, audioIndex = 0, enc
     args.push('-c:v', 'copy');
   } else {
     const height = Number(video?.height) || null;
-    if (isHdr(video)) {
+    if (onGpu) {
+      args.push('-vf', gpuTonemapChain(height, H264_MAX_HEIGHT));
+    } else if (isHdr(video)) {
       args.push('-vf', tonemapChain(height, H264_MAX_HEIGHT));
     } else if (height && height > H264_MAX_HEIGHT) {
       args.push('-vf', `scale=-2:${H264_MAX_HEIGHT}`);
@@ -208,10 +216,11 @@ async function convert(filePath, target, variant) {
   } catch { /* unmeasurable: proceed, see services/diskspace.js */ }
 
   const encoder = variant === VARIANT_H264 ? await hardwareEncoder() : null;
+  const gpu = variant === VARIANT_H264 && isHdr(info.video) ? await gpuTonemap() : false;
   const partial = `${target}.part`;
   fs.mkdirSync(path.dirname(target), { recursive: true });
 
-  const args = variantArgs(filePath, partial, variant, { video: info.video, encoder });
+  const args = variantArgs(filePath, partial, variant, { video: info.video, encoder, gpu });
 
   /*
    * Somewhere else first, if there is a somewhere else.

@@ -13,7 +13,7 @@ import { segmentCount, SEGMENT_SECONDS } from './playlist.js';
 import {
   sessionKey, contentKey, nextRunSeconds, nextAction, completedThrough, segmentsToPrune
 } from './session.js';
-import { buildSegmentArgs, hardwareEncoder } from '../transcoder.js';
+import { buildSegmentArgs, hardwareEncoder, gpuTonemap } from '../transcoder.js';
 import * as ffmpegPool from '../ffmpegPool.js';
 import { createProgressReader } from '../ffmpegProgress.js';
 import * as segmentStore from './segmentStore.js';
@@ -107,6 +107,8 @@ async function startEncoder(session, startSegment) {
   );
 
   const encoder = await hardwareEncoder();
+  // Only asked for when it matters: an SDR file never reaches the tone mapper.
+  const gpu = session.tonemap ? await gpuTonemap() : false;
   if (session.destroyed) return;
   const args = buildSegmentArgs(session.filePath, {
     startSegment,
@@ -114,6 +116,7 @@ async function startEncoder(session, startSegment) {
     audioIndex: session.audioIndex,
     audioOffset: session.audioOffset,
     tonemap: session.tonemap,
+    gpu,
     height: session.sourceHeight,
     maxHeight: session.maxHeight,
     maxrate: session.maxrate,

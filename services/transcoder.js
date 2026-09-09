@@ -19,6 +19,7 @@ import config, { createLogger } from '../config/index.js';
 import { parseBitrate } from './quality.js';
 import { SEGMENT_SECONDS } from './hls/playlist.js';
 import { findHardwareEncoder } from './hardwareEncoder.js';
+import { probeGpuTonemap, gpuTonemapInputArgs, gpuTonemapChain } from './gpuTonemap.js';
 
 const log = createLogger('transcoder');
 
@@ -207,6 +208,32 @@ export function hardwareEncoder() {
   });
 
   return hwEncoder;
+}
+
+let gpuTonemapping;
+
+/**
+ * Whether tone mapping can happen on the GPU.
+ *
+ * The CPU chain measured at 1.05x realtime on a 4K HDR file — slower than
+ * watching it — and the GPU at 3.57x. That is the difference between a stream
+ * that stalls and one that stays ahead, so it is worth a probe at startup.
+ */
+export function gpuTonemap() {
+  if (gpuTonemapping !== undefined) return gpuTonemapping;
+  if (!config.ffmpeg.hardwareEncode) {
+    gpuTonemapping = Promise.resolve(false);
+    return gpuTonemapping;
+  }
+
+  gpuTonemapping = probeGpuTonemap(config.ffmpeg.ffmpegPath).then((usable) => {
+    log.info(usable
+      ? 'HDR tone mapping verified on the GPU'
+      : 'HDR tone mapping will run on the CPU — expect slower than realtime on 4K');
+    return usable;
+  });
+
+  return gpuTonemapping;
 }
 
 /* --------------------------------------------------------------------------
@@ -405,7 +432,7 @@ export function decide(info, caps = {}, options = {}) {
 
 export function buildArgs(filePath, {
   mode, startSeconds = 0, audioIndex = 0, audioOffset = 0,
-  tonemap = false, height = null, encoder = null,
+  tonemap = false, height = null, encoder = null, gpu = false,
   maxHeight = null, maxrate = null
 }) {
   const args = ['-hide_banner', '-loglevel', 'error'];
@@ -414,7 +441,10 @@ export function buildArgs(filePath, {
   // GPU decode feeds the tone map without a round trip through the CPU decoder.
   // Only for NVENC: the qsv and amf paths need their own filter plumbing, and
   // falling back to a plain CPU decode there is correct, just slower.
-  if (tonemap && encoder === 'h264_nvenc') args.push('-hwaccel', 'cuda');
+  // Vulkan carries the frames all the way to the filter; the CUDA hint below
+  // only ever helped the decode half, and the two cannot be mixed.
+  if (tonemap && gpu) args.push(...gpuTonemapInputArgs());
+  else if (tonemap && encoder === 'h264_nvenc') args.push('-hwaccel', 'cuda');
 
   // Seeking before -i is the fast path: ffmpeg jumps rather than decoding to
   // the timestamp. With -c copy it lands on the nearest keyframe.
@@ -443,7 +473,9 @@ export function buildArgs(filePath, {
       // tonemapChain already emits a scale step, so the cap is handed to it
       // rather than added separately — two scale filters would be wasteful and
       // the second would fight the first.
-      args.push('-vf', tonemapChain(height, maxHeight ?? TONEMAP_MAX_HEIGHT));
+      args.push('-vf', gpu
+        ? gpuTonemapChain(height, maxHeight ?? TONEMAP_MAX_HEIGHT)
+        : tonemapChain(height, maxHeight ?? TONEMAP_MAX_HEIGHT));
     } else if (maxHeight && (!Number.isFinite(height) || height > maxHeight)) {
       // -2 keeps the width even, which H.264 requires.
       args.push('-vf', `scale=-2:${maxHeight}`);
@@ -516,13 +548,16 @@ export function buildArgs(filePath, {
 export function buildSegmentArgs(filePath, {
   startSegment = 0, outputPattern, audioIndex = 0, audioOffset = 0,
   tonemap = false, height = null, maxHeight = null, maxrate = null, encoder = null,
-  durationSeconds = null
+  durationSeconds = null, gpu = false
 }) {
   const startSeconds = startSegment * SEGMENT_SECONDS;
   const args = ['-hide_banner', '-loglevel', 'error'];
   const offset = clampAudioOffset(audioOffset);
 
-  if (tonemap && encoder === 'h264_nvenc') args.push('-hwaccel', 'cuda');
+  // Vulkan carries the frames all the way to the filter; the CUDA hint below
+  // only ever helped the decode half, and the two cannot be mixed.
+  if (tonemap && gpu) args.push(...gpuTonemapInputArgs());
+  else if (tonemap && encoder === 'h264_nvenc') args.push('-hwaccel', 'cuda');
 
   const seek = () => { if (startSeconds > 0) args.push('-ss', String(startSeconds)); };
 
@@ -543,7 +578,9 @@ export function buildSegmentArgs(filePath, {
   args.push('-sn', '-dn', '-map_chapters', '-1');
 
   if (tonemap) {
-    args.push('-vf', tonemapChain(height, maxHeight ?? TONEMAP_MAX_HEIGHT));
+    args.push('-vf', gpu
+      ? gpuTonemapChain(height, maxHeight ?? TONEMAP_MAX_HEIGHT)
+      : tonemapChain(height, maxHeight ?? TONEMAP_MAX_HEIGHT));
   } else if (maxHeight && (!Number.isFinite(height) || height > maxHeight)) {
     args.push('-vf', `scale=-2:${maxHeight}`);
   }

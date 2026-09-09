@@ -457,12 +457,16 @@ correct track spends the credibility that makes the true ones worth reading.
 
 ### Known limits
 
-- **Hardware encoding is used for tone mapping only.** `transcoder.js` finds
-  NVENC, QSV or AMF and uses it when tone mapping, where the CPU is already
-  busy with the colour conversion; an ordinary HEVC → H.264 transcode still
-  runs on libx264. **Settings → Performance → This machine** measures both, so
-  the gap is a number rather than a guess — 1.48x against 2.14x on the machine
-  this was written on.
+- **HDR is the expensive case, and it is now the GPU's problem.** Tone mapping
+  on the CPU converts every frame to 32-bit float per channel, which on a 4K
+  file measured at 1.05x realtime — the encoder producing barely more video
+  than the person is watching, so any hiccup became a stall it never recovered
+  from. Where the machine can do it, the frames are decoded into Vulkan memory
+  and scaled and tone mapped by libplacebo without leaving the GPU: 3.57x on
+  the same file. It is probed at startup rather than assumed, because a build
+  can list the filter and still fail on the driver, and anything short of a
+  probe that produces real video falls back to the CPU chain.
+  **Settings → Performance → This machine** measures what yours does.
 - **Bitmap subtitles (PGS/VobSub) cannot be shown.** They are images, and turning
   them into WebVTT would need OCR. Text-based tracks (SRT, ASS, embedded SubRip)
   are fine.

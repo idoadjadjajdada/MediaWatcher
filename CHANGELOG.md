@@ -7,6 +7,34 @@ release carrying these notes and the Windows installer built from that commit �
 Versions follow [semantic versioning](https://semver.org): the minor number
 moves for new behaviour, the patch number for fixes alone.
 
+## 1.4.0
+
+### Fixed
+
+- **HDR films stuttered the whole way through, and now they do not.** The
+  cause was not the player: tone mapping ran on the CPU, converting every frame
+  to 32-bit float per channel, and on a 4K HDR file that encodes at 1.05x
+  realtime — slower than watching it. The encoder could never get ahead, so the
+  buffer emptied every few seconds for the length of the film, and the bigger
+  the file the worse it got.
+
+  Where the machine can do it, those frames are now decoded into Vulkan memory
+  and scaled and tone mapped by libplacebo without ever leaving the GPU. Same
+  file, same sixty seconds, measured through the real player: 28 seconds of
+  video played before, 64 seconds after; two segments produced, against twelve;
+  a buffer that sat empty for twenty seconds at a time, against one that holds
+  thirty to forty seconds ahead.
+
+  It is probed at startup, not assumed — a build can list the filter and still
+  fail on the driver, and several of these pipelines report success while
+  writing no video at all, so the probe insists on real output. Anything short
+  of that keeps the CPU chain, which is slow but works everywhere. SDR files
+  never touch any of it.
+- **The first play of a session no longer waits for the machine to be
+  measured.** Which encoder and which tone mapper this machine can use are both
+  established by running ffmpeg, and both were established on first use — in
+  front of a black player. They are asked for at startup now.
+
 ## 1.3.1
 
 ### Fixed
