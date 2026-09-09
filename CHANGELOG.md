@@ -7,6 +7,17 @@ release carrying these notes and the Windows installer built from that commit �
 Versions follow [semantic versioning](https://semver.org): the minor number
 moves for new behaviour, the patch number for fixes alone.
 
+## Unreleased
+
+### Fixed
+
+- The close prompt no longer times out while it is on screen. The shell hides
+  the window by itself if the prompt cannot be drawn — a crashed renderer, or a
+  page mid-navigation — and that fallback was on a timer rather than an answer,
+  so reopening the window from the tray while the question was up saw it vanish
+  again four seconds later. The prompt now says when it has appeared, and the
+  fallback stops running.
+
 ## 1.1.0
 
 The first published build of the Windows desktop app, and the first release the

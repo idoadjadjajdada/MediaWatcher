@@ -94,6 +94,8 @@ function askAboutClosing() {
   document.body.appendChild(root);
   closePrompt = { root, remember, primary };
   primary.focus();
+  // The shell hides the window on its own if this never appears.
+  ipcRenderer.invoke('window:close-asked').catch(() => { /* it will fall back */ });
 }
 
 ipcRenderer.on('window:close-request', askAboutClosing);

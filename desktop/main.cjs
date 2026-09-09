@@ -261,8 +261,10 @@ function askAboutClosing() {
   if (closeAsked) { showWindow(); return; }
   closeAsked = true;
   win.webContents.send('window:close-request');
-  // A page that cannot draw the prompt — mid-navigation, or a crashed
-  // renderer — must not leave the window unclosable.
+  // A page that cannot draw the prompt — mid-navigation, or a crashed renderer
+  // — must not leave the window unclosable. The prompt says when it is up, and
+  // then this stops running: an unanswered question is not a stuck window, and
+  // hiding one out from under someone reading it is worse than waiting.
   closeAskTimer = setTimeout(() => {
     if (!closeAsked) return;
     closeAsked = false;
@@ -289,6 +291,10 @@ function requireWindow(event) {
   }
 }
 
+ipcMain.handle('window:close-asked', (event) => {
+  requireWindow(event);
+  if (closeAsked) clearTimeout(closeAskTimer);
+});
 ipcMain.handle('window:close-choice', (event, payload) => {
   requireWindow(event);
   if (!closeAsked) return closeBehaviour();

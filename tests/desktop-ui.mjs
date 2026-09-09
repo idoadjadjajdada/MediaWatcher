@@ -124,6 +124,11 @@ try {
   // Let it finish arriving, or the screenshot catches it mid-fade.
   await page.locator('.mw-close__card').evaluate((card) => Promise.all(card.getAnimations().map((a) => a.finished)));
   await page.screenshot({ path: path.join(root, 'test-results', executablePath ? 'close-packaged.png' : 'close-development.png') });
+  // The shell hides the window on its own if the prompt never draws. It has,
+  // so that must not fire out from under someone still reading it.
+  await new Promise((resolve) => setTimeout(resolve, 4500));
+  assert.equal(await windowVisible(), true, 'an unanswered prompt is not a stuck window');
+  assert.equal(await page.locator('.mw-close__card').count(), 1);
   await page.keyboard.press('Escape');
   await page.locator('.mw-close__card').waitFor({ state: 'detached' });
   assert.equal(await windowVisible(), true, 'Escape leaves the window open');
