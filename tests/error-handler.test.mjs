@@ -9,7 +9,7 @@
  *
  * Run: node tests/error-handler.test.mjs
  */
-import errorHandler, { isSpeakable, GENERIC_MESSAGE } from '../middleware/errorHandler.js';
+import errorHandler, { isSpeakable, GENERIC_MESSAGE, upstreamStatus } from '../middleware/errorHandler.js';
 
 let total = 0;
 let failures = 0;
@@ -99,6 +99,16 @@ console.log('\nisSpeakable');
 check('4xx speaks', isSpeakable({ message: 'x' }, 404) === true);
 check('5xx does not', isSpeakable({ message: 'x' }, 500) === false);
 check('expose:false silences a 4xx', isSpeakable({ expose: false }, 404) === false);
+
+console.log('\nupstreamStatus');
+// The client sends anyone who receives a 401 back to the login page, so a
+// third party's rejection must never arrive wearing one.
+check('an upstream 401 becomes a gateway error', upstreamStatus({ status: 401 }) === 502);
+check('so does a 403', upstreamStatus({ status: 403 }) === 502);
+check('a 404 is still a 404', upstreamStatus({ status: 404 }) === 404);
+check('a rate limit still says so', upstreamStatus({ status: 429 }) === 429);
+check('no status at all is a gateway error', upstreamStatus(new Error('socket hang up')) === 502);
+check('and neither is nothing', upstreamStatus(undefined) === 502);
 
 console.log(`\n${total - failures}/${total} passed`);
 process.exit(failures > 0 ? 1 : 0);

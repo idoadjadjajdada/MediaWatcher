@@ -12,6 +12,7 @@ import * as tmdb from '../services/tmdb.js';
 import * as alldebrid from '../services/alldebrid.js';
 import * as sourceStats from '../services/sourceStats.js';
 import { listJobs, getJob } from '../db/index.js';
+import { upstreamStatus } from '../middleware/errorHandler.js';
 
 const log = createLogger('api:torrents');
 const router = express.Router();
@@ -47,7 +48,7 @@ async function searchHandler(req, res) {
     });
     res.json(outcome);
   } catch (error) {
-    const status = error.status || 502;
+    const status = upstreamStatus(error);
     log.warn(`search "${query}" failed: ${error.message}`);
     res.status(status).json({ error: error.message, sources: error.details || null });
   }
@@ -95,7 +96,7 @@ router.get('/torrents/account', wrap(async (_req, res) => {
       fidelityPoints: Number(user.fidelityPoints) || 0
     });
   } catch (error) {
-    return res.status(error.status || 502).json({ error: error.message });
+    return res.status(upstreamStatus(error)).json({ error: error.message });
   }
 }));
 
@@ -172,7 +173,7 @@ router.post('/torrents/download', wrap(async (req, res) => {
 
     res.status(202).json({ id: job.id, status: job.status, title: job.title });
   } catch (error) {
-    const status = error.status || 502;
+    const status = upstreamStatus(error);
     log.warn(`download failed for "${body.title}": ${error.message}`);
     res.status(status).json({ error: error.message });
   }
@@ -197,7 +198,7 @@ router.post('/torrents/inspect', wrap(async (req, res) => {
     return res.json(await downloader.inspectTorrent(body));
   } catch (error) {
     log.warn(`inspect failed: ${error.message}`);
-    return res.status(error.status || 502).json({ error: error.message });
+    return res.status(upstreamStatus(error)).json({ error: error.message });
   }
 }));
 

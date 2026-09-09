@@ -14,6 +14,20 @@
  */
 export const GENERIC_MESSAGE = 'Internal server error';
 
+/**
+ * The status to answer with when a third party is what failed.
+ *
+ * A proxied route used to pass the upstream status straight through, and the
+ * client sends anyone who receives a 401 back to the login page. So an expired
+ * AllDebrid key logged the user out of MediaWatcher — on the settings page,
+ * which is the page that was about to tell them the key was the problem. Their
+ * session is fine; someone else's answer was not.
+ */
+export function upstreamStatus(error) {
+  const status = Number(error?.status) || 502;
+  return status === 401 || status === 403 ? 502 : status;
+}
+
 /** Should this error's own message reach the client? */
 export function isSpeakable(error, status) {
   if (status >= 500) return false;

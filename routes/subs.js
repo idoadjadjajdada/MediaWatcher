@@ -22,6 +22,7 @@ import * as subtitleSync from '../services/subtitleSync.js';
 import * as scanner from '../services/scanner.js';
 import * as opensubtitles from '../services/opensubtitles.js';
 import { fetchForFile, fetchForFiles } from '../services/subtitleFetch.js';
+import { upstreamStatus } from '../middleware/errorHandler.js';
 
 const log = createLogger('api:subs');
 const router = express.Router();
@@ -421,7 +422,7 @@ router.get('/search', async (req, res, next) => {
     );
   } catch (error) {
     if (error.name === 'OpenSubtitlesError') {
-      return res.status(error.status).json({ error: error.message });
+      return res.status(upstreamStatus(error)).json({ error: error.message });
     }
     return next(error);
   }
