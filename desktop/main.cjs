@@ -304,6 +304,7 @@ function openUpdates() {
     if (updatesWin.isMinimized()) updatesWin.restore();
     updatesWin.show();
     updatesWin.focus();
+    void updates.check();
     return;
   }
   updatesWin = new BrowserWindow({
@@ -319,6 +320,9 @@ function openUpdates() {
   });
   updatesWin.webContents.on('did-finish-load', () => {
     updatesWin.webContents.insertCSS(titlebarCss).catch(appendLog);
+    // The menu item says "Check for updates", so opening it checks rather than
+    // waiting to be asked again. Nothing downloads either way.
+    void updates.check();
   });
   updatesWin.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
   updatesWin.webContents.on('will-navigate', (event, url) => {
