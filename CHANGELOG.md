@@ -7,6 +7,38 @@ release carrying these notes and the Windows installer built from that commit �
 Versions follow [semantic versioning](https://semver.org): the minor number
 moves for new behaviour, the patch number for fixes alone.
 
+## 1.3.1
+
+### Fixed
+
+- **The first play of a session took a second longer than it needed to.** Every
+  stream URL asks this browser what it can decode, and on Windows the first
+  question about HEVC makes Chromium bring up the platform decoder registry —
+  about 900ms of blocked main thread, spent at the exact moment somebody
+  pressed play. What a browser build can decode cannot change without a reload,
+  so it is asked once now, while the library is on screen rather than while a
+  player is black. Click to first frame on a file that plays as it is: 1513ms
+  before, 844ms after. A second open in the same session: 260ms, now 225ms.
+- **The navigation marker measured the page on every render.** Reading
+  `offsetTop` forces the browser to lay the whole page out before it can
+  answer, and it was asked immediately after the page had been replaced, which
+  is the worst possible moment. The marker only moves when the page changes, so
+  that is now the only time it is measured.
+
+### Notes
+
+Playing is not where the time goes. During steady playback the page is 97.4%
+idle, with no long tasks, no dropped frames and no re-rendering — the cost is
+all in getting started.
+
+Files that have to be transcoded still take around four seconds to first frame,
+and that is ffmpeg starting up and encoding rather than anything in the player.
+Two candidate fixes were measured and rejected rather than shipped: having
+ffmpeg report exactly when it finishes each segment, so a segment need not wait
+for the next one to begin (4585ms against a 4567ms baseline — no change), and
+halving the segment length (4983ms — worse, because more segments means more
+round trips before playback can start).
+
 ## 1.3.0
 
 ### Added

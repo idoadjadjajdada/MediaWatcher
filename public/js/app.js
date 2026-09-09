@@ -925,6 +925,10 @@ async function boot() {
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('error', onResourceError, true);
 
+  // The first stream URL asks this browser what it can decode, and the first
+  // ask is slow enough to be felt. Get it over with while the library is on
+  // screen rather than when somebody presses play.
+  api.warmDecoderCapabilities();
   registerServiceWorker();
   install.watch(() => setState({}));
   // An installed app is the case where evicted offline video hurts most, so

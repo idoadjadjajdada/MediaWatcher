@@ -342,6 +342,21 @@ export function renderShell() {
     </div>`;
 }
 
+/*
+ * Where the marker was last put, so it is not measured again for nothing.
+ *
+ * Reading offsetTop is a synchronous layout, and this runs on every render —
+ * immediately after #main is replaced, which is the worst possible moment to
+ * ask the browser a geometry question, because it has to lay the whole page
+ * out again before it can answer. The marker only moves when the page changes,
+ * so that is when it is measured. A resize can change the rail's step, and
+ * clears this.
+ */
+let placedFor = null;
+if (typeof window !== 'undefined') {
+  window.addEventListener('resize', () => { placedFor = null; }, { passive: true });
+}
+
 /**
  * Move the sliding markers onto the active item.
  *
@@ -352,8 +367,10 @@ export function renderShell() {
  * parking on whichever item it last sat under.
  */
 export function placeIndicators() {
+  if (placedFor === state.currentPage) return;
   const rail = document.getElementById('navrail-ind');
   if (rail) {
+    placedFor = state.currentPage;
     const active = document.querySelector(`.navrail__nav .navrail__item[data-page="${state.currentPage}"]`);
     rail.hidden = !active;
     if (active) rail.style.transform = `translateY(${active.offsetTop}px)`;

@@ -132,7 +132,22 @@ export const saveProgress = (payload) => post('/api/progress', payload);
  * can be copied through untouched or has to be re-encoded, so getting them
  * right is the difference between a lossless remux and a transcode.
  */
-export function decoderCapabilities() {
+/*
+ * Asked once, because the first answer is expensive and none of them change.
+ *
+ * Asking Windows whether this browser can decode HEVC makes Chromium bring up
+ * the platform decoder registry, and that measured at ~900ms of blocked main
+ * thread. Every stream URL asks, so the bill landed on whoever pressed play
+ * first: 1.5 seconds from click to picture, of which 0.9 was this question.
+ * The second open was 260ms, which is what it should have been all along.
+ *
+ * What a browser build can decode cannot change without a reload, so the
+ * answer is kept. HDR deliberately is not — see below.
+ */
+let decoders = null;
+
+function decoderSupport() {
+  if (decoders) return decoders;
   const probe = document.createElement('video');
   const canPlay = (type) => probe.canPlayType(type) !== '';
   const supportedByMse = (type) =>
@@ -140,12 +155,29 @@ export function decoderCapabilities() {
     && typeof MediaSource.isTypeSupported === 'function'
     && MediaSource.isTypeSupported(type);
 
-  return {
+  decoders = {
     hevc: canPlay('video/mp4; codecs="hvc1.1.6.L93.B0"')
       || supportedByMse('video/mp4; codecs="hev1.1.6.L93.B0"'),
-    ac3: canPlay('audio/mp4; codecs="ac-3"') || canPlay('audio/mp4; codecs="ec-3"'),
-    hdr: displayIsHdr()
+    ac3: canPlay('audio/mp4; codecs="ac-3"') || canPlay('audio/mp4; codecs="ec-3"')
   };
+  return decoders;
+}
+
+/**
+ * Ask before anybody is waiting on the answer.
+ *
+ * Called once the app is up and idle, so the cost lands while someone is
+ * looking at their library rather than at a black player.
+ */
+export function warmDecoderCapabilities() {
+  if (decoders) return;
+  const ask = () => { try { decoderSupport(); } catch { /* asked again on demand */ } };
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(ask, { timeout: 3000 });
+  else setTimeout(ask, 0);
+}
+
+export function decoderCapabilities() {
+  return { ...decoderSupport(), hdr: displayIsHdr() };
 }
 
 /**
@@ -483,7 +515,7 @@ export default {
   searchTorrents, getSources, suggest,
   getJobs, startDownload, cancelJob, setJobState, moveJob,
   getContinueWatching, getAllProgress, getProgressFor, saveProgress,
-  getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities,
+  getStreamInfo, streamUrl, subsUrl, listSubtitles, decoderCapabilities, warmDecoderCapabilities,
   subtitleCapabilities, searchSubtitles, fetchSubtitle, fetchSeasonSubtitles,
   getQuality, setQuality, QUALITY_LEVELS,
   thumbMetaUrl, thumbUrl, touchHlsSession, endHlsSession,
