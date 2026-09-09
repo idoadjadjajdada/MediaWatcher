@@ -22,6 +22,48 @@ html[data-mw-desktop] {
   app-region: drag;
 }
 #mw-titlebar img { height: 20px; width: auto; opacity: .85; }
+
+/* The status light. Pushed to the right, and clear of the caption buttons by
+   the bar's own padding. Nothing in here drags the window. */
+#mw-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.mw-status__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4b5059;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, .04);
+}
+#mw-status[data-state="green"] .mw-status__dot { background: #3fb950; }
+#mw-status[data-state="red"] .mw-status__dot { background: #e5534b; }
+#mw-status[data-state="yellow"] .mw-status__dot {
+  background: #e3b341;
+  animation: mw-status-flash 1.15s ease-in-out infinite;
+}
+@keyframes mw-status-flash { 50% { opacity: .2; } }
+/* A light that blinks is decoration; the button beside it is the message. */
+@media (prefers-reduced-motion: reduce) {
+  #mw-status[data-state="yellow"] .mw-status__dot { animation: none; }
+}
+.mw-status__version { color: #7f838c; letter-spacing: .08em; }
+.mw-status__action {
+  padding: 4px 10px;
+  border: 1px solid #33373f;
+  border-radius: 999px;
+  background: #16181d;
+  color: #d7dae0;
+  font: inherit;
+  letter-spacing: .08em;
+  cursor: pointer;
+}
+.mw-status__action:hover:not(:disabled) { background: #1e2128; color: #fff; }
+.mw-status__action:disabled { opacity: .55; cursor: default; }
 /* Keep the video itself clear of the caption bar, without double-insetting
    the player's own safe-area controls. Fullscreen is edge-to-edge again. */
 html[data-mw-desktop] .player {

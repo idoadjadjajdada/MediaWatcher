@@ -7,6 +7,29 @@ release carrying these notes and the Windows installer built from that commit �
 Versions follow [semantic versioning](https://semver.org): the minor number
 moves for new behaviour, the patch number for fixes alone.
 
+## 1.3.0
+
+### Added
+
+- **A status light in the title bar**, beside the version the app is running.
+  Green is the current version with its server answering — the state nobody
+  needs to think about, so it says so quietly. Flashing yellow is a newer
+  release waiting, with an **Update** button that downloads it, shows the
+  progress, and then offers **Restart & install**. Steady red is a server that
+  has stopped answering, with a **Reconnect** button.
+
+  The red one is the reason this exists. A backend that has gone away otherwise
+  looks like the app being slow: every panel fails on its own, none of them says
+  why, and nothing tells you the one thing worth knowing. Reconnect asks the
+  cheap question first — a server that is answering again needs nothing started
+  — and only replaces one that is genuinely gone.
+- **The installer asks what you came for.** Running it on a machine that already
+  has MediaWatcher used to reinstall without comment, which is the wrong answer
+  to all three reasons anyone runs an installer twice. It now says which version
+  it found and offers to update, repair, or uninstall. An update the app
+  performs itself skips the page — it was already agreed to — and so does a
+  silent run.
+
 ## 1.2.1
 
 ### Fixed

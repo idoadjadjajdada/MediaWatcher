@@ -27,6 +27,8 @@ let dataDir = path.resolve(process.env.MW_DATA_DIR || settings.dataDir
 let win, tray, child, origin, starting, stopPromise;
 let attached = false;
 let attachTimer;
+let connected = true;
+let statusTimer;
 let updatesWin, updateTimer, trayUpdateStatus;
 let quitting = false;
 let failures = 0;
@@ -177,16 +179,50 @@ async function resolveBackend() {
   return { port: 0 };
 }
 
-/** Keep an eye on a server we did not start; it can leave without telling us. */
-function watchAttached() {
+/**
+ * What the light in the title bar says.
+ *
+ * Green is "this is the current version, talking to its server", which is the
+ * state nobody needs to think about. The other two are the ones worth showing
+ * without being asked: an update waiting, and a server that has stopped
+ * answering — the second is otherwise indistinguishable from the app being
+ * slow, because every panel fails on its own and none of them says why.
+ */
+function statusNow() {
+  const update = updates.snapshot();
+  return {
+    version: update.currentVersion,
+    connected,
+    origin: origin || null,
+    attached,
+    // 'available' and 'ready' are both "there is a newer one"; the difference
+    // is only whether it has been fetched yet, which the button says.
+    update: update.status,
+    percent: update.percent,
+    latestVersion: update.latestVersion
+  };
+}
+
+function pushStatus() {
+  if (win && !win.isDestroyed()) win.webContents.send('status:update', statusNow());
+}
+
+/**
+ * One poll for two jobs: whether anything is answering, and whether a server
+ * we joined rather than started has gone away.
+ */
+function watchBackend() {
   clearInterval(attachTimer);
-  if (!attached) return;
+  clearInterval(statusTimer);
   let misses = 0;
-  attachTimer = setInterval(async () => {
-    if (!attached || quitting || !origin) return;
-    if (await health(Number(new URL(origin).port))) { misses = 0; return; }
-    if ((misses += 1) < 2) return;
-    clearInterval(attachTimer);
+  statusTimer = setInterval(async () => {
+    if (quitting) return;
+    const answering = origin ? Boolean(await health(Number(new URL(origin).port))) : false;
+    if (answering !== connected) { connected = answering; pushStatus(); }
+    if (answering) { misses = 0; return; }
+    if ((misses += 1) < 2 || !attached || starting) return;
+    // A joined server is not ours to restart, so take over with our own.
+    misses = 0;
     attached = false;
     appendLog('the server this window joined has stopped; starting our own\n');
     startBackend().then((url) => { if (win && !win.isDestroyed()) return win.loadURL(url); })
@@ -222,12 +258,13 @@ function startBackend() {
       origin = target.attach;
       attached = true;
       appendLog(`joined the MediaWatcher already serving this library at ${origin}\n`);
+      connected = true;
       updateMenu();
-      watchAttached();
+      watchBackend();
+      pushStatus();
       return origin;
     }
     attached = false;
-    clearInterval(attachTimer);
     return forkBackend(target.port);
   })().finally(() => { starting = null; });
   return starting;
@@ -264,7 +301,10 @@ function forkBackend(port) {
       const host = ['0.0.0.0', '::', '127.0.0.1', 'localhost'].includes(message.host)
         ? '127.0.0.1' : message.host;
       origin = `http://${host.includes(':') ? `[${host}]` : host}:${message.port}`;
+      connected = true;
       updateMenu();
+      watchBackend();
+      pushStatus();
       resolve(origin);
     });
     const began = Date.now();
@@ -372,6 +412,19 @@ function rememberWindow() {
   saveSettings();
 }
 
+/**
+ * How long to wait for the prompt to say it has appeared.
+ *
+ * Four seconds is a long time to leave a dialog nobody asked for on screen,
+ * which matters to the tests more than to anyone else: the window they drive is
+ * a real one on a real desktop, and a passing stranger clicking "Keep it
+ * running" is indistinguishable from the app deciding to.
+ */
+const closeAskWait = () => {
+  const override = Number(process.env.MW_CLOSE_ASK_MS);
+  return Number.isFinite(override) && override >= 200 ? override : 4000;
+};
+
 function askAboutClosing() {
   if (closeAsked) { showWindow(); return; }
   closeAsked = true;
@@ -384,7 +437,7 @@ function askAboutClosing() {
     if (!closeAsked) return;
     closeAsked = false;
     win.hide();
-  }, 4000);
+  }, closeAskWait());
 }
 
 function applyClose(choice, remember) {
@@ -416,6 +469,42 @@ ipcMain.handle('window:close-choice', (event, payload) => {
   const choice = ['tray', 'quit', 'cancel'].includes(payload?.choice) ? payload.choice : 'cancel';
   applyClose(choice, payload?.remember === true);
   return closeBehaviour();
+});
+ipcMain.handle('status:read', (event) => { requireWindow(event); return statusNow(); });
+ipcMain.handle('status:act', async (event, action) => {
+  requireWindow(event);
+  if (action === 'update') await updates.download();
+  else if (action === 'install') await updates.install();
+  else if (action === 'reconnect') {
+    /*
+     * Ask the cheap question first. A server that is answering again needs
+     * nothing started — and going looking would find our own child on its
+     * port, join it as though it were somebody else's, and then leave it
+     * running when the app quits.
+     */
+    const port = origin ? Number(new URL(origin).port) : null;
+    if (port && await health(port)) connected = true;
+    else {
+      const previous = origin;
+      origin = null;
+      try {
+        // A child that is alive but not answering is worse than none.
+        await stopBackend();
+        const url = await startBackend();
+        connected = Boolean(await health(Number(new URL(url).port)));
+      } catch (error) {
+        origin = previous;
+        connected = false;
+        appendLog(`reconnect failed: ${error.message}\n`);
+      }
+    }
+    if (connected && origin && win && !win.isDestroyed()) {
+      if (win.webContents.getURL().startsWith(origin)) win.webContents.reload();
+      else await win.loadURL(origin);
+    }
+    pushStatus();
+  }
+  return statusNow();
 });
 ipcMain.handle('window:show', (event) => { requireWindow(event); showWindow(); });
 ipcMain.handle('window:close-behaviour', (event) => { requireWindow(event); return closeBehaviour(); });
@@ -455,6 +544,7 @@ const updates = createUpdates({
   saveRepository: (repository) => { settings.updateRepository = repository; saveSettings(); },
   changed: (state) => {
     if (updatesWin && !updatesWin.isDestroyed()) updatesWin.webContents.send('updates:status', state);
+    pushStatus();
     // Rebuilding the tray menu on every download percentage would be wasteful.
     if (state.status !== trayUpdateStatus) { trayUpdateStatus = state.status; updateMenu(); }
   },
@@ -624,6 +714,7 @@ else {
     clearTimeout(restartTimer);
     clearInterval(updateTimer);
     clearInterval(attachTimer);
+    clearInterval(statusTimer);
     clearTimeout(closeAskTimer);
     rememberWindow();
     stopBackend().finally(() => { tray?.destroy(); app.quit(); });

@@ -28,6 +28,8 @@ module.exports = {
     artifactName: '${productName}-Setup-${version}-${arch}.${ext}'
   },
   nsis: {
+    // A maintenance page when it is already installed; see build/installer.nsh.
+    include: 'build/installer.nsh',
     oneClick: false,
     perMachine: false,
     allowToChangeInstallationDirectory: true,

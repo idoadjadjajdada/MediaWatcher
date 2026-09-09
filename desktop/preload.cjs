@@ -14,6 +14,81 @@ ipcRenderer.on('window:fullscreen', (_event, value) => {
 });
 document.addEventListener('fullscreenchange', syncChrome);
 navigator.windowControlsOverlay?.addEventListener('geometrychange', syncChrome);
+/**
+ * The light in the title bar.
+ *
+ * Green is "current version, talking to its server" — the state nobody needs
+ * to think about, so it says so quietly and gets out of the way. The other two
+ * earn the interruption: an update waiting, and a server that has stopped
+ * answering. The second is the one worth showing without being asked, because
+ * otherwise it looks like the app being slow — every panel fails separately
+ * and none of them says why.
+ *
+ * All of it is decided in the main process; this renders what it is handed and
+ * asks for one of three things back.
+ */
+function buildStatus(bar) {
+  const status = document.createElement('div');
+  status.id = 'mw-status';
+  status.dataset.state = 'unknown';
+
+  const dot = document.createElement('span');
+  dot.className = 'mw-status__dot';
+  dot.setAttribute('role', 'status');
+
+  const version = document.createElement('span');
+  version.className = 'mw-status__version';
+
+  const action = document.createElement('button');
+  action.type = 'button';
+  action.className = 'mw-status__action';
+  action.hidden = true;
+
+  status.append(dot, version, action);
+  bar.append(status);
+
+  const render = (state) => {
+    if (!state) return;
+    const newer = ['available', 'downloading', 'ready'].includes(state.update);
+    const light = !state.connected ? 'red' : newer ? 'yellow' : 'green';
+    status.dataset.state = light;
+    version.textContent = state.version ? `v${state.version}` : '';
+
+    const button = light === 'red' ? { act: 'reconnect', label: 'Reconnect' }
+      : state.update === 'available' ? { act: 'update', label: `Update to ${state.latestVersion || 'the latest'}` }
+        : state.update === 'downloading' ? { act: '', label: `Downloading ${state.percent || 0}%` }
+          : state.update === 'ready' ? { act: 'install', label: 'Restart & install' }
+            : null;
+
+    action.hidden = !button;
+    action.dataset.act = button?.act || '';
+    action.disabled = !button?.act;
+    if (button) action.textContent = button.label;
+
+    const green = {
+      error: 'connected — the last update check failed',
+      unconfigured: 'connected — no update source is set',
+      development: 'connected — running from source, so there is nothing to update',
+      checking: 'connected — checking for updates'
+    }[state.update] || 'up to date, and connected';
+    const words = light === 'red' ? 'not connected to the server'
+      : light === 'yellow' ? `version ${state.latestVersion || 'newer'} is available`
+        : green;
+    dot.setAttribute('aria-label', words[0].toUpperCase() + words.slice(1));
+    status.title = state.version ? `MediaWatcher ${state.version} — ${words}` : words;
+  };
+
+  action.addEventListener('click', async () => {
+    const act = action.dataset.act;
+    if (!act) return;
+    action.disabled = true;
+    try { render(await ipcRenderer.invoke('status:act', act)); } catch { action.disabled = false; }
+  });
+
+  ipcRenderer.on('status:update', (_event, state) => render(state));
+  ipcRenderer.invoke('status:read').then(render).catch(() => { /* not the app page */ });
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   document.documentElement.setAttribute('data-mw-desktop', '');
   const bar = document.createElement('header');
@@ -26,6 +101,9 @@ window.addEventListener('DOMContentLoaded', () => {
   const label = document.createElement('span');
   label.textContent = 'MediaWatcher';
   bar.append(mark, label);
+  // Only the app itself: the first-run page has no server to be connected to,
+  // and the updates window is already a larger version of this.
+  if (['http:', 'https:'].includes(location.protocol)) buildStatus(bar);
   document.body.prepend(bar);
   syncChrome();
 });

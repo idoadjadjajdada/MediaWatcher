@@ -127,6 +127,20 @@ one commit, and refuses rather than publishing something half-formed:
 
 ## Desktop behavior
 
+- Running the installer when MediaWatcher is already installed offers to update
+  it, repair it (install the same version over the top), or uninstall it. The
+  page is skipped for the silent and `--updated` runs that an in-app update
+  performs, and skipped rather than shown if anything about the existing
+  installation cannot be read — an installer that will not install is worse than
+  one that does not offer a choice. It lives in `build/installer.nsh`.
+- A light in the title bar, beside the version number. Green is the current
+  version with a server answering. Flashing yellow is a newer release waiting,
+  with **Update** beside it — which downloads, shows its progress, and becomes
+  **Restart & install** when the installer is ready. Steady red is a server that
+  has stopped answering, with **Reconnect**. Reconnect asks the cheap question
+  first: one that has come back needs nothing started, and only a server that is
+  really gone is replaced. The flash respects `prefers-reduced-motion`; the
+  button beside it is the message either way.
 - Window close asks, once, what it should do: keep MediaWatcher running in the
   tray, or quit. The prompt is drawn inside the app rather than by Windows, and
   saves the answer only if **Do this every time I close the window** is ticked.

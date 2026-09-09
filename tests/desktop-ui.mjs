@@ -17,7 +17,10 @@ const executablePath = process.env.MW_TEST_EXE;
 let desktop;
 const launchOptions = {
   ...(executablePath ? { executablePath, args: [] } : { args: [path.join(root, 'desktop/main.cjs')] }),
-  env: { ...process.env, MW_DESKTOP_PROFILE: profile, MW_DATA_DIR: data, PORT: '0' },
+  // A shorter fallback than the app's own, so the prompt is on screen for a
+  // second rather than four: it is a real window on a real desktop, and a
+  // stray click answering it looks exactly like a failure.
+  env: { ...process.env, MW_DESKTOP_PROFILE: profile, MW_DATA_DIR: data, PORT: '0', MW_CLOSE_ASK_MS: '1200' },
   timeout: 30000
 };
 try {
@@ -128,7 +131,7 @@ try {
   await page.screenshot({ path: path.join(root, 'test-results', executablePath ? 'close-packaged.png' : 'close-development.png') });
   // The shell hides the window on its own if the prompt never draws. It has,
   // so that must not fire out from under someone still reading it.
-  await new Promise((resolve) => setTimeout(resolve, 4500));
+  await new Promise((resolve) => setTimeout(resolve, 1700));
   assert.equal(await windowVisible(), true, 'an unanswered prompt is not a stuck window');
   assert.equal(await page.locator('.mw-close__card').count(), 1);
   await page.keyboard.press('Escape');
@@ -217,6 +220,57 @@ try {
     'the browser push switch is not offered where it cannot work');
   await page.evaluate(async () => { (await import('/js/state.js')).setState({ currentPage: 'home' }); });
   console.log('PASS: the app raises its own download notifications, and says what only a browser can do');
+
+  /*
+   * The light in the title bar. Green is real here — a running server and the
+   * version this was built from — and the other two are driven from the main
+   * process, because neither an outdated build nor a dead server is something
+   * to arrange for real halfway through a test.
+   */
+  const appVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  const light = page.locator('#mw-status');
+  const lightAction = page.locator('.mw-status__action');
+  await light.waitFor();
+  await page.waitForFunction(() => document.getElementById('mw-status')?.dataset.state !== 'unknown');
+  assert.equal(await light.getAttribute('data-state'), 'green', 'connected, on the current version');
+  assert.equal(await page.locator('.mw-status__version').textContent(), `v${appVersion}`);
+  assert.equal(await lightAction.isHidden(), true, 'nothing to do when it is green');
+  assert.equal(await page.locator('.mw-status__dot').evaluate((dot) => getComputedStyle(dot).animationName),
+    'none', 'green does not flash');
+  // The bar is dragged to move the window; the controls inside it must not be.
+  assert.equal(await light.evaluate((el) => getComputedStyle(el).webkitAppRegion), 'no-drag');
+
+  const say = (state) => desktop.evaluate(({ BrowserWindow }, payload) =>
+    BrowserWindow.getAllWindows()[0].webContents.send('status:update', payload), state);
+
+  await say({ version: appVersion, connected: true, update: 'available', latestVersion: '9.9.9', percent: 0 });
+  await page.waitForFunction(() => document.getElementById('mw-status')?.dataset.state === 'yellow');
+  assert.match(await lightAction.textContent(), /Update to 9\.9\.9/);
+  assert.equal(await lightAction.isEnabled(), true);
+  assert.equal(await page.locator('.mw-status__dot').evaluate((dot) => getComputedStyle(dot).animationName),
+    'mw-status-flash', 'an update waiting flashes');
+
+  await say({ version: appVersion, connected: true, update: 'downloading', percent: 42 });
+  await page.waitForFunction(() => /42%/.test(document.querySelector('.mw-status__action')?.textContent || ''));
+  assert.equal(await lightAction.isDisabled(), true, 'nothing to press while it downloads');
+
+  await say({ version: appVersion, connected: true, update: 'ready', latestVersion: '9.9.9', percent: 100 });
+  await page.waitForFunction(() => document.querySelector('.mw-status__action')?.textContent === 'Restart & install');
+  assert.equal(await light.getAttribute('data-state'), 'yellow', 'still not the current version');
+
+  await say({ version: appVersion, connected: false, update: 'current' });
+  await page.waitForFunction(() => document.getElementById('mw-status')?.dataset.state === 'red');
+  assert.equal(await lightAction.textContent(), 'Reconnect');
+  assert.equal(await page.locator('.mw-status__dot').evaluate((dot) => getComputedStyle(dot).animationName),
+    'none', 'a dead server is a steady light, not a flashing one');
+
+  // The server is actually up, so reconnecting finds it and says so again.
+  await lightAction.click();
+  await page.waitForFunction(() => document.getElementById('mw-status')?.dataset.state === 'green', null, { timeout: 20000 });
+  await page.waitForSelector('#navrail');
+  assert.equal((await page.request.get(`${origin}/api/health`)).status(), 200);
+  assert.equal(await lightAction.isHidden(), true);
+  console.log('PASS: the title bar light is green, flashes for an update, and reconnects from red');
 
   // Native menus cannot be clicked from the outside, so invoke the item itself.
   const [updates] = await Promise.all([

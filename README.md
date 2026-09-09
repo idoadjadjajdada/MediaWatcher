@@ -54,6 +54,10 @@ window showing your version, the latest release, and a download that only
 installs when you restart. Releases come from the repository in
 `desktop/release.json`; the window can point at a different one.
 
+A light in the title bar shows the version and how things stand: green for
+current and connected, flashing yellow with an **Update** button when a newer
+release is out, red with a **Reconnect** button if the server stops answering.
+
 The app and a server started any other way share the machine: if the configured
 port is already serving this library, the window joins it rather than starting a
 second server over the same folder, and if the port belongs to something else
