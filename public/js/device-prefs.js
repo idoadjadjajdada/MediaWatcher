@@ -32,6 +32,9 @@ export const FIELDS = {
   introBehaviour: { default: 'offer', coerce: (v) => (['offer', 'auto', 'off'].includes(v) ? v : 'offer') },
   // Whether the resume pill appears at all.
   resumePrompt: { default: true, coerce: (v) => v === true || v === 'true' },
+  // Windows notifications for finished downloads, in the desktop app. Ignored
+  // in a browser, which has web push for the same thing.
+  desktopNotifications: { default: true, coerce: (v) => v === true || v === 'true' },
   // Seek step for the on-screen buttons and arrow keys.
   seekSeconds: { default: 10, coerce: (v) => clampInt(v, 5, 60, 10) },
   /*

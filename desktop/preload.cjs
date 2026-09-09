@@ -111,12 +111,15 @@ if (localPage('setup.html')) {
 }
 // Checking, downloading and installing stay in the main process. The updates
 // window only asks for them and renders the state it is handed back.
-// The website gets one bridge, and it carries a single enum: what the X does.
-// No paths, no process control, nothing the page can turn into a capability.
+// The website's one bridge: what the X does, and asking for the window back
+// when someone clicks a notification this app raised. No paths, no process
+// control, nothing a page could turn into a capability of its own — showing a
+// window is what the tray icon does for free.
 if (['http:', 'https:'].includes(location.protocol)) {
   contextBridge.exposeInMainWorld('desktopWindow', {
     closeBehaviour: () => ipcRenderer.invoke('window:close-behaviour'),
-    setCloseBehaviour: (value) => ipcRenderer.invoke('window:set-close-behaviour', value)
+    setCloseBehaviour: (value) => ipcRenderer.invoke('window:set-close-behaviour', value),
+    show: () => ipcRenderer.invoke('window:show')
   });
 }
 if (localPage('updates.html')) {

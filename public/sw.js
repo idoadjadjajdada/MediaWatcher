@@ -65,6 +65,7 @@ const SHELL = [
   '/js/device-prefs.js',
   '/js/offline.js',
   '/js/push.js',
+  '/js/notify.js',
   '/js/cast.js',
   '/js/adaptive.js',
   '/js/install.js',

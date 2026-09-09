@@ -17,6 +17,7 @@
 import * as api from './api.js';
 import { state, setState } from './state.js';
 import { esc, icon, toast } from './views.js';
+import * as notify from './notify.js';
 import {
   loadDevicePrefs, saveDevicePrefs, resetDevicePrefs
 } from './device-prefs.js';
@@ -182,6 +183,26 @@ function renderAppearance(subtitle, picture) {
 function renderDevices() {
   const devices = state.settings?.devices;
   if (!devices) return '<section class="settings__group"><h2 class="settings__heading">Devices</h2><div class="settings__loading">Loading…</div></section>';
+
+  /*
+   * The list is gated on the local admin key, not on being signed in — a phone
+   * that is merely logged in must not be able to enumerate the other devices
+   * on the tailnet, and certainly must not revoke them. Which is right, and
+   * used to arrive here as an empty array: the panel told everyone who had
+   * ever ticked "remember me" that nothing was remembered.
+   */
+  if (devices.unavailable) {
+    return `
+      <section class="settings__group">
+        <h2 class="settings__heading">Devices</h2>
+        <p class="settings__note">
+          Remembered devices are listed and revoked where the local admin key can
+          be read, which is the launcher on this machine. Being signed in is
+          deliberately not enough: a device that is only logged in must not be
+          able to enumerate or lock out the others.
+        </p>
+      </section>`;
+  }
 
   return `
     <section class="settings__group">
@@ -783,6 +804,35 @@ function renderServer() {
  * says which one is missing rather than offering one dead switch.
  */
 function renderNotifications() {
+  /*
+   * The desktop app has no push service to subscribe to — see notify.js — so
+   * offering the browser's switch there produced an error and nothing else. It
+   * raises the same notifications from the job poll instead, which covers
+   * everything except being told while the app is not running at all. That
+   * part is genuinely browser-only, and saying so is better than a switch that
+   * fails when someone finally tries it.
+   */
+  if (notify.inDesktopApp()) {
+    const allowed = typeof Notification !== 'undefined' && Notification.permission === 'granted';
+    return `
+      <section class="settings__group">
+        <h2 class="settings__heading">Notifications</h2>
+        <p class="settings__note">
+          A finished or failed download, shown by Windows. This works whenever
+          MediaWatcher is running, including with its window closed to the tray.
+        </p>
+        ${allowed
+    ? row('Downloads', 'Say when a download finishes or fails.',
+      toggle('desktopNotifications', loadDevicePrefs().desktopNotifications))
+    : '<p class="settings__warn">Windows is not allowing notifications from MediaWatcher.</p>'}
+        <p class="settings__note">
+          Being told while MediaWatcher is not running at all needs a push
+          service, which the desktop app has no way to reach. Open MediaWatcher
+          in your browser — the tray menu has it — and turn notifications on there.
+        </p>
+      </section>`;
+  }
+
   const state_ = state.settings?.push;
   if (!state_) return '';
 
@@ -954,7 +1004,8 @@ export async function loadSettings() {
   const [devices, logins, diagnostics, storage, saved, quota, warm, encoders, env, log, benchmark,
     sourceStats, warmPolicy, pushState, pushKey, account] =
     await Promise.all([
-      api.getDevices().catch(() => []),
+      // A refusal is not an empty list, and this panel used to show it as one.
+      api.getDevices().catch((error) => ({ unavailable: error.message })),
       api.getLoginHistory().catch(() => []),
       api.getDiagnostics().catch(() => null),
       api.getStorage().catch(() => null),

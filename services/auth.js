@@ -12,7 +12,8 @@
  * <video src="/api/stream?..."> issues its own range requests with no
  * JavaScript in the loop to attach anything.
  */
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import path from 'node:path';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import config from '../config/index.js';
 import { findDeviceByTokenHash } from '../db/devices.js';
 
@@ -62,6 +63,23 @@ export function verifyAdminKey(supplied) {
   // timingSafeEqual throws on a length mismatch, so screen for that first.
   if (given.length !== expected.length) return false;
   return timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+}
+
+/**
+ * Which server this is, for something already on this machine.
+ *
+ * The desktop app has to tell its own running server from an unrelated one on
+ * the same port, and it asks `/api/health` — which anyone can read. So the
+ * answer is the data folder keyed by the admin key inside it: computable only
+ * by something that can read `config/admin-key`, and meaningless to anyone
+ * else. desktop/instance.cjs computes the same value from the outside;
+ * tests/instance.test.mjs fails if the two ever disagree.
+ */
+export function instanceFingerprint(dataDir = config.dataDir, key = config.auth.adminKey) {
+  // Never fall back to the working directory: "no folder" is not a library.
+  if (!String(dataDir || '').trim() || String(key || '').length !== 64) return '';
+  const resolved = path.resolve(String(dataDir));
+  return createHmac('sha256', key).update(resolved).digest('hex').slice(0, 32);
 }
 
 /* --------------------------------------------------------------------------

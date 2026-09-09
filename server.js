@@ -15,6 +15,7 @@ import config, { ensureRuntimeDirs, log } from './config/index.js';
 import { closeDatabase } from './db/index.js';
 import requireAuth from './middleware/requireAuth.js';
 import errorHandler from './middleware/errorHandler.js';
+import { instanceFingerprint } from './services/auth.js';
 import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
 import hlsRouter from './routes/hls.js';
@@ -191,7 +192,11 @@ app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     time: Date.now(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    // Says which library this is to anything that can already read its admin
+    // key, and nothing at all to anyone else. The desktop app uses it to tell
+    // "my server is already up" from "something else has that port".
+    instance: instanceFingerprint()
   });
 });
 

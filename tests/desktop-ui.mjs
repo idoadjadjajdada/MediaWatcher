@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import net from 'node:net';
+import { fork } from 'node:child_process';
 import { _electron as electron } from 'playwright';
 import { execFileSync } from 'node:child_process';
 
@@ -172,6 +174,50 @@ try {
   await page.evaluate(async () => { (await import('/js/state.js')).setState({ currentPage: 'home' }); });
   console.log('PASS: the close prompt asks once, remembers when told to, and Settings agrees with it');
 
+  /*
+   * Notifications. Electron has no push service, so the app raises them from
+   * the job poll instead — the same news by a shorter route. The Notification
+   * constructor is stubbed because a real one would land in the Windows action
+   * centre and could not be read back.
+   */
+  const notified = await page.evaluate(async () => {
+    const notify = await import('/js/notify.js');
+    const raised = [];
+    const real = window.Notification;
+    let clicked = false;
+    window.Notification = class {
+      static permission = 'granted';
+      constructor(title, options) { raised.push({ title, ...options }); }
+    };
+    const shown = notify.announce(
+      [{ id: '1', status: 'downloading', title: 'The Fixture' }, { id: '2', status: 'queued', title: 'Another' }],
+      [{ id: '1', status: 'complete', title: 'The Fixture' }, { id: '2', status: 'queued', title: 'Another' }]
+    );
+    const withoutPermission = (() => {
+      window.Notification = class { static permission = 'denied'; constructor() { raised.push('denied'); } };
+      return notify.announce([{ id: '3', status: 'downloading' }], [{ id: '3', status: 'error' }]).length;
+    })();
+    window.Notification = real;
+    void clicked;
+    return {
+      inApp: notify.inDesktopApp(), announced: shown.length, raised, withoutPermission,
+      canShowWindow: typeof window.desktopWindow.show
+    };
+  });
+  assert.equal(notified.inApp, true, 'the page knows it is inside the shell');
+  assert.equal(notified.announced, 1, 'only the job that changed');
+  assert.deepEqual(notified.raised, [{ title: 'Download finished', body: 'The Fixture', tag: 'mw-job-1' }]);
+  assert.equal(notified.withoutPermission, 0, 'nothing is raised without permission');
+  assert.equal(notified.canShowWindow, 'function', 'a notification can ask for the window back');
+
+  // And the settings page offers that rather than a push switch that cannot work.
+  await page.evaluate(async () => { (await import('/js/state.js')).setState({ currentPage: 'settings' }); });
+  await page.locator('[data-field="desktopNotifications"]').waitFor();
+  assert.equal(await page.locator('[data-action^="settings-push"]').count(), 0,
+    'the browser push switch is not offered where it cannot work');
+  await page.evaluate(async () => { (await import('/js/state.js')).setState({ currentPage: 'home' }); });
+  console.log('PASS: the app raises its own download notifications, and says what only a browser can do');
+
   // Native menus cannot be clicked from the outside, so invoke the item itself.
   const [updates] = await Promise.all([
     desktop.waitForEvent('window'),
@@ -230,6 +276,72 @@ try {
   const imported = JSON.parse(fs.readFileSync(path.join(scratch, 'import-profile/desktop.json'), 'utf8'));
   assert.equal(imported.dataDir, data);
   console.log('PASS: existing library setup reuses its configuration in place');
+  await desktop.close();
+  desktop = null;
+
+  /*
+   * Sharing the machine. The website and the app are the same server, so the
+   * question is never "can both run" but "which one is serving": one already
+   * holding this library is joined, and anything else on the port is stepped
+   * around. Two servers over one folder is the case worth preventing — each
+   * would scan and sweep the other's work.
+   */
+  const freePort = await new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+
+  const standalone = fork(path.join(root, 'server.js'), [], {
+    env: { ...process.env, MW_DATA_DIR: data, PORT: String(freePort), MW_SUPERVISED: '1' },
+    execArgv: [], silent: true, windowsHide: true
+  });
+  standalone.stdout.resume();
+  standalone.stderr.resume();
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('standalone server startup timed out')), 30000);
+    standalone.on('message', (message) => { if (message.type === 'ready') { clearTimeout(timer); resolve(); } });
+    standalone.once('exit', (code) => { clearTimeout(timer); reject(new Error(`standalone exited: ${code}`)); });
+  });
+  try {
+    desktop = await electron.launch({ ...launchOptions, env: { ...launchOptions.env, PORT: String(freePort) } });
+    const joined = await desktop.firstWindow();
+    await joined.waitForSelector('#navrail');
+    assert.equal(new URL(joined.url()).port, String(freePort), 'the app joined the running server');
+    assert.equal(standalone.exitCode, null, 'and did not stop it');
+    await desktop.close();
+    desktop = null;
+    // Closing the app must not take a server it never started with it.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(standalone.exitCode, null, 'the server outlives the window that joined it');
+    assert.equal((await fetch(`http://127.0.0.1:${freePort}/api/health`)).status, 200);
+    console.log('PASS: the app joins a MediaWatcher already serving this library');
+  } finally {
+    // Not a desktop child, so it has no IPC shutdown listener to speak to.
+    if (standalone.exitCode === null) {
+      const exited = new Promise((resolve) => standalone.once('exit', resolve));
+      standalone.kill();
+      await exited;
+    }
+  }
+
+  // A port held by something that is not MediaWatcher: start beside it.
+  const squatter = net.createServer((socket) => socket.end());
+  await new Promise((resolve) => squatter.listen(freePort, '127.0.0.1', resolve));
+  try {
+    desktop = await electron.launch({ ...launchOptions, env: { ...launchOptions.env, PORT: String(freePort) } });
+    const beside = await desktop.firstWindow();
+    await beside.waitForSelector('#navrail', { timeout: 45000 });
+    const port = Number(new URL(beside.url()).port);
+    assert.notEqual(port, freePort, 'it did not take the occupied port');
+    assert.equal((await beside.request.get(`http://127.0.0.1:${port}/api/health`)).status(), 200);
+    assert.equal(squatter.listening, true, 'and did not evict what was already there');
+    console.log('PASS: an occupied port moves the app aside instead of stopping it');
+  } finally {
+    await new Promise((resolve) => squatter.close(resolve));
+  }
 } finally {
   if (desktop) await desktop.close();
   fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });

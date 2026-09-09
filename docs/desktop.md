@@ -146,9 +146,30 @@ one commit, and refuses rather than publishing something half-formed:
   dark fade at the bottom of the video. Keyboard shortcuts and browser rendering
   remain available. Press Alt to show the small desktop application menu.
 - External HTTP(S) links open in the system browser. The webpage cannot access
-  Node or native desktop APIs; only the local first-run page has a narrow setup bridge.
+  Node or native desktop APIs. The first-run page has a narrow setup bridge, and
+  the app itself has one carrying what the X does and a request to show the
+  window — nothing that is not already a tray click.
+- The app shares the machine with a MediaWatcher started any other way. If the
+  configured port is already serving *this* library — the launcher, `npm start`,
+  a terminal left open — the window joins that server instead of starting a
+  second one, and closing the window leaves it running. If the port belongs to
+  something else, the app takes the next free one rather than refusing to open.
+  Two servers over one data folder is the case worth preventing: each would
+  scan, sweep and reconcile downloads over the other's work, and each would
+  treat the other's in-flight segments as orphans to delete.
+- Which server is which is decided by `/api/health`, which reports the data
+  folder keyed by the admin key inside it. Only something that can already read
+  `config/admin-key` can compute that, so joining is limited to a process on
+  this machine with this library, and the endpoint tells a stranger nothing.
 - Tailscale uses the same configured port and password gate. The app does not
-  configure Tailscale or silently choose a different port when one is occupied.
+  configure Tailscale. A window that moved to another port is reachable at that
+  port; the tunnel still points at whatever holds the configured one.
+- Notifications for finished and failed downloads are raised by the app itself,
+  from the job poll it already runs, and appear with the window closed to the
+  tray. Electron has no push service, so the browser's subscription switch is
+  not offered where it could only fail. Being told while MediaWatcher is not
+  running at all remains a browser feature — **Open in browser**, and turn them
+  on there.
 - Chromium integrations that depend on a full browser, notably Chromecast and
   browser web push, can use **Open in browser** in the tray/menu. Their existing
   website implementation remains intact. Desktop notifications and playback

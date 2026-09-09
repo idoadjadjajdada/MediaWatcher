@@ -39,6 +39,8 @@ const SUITES = [
   { file: 'hls-efficiency.test.mjs' },
   { file: 'env-file.test.mjs' },
   { file: 'updates.test.mjs' },
+  { file: 'instance.test.mjs' },
+  { file: 'notify.test.mjs' },
   { file: 'source-stats.test.mjs' },
   { file: 'season-pack.test.mjs' },
   { file: 'catalog.test.mjs' },

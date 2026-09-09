@@ -1,9 +1,12 @@
 const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeTheme, ipcMain, session } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const http = require('node:http');
+const net = require('node:net');
 const { fork, execFile } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { createUpdates, repositoryName } = require('./updater.cjs');
+const { fingerprint } = require('./instance.cjs');
 
 app.setName('MediaWatcher');
 const sourceRoot = path.resolve(__dirname, '..');
@@ -22,6 +25,8 @@ try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { /*
 let dataDir = path.resolve(process.env.MW_DATA_DIR || settings.dataDir
   || (app.isPackaged ? path.join(profile, 'data') : sourceRoot));
 let win, tray, child, origin, starting, stopPromise;
+let attached = false;
+let attachTimer;
 let updatesWin, updateTimer, trayUpdateStatus;
 let quitting = false;
 let failures = 0;
@@ -88,6 +93,7 @@ function updateMenu() {
   tray?.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open MediaWatcher', click: showWindow },
     { label: 'Open in browser (casting / web push)', enabled: Boolean(origin), click: () => openExternal(origin) },
+    { label: origin ? `${attached ? 'Joined' : 'Serving'} ${origin}` : 'Starting…', enabled: false },
     { type: 'separator' },
     { label: 'Open data folder', click: () => shell.openPath(dataDir) },
     { label: 'Edit configuration', click: openConfiguration },
@@ -96,6 +102,83 @@ function updateMenu() {
     { type: 'separator' },
     { label: 'Quit MediaWatcher', click: () => app.quit() }
   ]));
+}
+
+/**
+ * Where this window's server is.
+ *
+ * The old answer was "ours, on the configured port, or nowhere" — an occupied
+ * port was a startup failure telling you to go and stop the other thing. But
+ * the other thing is usually MediaWatcher itself, run from a terminal or by the
+ * old launcher, and refusing to open next to it helps nobody.
+ *
+ * Two copies of one library is the case actually worth preventing: each would
+ * scan, sweep and reconcile downloads over the same folder, and each would
+ * treat the other's in-flight segments as orphans to delete. So a server that
+ * proves it holds this data folder is joined rather than duplicated, and
+ * anything else on the port is simply stepped around.
+ */
+function configuredPort() {
+  const explicit = Number(process.env.PORT);
+  // 0 is meaningful: it asks the operating system for any free port.
+  if (Number.isInteger(explicit) && explicit >= 0 && explicit <= 65535) return explicit;
+  try { return Number(parse(fs.readFileSync(path.join(dataDir, '.env'))).PORT) || 3000; }
+  catch { return 3000; }
+}
+
+function portFree(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.listen(port, '127.0.0.1', () => probe.close(() => resolve(true)));
+  });
+}
+
+function health(port) {
+  return new Promise((resolve) => {
+    const request = http.get({ host: '127.0.0.1', port, path: '/api/health', timeout: 1500 }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      // A reply this long is not our health endpoint, whatever else it is.
+      response.on('data', (chunk) => { body = (body + chunk).slice(0, 4000); });
+      response.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve(null); } });
+    });
+    request.on('timeout', () => { request.destroy(); resolve(null); });
+    request.on('error', () => resolve(null));
+  });
+}
+
+async function resolveBackend() {
+  const configured = configuredPort();
+  if (await portFree(configured)) return { port: configured };
+
+  const answer = await health(configured);
+  const ours = fingerprint(dataDir);
+  if (ours && answer?.instance === ours) return { attach: `http://127.0.0.1:${configured}` };
+
+  // Someone else's port. Take the next free one so both can run, rather than
+  // refusing to open or, worse, starting a second server over one library.
+  for (let port = configured + 1; port <= configured + 9; port += 1) {
+    if (await portFree(port)) return { port };
+  }
+  return { port: 0 };
+}
+
+/** Keep an eye on a server we did not start; it can leave without telling us. */
+function watchAttached() {
+  clearInterval(attachTimer);
+  if (!attached) return;
+  let misses = 0;
+  attachTimer = setInterval(async () => {
+    if (!attached || quitting || !origin) return;
+    if (await health(Number(new URL(origin).port))) { misses = 0; return; }
+    if ((misses += 1) < 2) return;
+    clearInterval(attachTimer);
+    attached = false;
+    appendLog('the server this window joined has stopped; starting our own\n');
+    startBackend().then((url) => { if (win && !win.isDestroyed()) return win.loadURL(url); })
+      .catch(startupFailure);
+  }, 5000);
 }
 
 async function stopBackend() {
@@ -118,9 +201,29 @@ async function stopBackend() {
 
 function startBackend() {
   if (starting) return starting;
-  starting = new Promise((resolve, reject) => {
+  starting = (async () => {
+    const target = await resolveBackend();
+    if (target.attach) {
+      // Someone else's process, someone else's lifetime: it is not stopped when
+      // this window closes, and it is not restarted when it exits.
+      origin = target.attach;
+      attached = true;
+      appendLog(`joined the MediaWatcher already serving this library at ${origin}\n`);
+      updateMenu();
+      watchAttached();
+      return origin;
+    }
+    attached = false;
+    clearInterval(attachTimer);
+    return forkBackend(target.port);
+  })().finally(() => { starting = null; });
+  return starting;
+}
+
+function forkBackend(port) {
+  return new Promise((resolve, reject) => {
     logTail = '';
-    const env = { ...process.env, MW_DATA_DIR: dataDir, MW_SUPERVISED: '1', MW_DESKTOP: '1' };
+    const env = { ...process.env, MW_DATA_DIR: dataDir, MW_SUPERVISED: '1', MW_DESKTOP: '1', PORT: String(port) };
     delete env.ELECTRON_RUN_AS_NODE;
     // Keep explicit .env executable overrides; default ffmpeg/ffprobe resolve
     // to the bundled copies, even on a machine without them on PATH.
@@ -168,8 +271,7 @@ function startBackend() {
         }).catch(startupFailure);
       }, code === 75 ? 100 : Math.min(1000 * 2 ** failures, 15000));
     });
-  }).finally(() => { starting = null; });
-  return starting;
+  });
 }
 
 async function startupFailure(error) {
@@ -179,7 +281,7 @@ async function startupFailure(error) {
   const { response } = await dialog.showMessageBox(win, {
     type: 'error', title: 'MediaWatcher could not start',
     message: 'The local server could not start.',
-    detail: `${error.message}\n\nIf the old launcher is running, stop its server first. Your library is unchanged.`,
+    detail: `${error.message}\n\nYour library is unchanged.`,
     buttons: ['Retry', 'Open configuration', 'Quit'], defaultId: 0, cancelId: 2
   });
   if (response === 2) return app.quit();
@@ -302,6 +404,7 @@ ipcMain.handle('window:close-choice', (event, payload) => {
   applyClose(choice, payload?.remember === true);
   return closeBehaviour();
 });
+ipcMain.handle('window:show', (event) => { requireWindow(event); showWindow(); });
 ipcMain.handle('window:close-behaviour', (event) => { requireWindow(event); return closeBehaviour(); });
 ipcMain.handle('window:set-close-behaviour', (event, value) => {
   requireWindow(event);
@@ -507,6 +610,7 @@ else {
     quitting = true;
     clearTimeout(restartTimer);
     clearInterval(updateTimer);
+    clearInterval(attachTimer);
     clearTimeout(closeAskTimer);
     rememberWindow();
     stopBackend().finally(() => { tray?.destroy(); app.quit(); });

@@ -54,6 +54,12 @@ window showing your version, the latest release, and a download that only
 installs when you restart. Releases come from the repository in
 `desktop/release.json`; the window can point at a different one.
 
+The app and a server started any other way share the machine: if the configured
+port is already serving this library, the window joins it rather than starting a
+second server over the same folder, and if the port belongs to something else
+the app moves to the next free one. So the launcher, `npm start` and the desktop
+app can all be open at once.
+
 Run `npm run desktop` for desktop development, or `npm run desktop:pack` for an
 unpacked executable. Build prerequisites, data locations, tests and distribution
 notes are in [docs/desktop.md](docs/desktop.md).

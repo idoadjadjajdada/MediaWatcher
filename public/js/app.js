@@ -12,6 +12,7 @@ import {
 import * as views from './views.js';
 import * as search from './search.js';
 import * as catalog from './catalog.js';
+import * as notify from './notify.js';
 import * as player from './player.js';
 import * as settings from './settings.js';
 import * as preview from './preview.js';
@@ -161,6 +162,8 @@ async function loadLibrary() {
 async function loadJobs() {
   try {
     const jobs = await api.getJobs();
+    // Before the state is replaced: what ended is the difference between them.
+    notify.announce(state.jobs, jobs);
     const changed = JSON.stringify(jobs) !== JSON.stringify(state.jobs);
     if (changed) setState({ jobs });
     else views.updateShell();

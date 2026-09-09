@@ -7,7 +7,27 @@ release carrying these notes and the Windows installer built from that commit �
 Versions follow [semantic versioning](https://semver.org): the minor number
 moves for new behaviour, the patch number for fixes alone.
 
-## Unreleased
+## 1.2.0
+
+The desktop app and a server started any other way can now be open at once, and
+the app stops offering a notification switch it could never honour.
+
+### Added
+
+- **The app shares the machine.** Opening it while the launcher, `npm start` or
+  a terminal is already serving this library joins that server instead of
+  starting a second one, and closing the window leaves it running. If the port
+  belongs to something else entirely, the app takes the next free one rather
+  than refusing to open. Two servers over one data folder is the case worth
+  preventing — each would scan, sweep and reconcile downloads over the other's
+  work, and each would delete the other's in-flight video segments as orphans.
+  Which server is which is settled by a value only something that can already
+  read `config/admin-key` can compute, so joining is limited to a process on
+  this machine with this library.
+- **Desktop notifications for downloads.** A finished or failed download raises
+  a Windows notification while MediaWatcher is running, including with the
+  window closed to the tray; clicking it brings the window back. **Settings →
+  Notifications** switches it off.
 
 ### Fixed
 
@@ -17,6 +37,16 @@ moves for new behaviour, the patch number for fixes alone.
   so reopening the window from the tray while the question was up saw it vanish
   again four seconds later. The prompt now says when it has appeared, and the
   fallback stops running.
+- The notification switch in the desktop app could only ever fail. Electron has
+  no push service, so subscribing there ended in "push service not available"
+  after asking for permission. The app raises its own notifications now, and
+  the settings page says plainly that being told while MediaWatcher is *not*
+  running is the browser's job.
+- The Devices panel showed "nothing is remembered" to everyone. The list is
+  gated on the local admin key rather than on being signed in — deliberately,
+  so a device that is merely logged in cannot enumerate or revoke the others —
+  and the refusal was being read as an empty list. It now says where the list
+  lives instead of claiming there is nothing in it.
 
 ## 1.1.0
 
