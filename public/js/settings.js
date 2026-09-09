@@ -106,6 +106,31 @@ const choices = (field, value, options) => `
  * Sections
  * ----------------------------------------------------------------------- */
 
+/**
+ * Only the Windows app has a window to close, so this section only exists
+ * there. In a browser tab `desktopWindow` is undefined and nothing renders.
+ */
+function renderDesktop() {
+  if (!window.desktopWindow) return '';
+  // Unknown until the shell answers. Rendering a default would light up the
+  // wrong choice for a moment, which is worse than a line of placeholder.
+  const behaviour = state.settings?.closeBehaviour;
+
+  return `
+    <section class="settings__group">
+      <h2 class="settings__heading">Desktop app</h2>
+      <p class="settings__note">
+        MediaWatcher keeps serving while its window is shut — downloads and conversions
+        carry on, and so does anyone watching from another device. The tray icon brings
+        the window back; Quit stops all of it.
+      </p>
+      ${!behaviour ? '<div class="settings__loading">Loading…</div>'
+    : row('Closing the window', 'What the X in the corner does.',
+      choices('closeBehaviour', behaviour,
+        [['ask', 'Ask'], ['tray', 'Keep running'], ['quit', 'Quit']]))}
+    </section>`;
+}
+
 function renderPlayback(prefs) {
   return `
     <section class="settings__group">
@@ -895,6 +920,7 @@ export function renderSettings() {
           want different answers, so they are deliberately not synced.
         </p>
       </header>
+      ${renderDesktop()}
       ${renderPlayback(prefs)}
       ${renderAppearance(subtitle, picture)}
       ${renderPerformance()}
@@ -918,6 +944,13 @@ export function renderSettings() {
  * their own data arrives rather than blocking the whole page.
  */
 export async function loadSettings() {
+  // The desktop shell, when there is one; a browser tab has no window to
+  // close. Deliberately outside the batch: it answers in a millisecond and the
+  // section it feeds should not wait on everything the server has to walk.
+  window.desktopWindow?.closeBehaviour()
+    .then((closeBehaviour) => setState({ settings: { ...state.settings, closeBehaviour } }))
+    .catch(() => { /* the section stays as it is */ });
+
   const [devices, logins, diagnostics, storage, saved, quota, warm, encoders, env, log, benchmark,
     sourceStats, warmPolicy, pushState, pushKey, account] =
     await Promise.all([
@@ -948,7 +981,9 @@ export async function loadSettings() {
       // Carried across a reload so following the log survives a refresh of the
       // page's data, which is the one time you are most likely to be doing it.
       logLevel: state.settings?.logLevel || '',
-      logFollow: Boolean(state.settings?.logFollow)
+      logFollow: Boolean(state.settings?.logFollow),
+      // Answered separately, below, and kept across this batch.
+      closeBehaviour: state.settings?.closeBehaviour
     }
   });
 }
@@ -1353,6 +1388,14 @@ export async function clearWarmTitle(kind, tmdbId) {
 }
 
 export function chooseSetting(field, value) {
+  // The desktop shell owns this one: it belongs to the installation rather
+  // than to this device, so it is saved in desktop.json, not in localStorage.
+  if (field === 'closeBehaviour') {
+    setState({ settings: { ...state.settings, closeBehaviour: value } });
+    window.desktopWindow?.setCloseBehaviour(value)
+      .catch((error) => toast('error', 'Could not save that', error.message));
+    return;
+  }
   // Quality already had its own store, shared with the player's menu.
   if (field === 'quality') api.setQuality(value);
   else saveDevicePrefs({ [field]: value });

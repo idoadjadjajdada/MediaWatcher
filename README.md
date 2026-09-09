@@ -42,8 +42,10 @@ This reuses your `.env`, database, watch history and media in place. For a new
 installation, expand **Set up a new library** and enter your API keys and password.
 
 The website's visuals and player are served directly from the existing `public/`
-files. Closing the window keeps downloads and remote access running in the tray;
-right-click the tray icon and choose **Quit MediaWatcher** to stop everything.
+files. The first time you close the window the app asks whether to keep running
+in the tray — where downloads and remote access carry on — or to quit, and can
+remember the answer; **Settings → Desktop app** changes it later. Right-click
+the tray icon and choose **Quit MediaWatcher** to stop everything from there.
 Use **Open in browser** for Chromecast and browser web push integrations.
 
 The app checks GitHub for a newer release when it opens and every six hours

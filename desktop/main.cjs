@@ -16,6 +16,7 @@ const setupUrl = pathToFileURL(path.join(__dirname, 'setup.html')).href;
 const updatesUrl = pathToFileURL(path.join(__dirname, 'updates.html')).href;
 const icon = path.join(sourceRoot, 'public', 'icons', 'app.ico');
 const titlebarCss = fs.readFileSync(path.join(__dirname, 'titlebar.css'), 'utf8');
+const closeCss = fs.readFileSync(path.join(__dirname, 'close-prompt.css'), 'utf8');
 let settings = {};
 try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { /* first launch */ }
 let dataDir = path.resolve(process.env.MW_DATA_DIR || settings.dataDir
@@ -234,6 +235,77 @@ ipcMain.handle('setup:create', async (event, values) => {
   return { ok: true };
 });
 
+/*
+ * What closing the window does.
+ *
+ * Hiding to the tray is the right default — downloads, conversions and anyone
+ * watching from another device all outlive the window — but it is the wrong
+ * thing to do silently, because an app that ignores its own close button looks
+ * broken. So the first close asks, in the app's own window, and remembers the
+ * answer only when it was told to.
+ */
+const CLOSE_BEHAVIOURS = ['ask', 'tray', 'quit'];
+const closeBehaviour = () =>
+  (CLOSE_BEHAVIOURS.includes(settings.closeBehaviour) ? settings.closeBehaviour : 'ask');
+let closeAsked = false;
+let closeAskTimer;
+
+function rememberWindow() {
+  if (!win || win.isDestroyed()) return;
+  settings.window = win.getNormalBounds();
+  settings.maximized = win.isMaximized();
+  saveSettings();
+}
+
+function askAboutClosing() {
+  if (closeAsked) { showWindow(); return; }
+  closeAsked = true;
+  win.webContents.send('window:close-request');
+  // A page that cannot draw the prompt — mid-navigation, or a crashed
+  // renderer — must not leave the window unclosable.
+  closeAskTimer = setTimeout(() => {
+    if (!closeAsked) return;
+    closeAsked = false;
+    win.hide();
+  }, 4000);
+}
+
+function applyClose(choice, remember) {
+  clearTimeout(closeAskTimer);
+  closeAsked = false;
+  if (remember && choice !== 'cancel') {
+    settings.closeBehaviour = choice;
+    saveSettings();
+  }
+  if (choice === 'quit') app.quit();
+  else if (choice === 'tray') win.hide();
+  // 'cancel' leaves the window exactly where it was.
+}
+
+function requireWindow(event) {
+  if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame
+      || !(isAppUrl(event.senderFrame.url) || event.senderFrame.url === setupUrl)) {
+    throw new Error('This is only available in the MediaWatcher window.');
+  }
+}
+
+ipcMain.handle('window:close-choice', (event, payload) => {
+  requireWindow(event);
+  if (!closeAsked) return closeBehaviour();
+  const choice = ['tray', 'quit', 'cancel'].includes(payload?.choice) ? payload.choice : 'cancel';
+  applyClose(choice, payload?.remember === true);
+  return closeBehaviour();
+});
+ipcMain.handle('window:close-behaviour', (event) => { requireWindow(event); return closeBehaviour(); });
+ipcMain.handle('window:set-close-behaviour', (event, value) => {
+  requireWindow(event);
+  if (!CLOSE_BEHAVIOURS.includes(value)) throw new Error('Unknown close behaviour.');
+  settings.closeBehaviour = value;
+  saveSettings();
+  return value;
+});
+
+
 // Updates live entirely in the main process. Like first-run setup, the updates
 // window is a local page with a narrow bridge; it never sees an installer path.
 function releaseRepository() {
@@ -371,6 +443,7 @@ else {
     win.webContents.on('did-finish-load', () => {
       // Kept in the desktop shell so browser/phone layouts never get a title bar.
       win.webContents.insertCSS(titlebarCss).catch(appendLog);
+      win.webContents.insertCSS(closeCss).catch(appendLog);
       syncWindowChrome();
     });
     // During Windows' transition isFullScreen() can still report the previous
@@ -406,10 +479,11 @@ else {
     win.on('close', (event) => {
       if (quitting) return;
       event.preventDefault();
-      settings.window = win.getNormalBounds();
-      settings.maximized = win.isMaximized();
-      saveSettings();
-      win.hide();
+      rememberWindow();
+      const behaviour = closeBehaviour();
+      if (behaviour === 'quit') app.quit();
+      else if (behaviour === 'tray') win.hide();
+      else askAboutClosing();
     });
     tray = new Tray(icon);
     tray.setToolTip('MediaWatcher — runs in the background; right-click to quit');
@@ -427,11 +501,8 @@ else {
     quitting = true;
     clearTimeout(restartTimer);
     clearInterval(updateTimer);
-    if (win && !win.isDestroyed()) {
-      settings.window = win.getNormalBounds();
-      settings.maximized = win.isMaximized();
-      saveSettings();
-    }
+    clearTimeout(closeAskTimer);
+    rememberWindow();
     stopBackend().finally(() => { tray?.destroy(); app.quit(); });
   });
   app.on('window-all-closed', () => { /* the tray owns background lifetime */ });

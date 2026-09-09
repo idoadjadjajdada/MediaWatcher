@@ -1,0 +1,99 @@
+/*
+ * The window's X, asked in the app rather than in a system message box.
+ *
+ * A Windows dialog with its own icon and its own typeface reads as something
+ * having gone wrong. This is a preference, so it looks like the rest of the
+ * app: the same surface, line and paper tokens the website already defines,
+ * with fallbacks for the first-run page, which loads before any of them.
+ */
+.mw-close {
+  position: fixed;
+  /* Below the caption bar, so the window can still be moved and closed. */
+  inset: var(--mw-titlebar-height, 0px) 0 0;
+  z-index: 2147483646;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(6, 7, 9, .68);
+  backdrop-filter: blur(7px);
+  animation: mw-close-fade .16s ease-out;
+}
+
+@keyframes mw-close-fade { from { opacity: 0 } }
+@keyframes mw-close-rise { from { opacity: 0; transform: translateY(9px) scale(.985) } }
+
+.mw-close__card {
+  width: min(430px, 100%);
+  padding: 26px 26px 22px;
+  background: var(--surface-2, #14171b);
+  border: 1px solid var(--line-2, #2b3038);
+  border-radius: 18px;
+  box-shadow: 0 34px 90px rgba(0, 0, 0, .6);
+  color: var(--fg, #f2f4f8);
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 14px;
+  line-height: 1.55;
+  animation: mw-close-rise .2s cubic-bezier(.2, .8, .3, 1);
+}
+
+.mw-close__title {
+  margin: 0 0 10px;
+  font-family: var(--font-dp, var(--font-ui, system-ui, sans-serif));
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -.02em;
+  color: var(--fg, #f2f4f8);
+}
+
+.mw-close__text { margin: 0; color: var(--fg-2, #a5adb9); }
+
+.mw-close__remember {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 20px 0 18px;
+  color: var(--fg-2, #a5adb9);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mw-close__remember input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent, #a855f7);
+  cursor: pointer;
+}
+
+.mw-close__actions { display: flex; gap: 10px; }
+
+.mw-close__btn {
+  flex: 1;
+  padding: 11px 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .14s ease, transform .14s ease, border-color .14s ease;
+}
+.mw-close__btn:active { transform: scale(.975); }
+.mw-close__btn:focus-visible { outline: 2px solid var(--accent, #a855f7); outline-offset: 2px; }
+
+.mw-close__btn--primary { background: var(--paper, #e9edf5); color: #0a0b0d; }
+.mw-close__btn--primary:hover { background: #fff; }
+
+.mw-close__btn--quiet {
+  background: transparent;
+  border-color: var(--line-2, #2b3038);
+  color: var(--fg-2, #a5adb9);
+}
+.mw-close__btn--quiet:hover { background: var(--surface-3, #1c2027); color: var(--fg, #f2f4f8); }
+
+.mw-close__hint {
+  margin: 14px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-3, #7d848f);
+}

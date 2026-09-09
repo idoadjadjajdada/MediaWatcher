@@ -112,11 +112,60 @@ try {
   assert.equal(preferences.sandbox, true);
   assert.equal(preferences.contextIsolation, true);
   assert.equal(preferences.nodeIntegration, false);
-  await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
-  assert.equal(await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), false);
+  const closeWindow = () => desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+  const windowVisible = () => desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible());
+  const showWindow = () => desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].show());
+
+  // The first close asks, inside the app, and does nothing until it is answered.
+  await closeWindow();
+  await page.locator('.mw-close__card').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.choice), 'tray');
+  assert.equal(await windowVisible(), true);
+  // Let it finish arriving, or the screenshot catches it mid-fade.
+  await page.locator('.mw-close__card').evaluate((card) => Promise.all(card.getAnimations().map((a) => a.finished)));
+  await page.screenshot({ path: path.join(root, 'test-results', executablePath ? 'close-packaged.png' : 'close-development.png') });
+  await page.keyboard.press('Escape');
+  await page.locator('.mw-close__card').waitFor({ state: 'detached' });
+  assert.equal(await windowVisible(), true, 'Escape leaves the window open');
+
+  // Keeping it running hides the window and leaves the server serving.
+  await closeWindow();
+  await page.locator('[data-choice="tray"]').click();
+  await page.waitForFunction(() => !document.querySelector('.mw-close__card'));
+  assert.equal(await windowVisible(), false);
   assert.equal((await page.request.get(`${origin}/api/health`)).status(), 200);
-  await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].show());
-  console.log('PASS: closing the window preserves the server in the tray');
+  await showWindow();
+  assert.equal(await page.evaluate(() => window.desktopWindow.closeBehaviour()), 'ask',
+    'an unremembered answer is not saved');
+
+  // Remembered, it stops asking — and the answer is the installation's, so it
+  // is in desktop.json rather than in this device's browser storage.
+  await closeWindow();
+  await page.locator('.mw-close__remember input').check();
+  await page.locator('[data-choice="tray"]').click();
+  await page.waitForFunction(() => !document.querySelector('.mw-close__card'));
+  await showWindow();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(profile, 'desktop.json'), 'utf8')).closeBehaviour, 'tray');
+  await closeWindow();
+  assert.equal(await page.locator('.mw-close__card').count(), 0, 'a remembered answer is not asked again');
+  assert.equal(await windowVisible(), false);
+  await showWindow();
+
+  // Settings shows the same answer and can put it back to asking.
+  await page.evaluate(async () => { (await import('/js/state.js')).setState({ currentPage: 'settings' }); });
+  const closeSetting = page.locator('[data-field="closeBehaviour"]');
+  await closeSetting.first().waitFor();
+  assert.equal(await page.locator('[data-field="closeBehaviour"].is-active').innerText(), 'Keep running');
+  // The page's own top padding clears the caption bar; scrolled anywhere else,
+  // the first row of the first section sits under it.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.locator('[data-field="closeBehaviour"][data-value="ask"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector('[data-field="closeBehaviour"].is-active')?.textContent.trim() === 'Ask');
+  assert.equal(await page.evaluate(() => window.desktopWindow.closeBehaviour()), 'ask');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(profile, 'desktop.json'), 'utf8')).closeBehaviour, 'ask');
+  await page.evaluate(async () => { (await import('/js/state.js')).setState({ currentPage: 'home' }); });
+  console.log('PASS: the close prompt asks once, remembers when told to, and Settings agrees with it');
 
   // Native menus cannot be clicked from the outside, so invoke the item itself.
   const [updates] = await Promise.all([

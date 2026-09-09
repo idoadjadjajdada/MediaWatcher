@@ -109,8 +109,16 @@ installer's `.blockmap` to a public GitHub release. A release missing
 
 ## Desktop behavior
 
-- Window close hides to the tray so downloads, conversions and remote viewers
-  continue. Double-click the tray icon or launch the app again to restore it.
+- Window close asks, once, what it should do: keep MediaWatcher running in the
+  tray, or quit. The prompt is drawn inside the app rather than by Windows, and
+  saves the answer only if **Do this every time I close the window** is ticked.
+  Escape leaves the window open.
+- **Settings → Desktop app → Closing the window** holds the answer afterwards:
+  Ask, Keep running, or Quit. It lives in `desktop.json`, because it belongs to
+  the installation rather than to the device the page is open on, and the page
+  reaches it through a bridge that carries that one value and nothing else.
+- Kept running, downloads, conversions and remote viewers continue with the
+  window shut. Double-click the tray icon or launch the app again to restore it.
 - Right-click the tray icon and choose **Quit MediaWatcher**, or press Ctrl+Q,
   for graceful shutdown of the backend and registered encoders.
 - Settings' existing restart action is supervised and starts the server again.

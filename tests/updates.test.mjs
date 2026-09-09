@@ -169,6 +169,8 @@ for (const channel of ['status', 'check', 'download', 'install', 'configure']) {
   assert.ok(preload.includes(`ipcRenderer.invoke('updates:${channel}'`), `preload bridges updates:${channel}`);
 }
 assert.ok(main.includes('requireUpdates(event)'), 'every updates channel checks its sender');
-assert.equal(preload.match(/exposeInMainWorld/g).length, 2, 'only setup and updates get a bridge');
+// Every bridge is a hole in the sandbox, so the list of them is the test.
+assert.deepEqual([...preload.matchAll(/exposeInMainWorld\('(\w+)'/g)].map(([, name]) => name).sort(),
+  ['desktopSetup', 'desktopUpdates', 'desktopWindow']);
 assert.ok(window.includes('window.desktopUpdates'), 'the updates window uses the bridge');
 console.log('PASS: the window, its bridge, the sender check and the published release source line up');
