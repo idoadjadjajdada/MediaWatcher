@@ -37,4 +37,20 @@ function fingerprint(dataDir) {
   return createHmac('sha256', key).update(resolved).digest('hex').slice(0, 32);
 }
 
-module.exports = { fingerprint };
+/**
+ * Where the server holding this folder says it is answering.
+ *
+ * Written by the server itself while it is up (services/serving.js). Trusted
+ * only far enough to know where to look: what is there still has to prove it
+ * is this library before anything joins it.
+ */
+function claim(dataDir) {
+  try {
+    const held = JSON.parse(fs.readFileSync(path.join(path.resolve(String(dataDir || '.')), 'config', 'serving.json'), 'utf8'));
+    return Number.isInteger(held?.port) ? held : null;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { fingerprint, claim };

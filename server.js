@@ -16,6 +16,7 @@ import { closeDatabase } from './db/index.js';
 import requireAuth from './middleware/requireAuth.js';
 import errorHandler from './middleware/errorHandler.js';
 import { instanceFingerprint } from './services/auth.js';
+import * as serving from './services/serving.js';
 import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
 import hlsRouter from './routes/hls.js';
@@ -241,9 +242,23 @@ app.use(errorHandler(log));
  * Boot
  * ----------------------------------------------------------------------- */
 
+/*
+ * One server per library, whatever port each was asked for. Two over the same
+ * folder would scan, sweep and reconcile each other's work, and each would
+ * delete the other's in-flight segments as orphans — see services/serving.js.
+ */
+const alreadyServing = await serving.holder();
+if (alreadyServing) {
+  log.error(`this library is already being served at http://127.0.0.1:${alreadyServing.port}`
+    + ` (process ${alreadyServing.pid}). Open that, or point MW_DATA_DIR at another folder.`);
+  process.exit(1);
+}
+
 const server = app.listen(config.port, config.host, () => {
   // Only the parent that started this server receives readiness. A different
   // service already using the port can never be mistaken for our backend.
+  // Written after the port is known, so the claim can name where to look.
+  serving.claim(server.address().port);
   if (process.connected) process.send({ type: 'ready', port: server.address().port, host: config.host });
   log.info(`MediaWatcher listening on http://${config.host}:${config.port}`);
   if (config.host !== '127.0.0.1') {
@@ -307,6 +322,7 @@ function shutdown(signal, code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info(`${signal} received, shutting down`);
+  serving.release();
   watcher.stop().catch(() => {});
   cacheSweeper.stop();
   warmup.stop();

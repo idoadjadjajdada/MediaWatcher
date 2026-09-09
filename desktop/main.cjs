@@ -6,7 +6,7 @@ const net = require('node:net');
 const { fork, execFile } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { createUpdates, repositoryName } = require('./updater.cjs');
-const { fingerprint } = require('./instance.cjs');
+const { fingerprint, claim } = require('./instance.cjs');
 
 app.setName('MediaWatcher');
 const sourceRoot = path.resolve(__dirname, '..');
@@ -149,11 +149,24 @@ function health(port) {
 }
 
 async function resolveBackend() {
+  const ours = fingerprint(dataDir);
   const configured = configuredPort();
+
+  /*
+   * A running server leaves a claim naming the port it actually answers on,
+   * which is not always the one this side is configured for — someone starting
+   * the website with a different PORT is exactly the case worth finding, since
+   * the alternative is two servers over one folder.
+   */
+  const claimed = ours ? claim(dataDir) : null;
+  if (claimed && claimed.port !== configured) {
+    const answer = await health(claimed.port);
+    if (answer?.instance === ours) return { attach: `http://127.0.0.1:${claimed.port}` };
+  }
+
   if (await portFree(configured)) return { port: configured };
 
   const answer = await health(configured);
-  const ours = fingerprint(dataDir);
   if (ours && answer?.instance === ours) return { attach: `http://127.0.0.1:${configured}` };
 
   // Someone else's port. Take the next free one so both can run, rather than

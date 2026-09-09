@@ -23,7 +23,8 @@ async function start(extra = {}) {
   });
   children.add(proc);
   proc.once('exit', () => children.delete(proc));
-  proc.stdout.resume(); proc.stderr.resume();
+  proc.stdout.resume();
+  proc.stderr.on('data', (chunk) => { proc.said = (proc.said || '') + chunk; });
   const ready = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Backend startup timed out')), 15000);
     proc.on('message', (message) => { if (message.type === 'ready') { clearTimeout(timer); resolve(message); } });
@@ -79,6 +80,29 @@ try {
   assert.equal(response.status, 200);
   assert.equal((await restarted)[0], 75);
   console.log('PASS: existing Settings restart requests supervisor restart code 75');
+
+  /*
+   * A second server over the same folder is the case a port collision used to
+   * prevent by accident. It cannot any more — the desktop app deliberately
+   * opens beside servers it did not start, and a different PORT is the obvious
+   * way to run two of these on purpose — so the folder itself is claimed.
+   */
+  ({ proc, url } = await start());
+  const second = fork(path.join(root, 'server.js'), [], {
+    env: { ...env, PORT: '0' }, execArgv: [], silent: true, windowsHide: true
+  });
+  let refusal = '';
+  second.stdout.resume();
+  second.stderr.on('data', (chunk) => { refusal += chunk; });
+  assert.equal((await once(second, 'exit'))[0], 1, 'a second server over one library refuses to start');
+  assert.match(refusal, /already being served at http:\/\/127\.0\.0\.1:\d+/);
+  assert.equal((await fetch(`${url}/api/health`)).status, 200, 'and leaves the first one alone');
+  const stopped = once(proc, 'exit');
+  proc.send({ type: 'shutdown' });
+  await stopped;
+  // Withdrawn on the way out, so the next start is not refused by a ghost.
+  assert.equal(fs.existsSync(path.join(scratch, 'config/serving.json')), false);
+  console.log('PASS: one server per library, whatever port the second was asked for');
 
   const occupied = net.createServer();
   await new Promise((resolve) => occupied.listen(0, '127.0.0.1', resolve));

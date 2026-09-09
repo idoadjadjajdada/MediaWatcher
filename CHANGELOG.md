@@ -7,6 +7,24 @@ release carrying these notes and the Windows installer built from that commit �
 Versions follow [semantic versioning](https://semver.org): the minor number
 moves for new behaviour, the patch number for fixes alone.
 
+## 1.2.1
+
+### Fixed
+
+- Two servers over one library are no longer possible. 1.2.0 made the desktop
+  app open beside a server it did not start, which left the obvious way to run
+  two of these on purpose — give one a different `PORT` — as the one way to end
+  up with both writing to the same folder. They would each scan it, each sweep
+  the caches, each reconcile the same download queue, and each delete the
+  other's in-flight video segments as orphans left by a dead process; the
+  symptom is somebody else's playback stopping mid-episode. A server now claims
+  its data folder while it runs, and a second one over the same folder exits
+  saying where the first is answering. The claim is advisory: one left behind
+  by a crash names a port that answers nothing, and never stops a server
+  starting.
+- The desktop app finds a running server that took a different port than the
+  one configured here, rather than starting a second one beside it.
+
 ## 1.2.0
 
 The desktop app and a server started any other way can now be open at once, and

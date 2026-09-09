@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Which port this folder is being served on, written while a server is up.
+config/serving.json
+
 # Machine-local admin key: the launcher proves itself with this rather than
 # being trusted for coming from loopback. Never commit it.
 config/admin-key

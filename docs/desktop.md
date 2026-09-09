@@ -161,6 +161,13 @@ one commit, and refuses rather than publishing something half-formed:
   folder keyed by the admin key inside it. Only something that can already read
   `config/admin-key` can compute that, so joining is limited to a process on
   this machine with this library, and the endpoint tells a stranger nothing.
+- A running server writes `config/serving.json` in its data folder, naming the
+  port it is answering on, and removes it on the way out. That is how the app
+  finds a server started with a different `PORT` than the one configured here,
+  and it is what a second server checks before starting: one over a folder that
+  is already being served exits with the address of the one already there. The
+  file is advisory rather than a lock — one left behind by a crash names a port
+  that answers nothing, and is ignored.
 - Tailscale uses the same configured port and password gate. The app does not
   configure Tailscale. A window that moved to another port is reachable at that
   port; the tunnel still points at whatever holds the configured one.
