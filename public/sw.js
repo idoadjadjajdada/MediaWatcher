@@ -20,7 +20,7 @@
  * middle of a video stream is a way to break seeking, not to speed it up.
  */
 
-const VERSION = 'v7';
+const VERSION = 'v8';
 const SHELL_CACHE = `mw-shell-${VERSION}`;
 const DATA_CACHE = `mw-data-${VERSION}`;
 // Not versioned: saved video survives deploys. Bumping this would silently

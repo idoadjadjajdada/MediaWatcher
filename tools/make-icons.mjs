@@ -136,8 +136,17 @@ function measure(sourceWidth, sourceHeight) {
   const pixels = decode(probe, probe);
   const field = [pixels[0], pixels[1], pixels[2]];
 
-  const differs = (i) => pixels[i + 3] < 8
-    || Math.max(
+  /*
+   * A mark that arrives already cut out is found by its alpha, and only by its
+   * alpha. Colour cannot help here: this one is black around the skull and
+   * black inside it, so "not the corner colour" would lose the outline, the
+   * sockets and the mouth. A transparent corner is the tell.
+   */
+  const cutOutSource = pixels[3] < 8;
+
+  const differs = cutOutSource
+    ? (i) => pixels[i + 3] >= 8
+    : (i) => Math.max(
       Math.abs(pixels[i] - field[0]),
       Math.abs(pixels[i + 1] - field[1]),
       Math.abs(pixels[i + 2] - field[2])
@@ -165,6 +174,7 @@ function measure(sourceWidth, sourceHeight) {
   const scaleY = sourceHeight / probe;
   return {
     field,
+    cutOutSource,
     box: {
       x: Math.floor(minX * scaleX),
       y: Math.floor(minY * scaleY),
@@ -175,7 +185,7 @@ function measure(sourceWidth, sourceHeight) {
 }
 
 /**
- * Draw the mark on a square of its own field colour, at a given size.
+ * Draw the mark on a square of nothing at all, at a given size.
  *
  * `fill` is how tall the drawing stands as a fraction of the icon, and it is
  * the only number that separates the variants. A launcher may crop an installed
@@ -188,13 +198,18 @@ function drawPixels(size, { field, box }, fill) {
   const drawnWidth = Math.max(1, Math.round(drawnHeight * (box.w / box.h)));
   const mark = decode(drawnWidth, drawnHeight, box);
 
+  /*
+   * Transparent, deliberately.
+   *
+   * These used to be drawn onto the mark's own field colour, on the reasoning
+   * that a launcher composites an icon onto whatever it likes and a
+   * transparent one picks up a white sheet. That trade is the wrong way round
+   * for a mark that is a cut-out shape rather than a picture in a box: the
+   * field arrives as a pale rectangle behind the skull on every dark surface
+   * the icon lands on. So the square stays empty and each platform puts
+   * whatever it wants behind it.
+   */
   const rgba = Buffer.alloc(size * size * 4);
-  for (let i = 0; i < rgba.length; i += 4) {
-    rgba[i] = field[0];
-    rgba[i + 1] = field[1];
-    rgba[i + 2] = field[2];
-    rgba[i + 3] = 255;
-  }
 
   const left = Math.round((size - drawnWidth) / 2);
   const top = Math.round((size - drawnHeight) / 2);
@@ -209,14 +224,13 @@ function drawPixels(size, { field, box }, fill) {
 
       const from = (y * drawnWidth + x) * 4;
       const to = (canvasY * size + canvasX) * 4;
-      const alpha = mark[from + 3] / 255;
 
-      // Composited rather than copied, so a mark with soft or cut-out edges
-      // meets the field instead of carrying a grey fringe onto it.
-      rgba[to] = Math.round(mark[from] * alpha + rgba[to] * (1 - alpha));
-      rgba[to + 1] = Math.round(mark[from + 1] * alpha + rgba[to + 1] * (1 - alpha));
-      rgba[to + 2] = Math.round(mark[from + 2] * alpha + rgba[to + 2] * (1 - alpha));
-      rgba[to + 3] = 255;
+      // Copied, alpha and all: there is nothing underneath to blend with, and
+      // a soft edge has to stay soft or it will show its own outline.
+      rgba[to] = mark[from];
+      rgba[to + 1] = mark[from + 1];
+      rgba[to + 2] = mark[from + 2];
+      rgba[to + 3] = mark[from + 3];
     }
   }
 
@@ -284,20 +298,31 @@ for (const [name, pixels, fill] of ICONS) {
 /* --------------------------------------------------------------------------
  * The mark on its own
  *
- * The icons keep their field: a launcher composites an app icon onto whatever
- * it likes, and a transparent one picks up a white sheet on someone's home
- * screen. Inside the app the opposite is true - a black square sitting on a
- * near-black page reads as a tile someone forgot to style - so the pages get a
- * cut-out instead.
+ * Every icon here is transparent now, so this is the same picture as the rest,
+ * cropped to the mark and left at whatever height the pages want. It stays a
+ * separate file because the pages ask for a tall mark rather than a square
+ * one.
  *
- * Cut out by flooding in from the edges rather than by keying the colour out,
- * because the two are not the same picture. This mark is black *around* the
- * skull and black *inside* it - the sockets, the eye patch, the open mouth -
+ * A source that arrives with a background still has to have it taken off, and
+ * that is done by flooding in from the edges rather than by keying the colour
+ * out, because the two are not the same picture. A skull is black *around* its
+ * outline and black *inside* it - the sockets, the eye patch, the open mouth -
  * and keying every black pixel would punch the face out along with the
  * background. Only what the border can reach is background.
  * ----------------------------------------------------------------------- */
 
-function cutOut(height, { field, box }, sourceHeight) {
+function cutOut(height, { field, box, cutOutSource }, sourceHeight) {
+  /*
+   * Nothing to cut: the source arrived without a background, so scaling the
+   * box is the whole job. Flooding it would be actively wrong — the flood
+   * keys on colour, and the transparent ground here is black, the same black
+   * as the outline it would eat its way into.
+   */
+  if (cutOutSource) {
+    const width = Math.max(1, Math.round(height * (box.w / box.h)));
+    return { png: encodePng(width, height, decode(width, height, box)), width, height };
+  }
+
   // Worked at full frame, not cropped: the flood needs a border it can be sure
   // is background, and the tight box around the mark has the mark on its edge.
   const frame = Math.max(64, Math.round(height * (sourceHeight / box.h)));
@@ -395,8 +420,25 @@ function icoImage(size, rgba) {
     }
   }
 
-  // Mask rows are 1 bit per pixel, padded to four bytes, and all zero.
-  const mask = Buffer.alloc(Math.ceil(size / 32) * 4 * size);
+  /*
+   * The mask, which is not decoration.
+   *
+   * It predates the alpha channel and Windows still consults it in places —
+   * small tray and title-bar renderings among them. It used to be left at all
+   * zeros because the icon was opaque; now that it is not, a zeroed mask would
+   * draw the transparent ground as a solid rectangle exactly where the icon is
+   * smallest. One bit per pixel, set where the pixel is see-through, rows
+   * bottom-up and padded to four bytes like everything else in here.
+   */
+  const stride = Math.ceil(size / 32) * 4;
+  const mask = Buffer.alloc(stride * size);
+  for (let y = 0; y < size; y += 1) {
+    const from = (size - 1 - y) * size * 4;
+    for (let x = 0; x < size; x += 1) {
+      if (rgba[from + x * 4 + 3] >= 128) continue;
+      mask[y * stride + (x >> 3)] |= 0x80 >> (x & 7);
+    }
+  }
   return Buffer.concat([header, pixels, mask]);
 }
 

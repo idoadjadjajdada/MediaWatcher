@@ -7,6 +7,34 @@ release carrying these notes and the Windows installer built from that commit �
 Versions follow [semantic versioning](https://semver.org): the minor number
 moves for new behaviour, the patch number for fixes alone.
 
+## 1.4.1
+
+### Changed
+
+- **A new mark, and every icon cut out.** The skull replaces the old logo
+  everywhere it appeared: the tab, the tray, the taskbar, the title bar, the
+  navigation rail, the login page, the installed app on a phone's home screen
+  and the notifications the app raises. All of them are generated from one file
+  — `public/icons/logo.png` — so replacing that file and running
+  `node tools/make-icons.mjs` is still the whole job.
+
+  They no longer carry a background. The icons used to be drawn onto the
+  source's own field colour, on the reasoning that a launcher composites an
+  icon onto whatever it likes and a transparent one would pick up a white
+  sheet. That is the wrong way round for a mark which is a cut-out shape rather
+  than a picture in a box: the field showed up as a pale rectangle behind the
+  skull on every dark surface it landed on.
+
+  Two smaller things had to follow. The generator found the mark by looking for
+  pixels that differed from a corner — which finds nothing useful in an image
+  that is transparent at the corner and black in the middle — so it now goes by
+  alpha when the source arrives cut out, and skips the flood-fill that would
+  otherwise have eaten its way into the skull's own outline. And the Windows
+  icon's 1-bit mask, a relic that predates the alpha channel and is still
+  consulted in places, is built from the alpha instead of left at zero; without
+  that the tray would have drawn a solid rectangle at exactly the size where
+  the icon is smallest.
+
 ## 1.4.0
 
 ### Fixed
