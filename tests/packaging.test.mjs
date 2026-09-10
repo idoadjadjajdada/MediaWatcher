@@ -121,6 +121,36 @@ for (const script of ['dist:linux', 'dist:win', 'desktop:pack:linux', 'test:pack
 console.log('PASS: the builder config names Linux targets, an executable and its dependencies');
 
 /* --------------------------------------------------------------------------
+ * The native binary the packaged backend cannot run without
+ * ----------------------------------------------------------------------- */
+
+/*
+ * Where better-sqlite3 keeps its compiled binary is a property of the version
+ * installed, not a constant. v11 built `build/Release/better_sqlite3.node`;
+ * from v12 a prebuilt `prebuilds/<platform>-<arch>.node` is downloaded and no
+ * build directory is created at all. The packaging check used to name the first
+ * path, so raising the dependency failed the build at its very last step, after
+ * the whole Electron download and pack, over a file that was never going to be
+ * there.
+ *
+ * This holds the check against the dependency actually installed, which costs
+ * nothing and fails in a second rather than at the end of a ten-minute build.
+ */
+const { nativeBinaries } = require(path.join(root, 'tools/verify-desktop.cjs'));
+const sqlite = path.join(root, 'node_modules', 'better-sqlite3');
+if (fs.existsSync(sqlite)) {
+  const found = nativeBinaries(sqlite);
+  assert.ok(found.length, 'the installed better-sqlite3 has no .node binary the packaging check can find');
+  assert.ok(found.some((file) => /linux-x64\.node$|better_sqlite3\.node$/.test(file)),
+    'no binary this build could package for Linux x64');
+  console.log(`PASS: the packaging check finds better-sqlite3's binary where this version keeps it`);
+} else {
+  console.log('SKIP: better-sqlite3 is not installed, so its layout cannot be checked');
+}
+assert.equal(nativeBinaries(path.join(root, 'node_modules', 'no-such-package-here')).length, 0,
+  'a missing package must read as no binaries, not throw');
+
+/* --------------------------------------------------------------------------
  * The files an Arch install is made of
  * ----------------------------------------------------------------------- */
 

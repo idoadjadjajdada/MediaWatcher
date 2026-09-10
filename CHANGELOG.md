@@ -58,6 +58,17 @@ moves for new behaviour, the patch number for fixes alone.
 
 ### Changed
 
+- **The packaging check looks for the SQLite binary rather than naming it.**
+  Where better-sqlite3 keeps its compiled addon is a property of the version
+  installed: v11 built `build/Release/better_sqlite3.node`, and from v12 a
+  prebuilt `prebuilds/<platform>-<arch>.node` is downloaded and no build
+  directory is created at all. The check named the first path, so raising the
+  dependency failed the build at its very last step — after the entire Electron
+  download and pack — over a file that was never going to exist. It now finds
+  whatever native binary shipped, and `packaging.test.mjs` holds that against
+  the dependency actually installed, in a second rather than at the end of a
+  ten-minute build.
+
 - **better-sqlite3 moves to 13.** Arch ships Node well ahead of most native
   modules, and 11.10.0 does not compile against Node 26 at all — `makepkg`
   stopped a long way into the build with a wall of C++ from a file nobody in

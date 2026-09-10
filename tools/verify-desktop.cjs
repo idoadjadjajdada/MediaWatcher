@@ -4,6 +4,21 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const platform = require('../desktop/platform.cjs');
 
+/** Every compiled addon under `dir`, at whatever depth the package keeps it. */
+function nativeBinaries(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const found = [];
+  const walk = (at) => {
+    for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+      const file = path.join(at, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.name.endsWith('.node')) found.push(file);
+    }
+  };
+  walk(dir);
+  return found;
+}
+
 // Validate the final copied payload, not just staging. A missing dependency
 // must fail the build before an installer or a broken application is handed out.
 module.exports = async ({ appOutDir, electronPlatformName }) => {
@@ -12,9 +27,23 @@ module.exports = async ({ appOutDir, electronPlatformName }) => {
     ? `${path.basename(appOutDir)}.app/Contents/Resources` : 'resources');
   const backend = path.join(resources, 'backend');
   const node = platform.bundledNode(resources, target);
-  for (const file of ['node_modules/dotenv/package.json', 'node_modules/better-sqlite3/build/Release/better_sqlite3.node', 'db/schema.sql', '.env.example', 'public/index.html']) {
+  for (const file of ['node_modules/dotenv/package.json', 'db/schema.sql', '.env.example', 'public/index.html']) {
     assert.ok(fs.existsSync(path.join(backend, file)), `Missing packaged backend file: ${file}`);
   }
+  /*
+   * The SQLite binary, wherever this version of better-sqlite3 keeps it.
+   *
+   * Naming one path was wrong the moment the dependency moved: v11 built
+   * `build/Release/better_sqlite3.node` locally, and from v12 a prebuilt
+   * `prebuilds/<platform>-<arch>.node` is downloaded instead and no build
+   * directory is created at all. Asserting the old path failed a package that
+   * was in fact complete, at the end of a full Electron build.
+   *
+   * What actually matters is that a native binary shipped and that the runtime
+   * below can load it. So look for one rather than for a filename.
+   */
+  assert.ok(nativeBinaries(path.join(backend, 'node_modules', 'better-sqlite3')).length,
+    'Missing packaged backend file: no better-sqlite3 native binary (.node) was included');
   for (const file of ['.env', '.env.bak', 'config/admin-key', 'db/mediawatcher.db', 'library', 'temp', 'cache']) {
     assert.ok(!fs.existsSync(path.join(backend, file)), `Personal data included in package: ${file}`);
   }
@@ -58,3 +87,7 @@ module.exports = async ({ appOutDir, electronPlatformName }) => {
   console.log(`Verified packaged dependencies, SQLite ABI, FFmpeg (${versions.bundledFfmpeg ? 'bundled' : 'from the system'}), `
     + 'unchanged frontend and no personal data.');
 };
+
+// Exported so tests can hold it against the real node_modules, and catch a
+// dependency bump that moves the binary before a build spends ten minutes on it.
+module.exports.nativeBinaries = nativeBinaries;
