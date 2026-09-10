@@ -68,7 +68,14 @@ depends=(
 # nodejs is only needed to build. The package carries its own copy of it for the
 # backend, so nothing here is required at runtime.
 makedepends=('git' 'nodejs>=20' 'npm' 'python' 'gcc' 'make')
-optdepends=('tailscale: reach your library from outside the house')
+optdepends=(
+  # Chromium reaches NVDEC through VAAPI on Linux, so an NVIDIA machine decodes
+  # video on the CPU without this shim — the usual cause of a window that
+  # stutters on content the machine is more than fast enough to play.
+  'libva-nvidia-driver: hardware video decoding in the window, on NVIDIA'
+  'libva-utils: vainfo, for checking that hardware decoding is available'
+  'tailscale: reach your library from outside the house'
+)
 # Electron and the bundled Node are prebuilt binaries; stripping them or
 # hunting for their debug symbols achieves nothing and can break signatures.
 options=('!strip' '!debug' '!lto')

@@ -102,6 +102,53 @@ function unmanaged(fetchLatest) {
 console.log('PASS: an unmanaged install reports releases and installs none of them');
 
 /* --------------------------------------------------------------------------
+ * What the window asks the GPU for
+ * ----------------------------------------------------------------------- */
+
+/*
+ * Windows must be untouched by any of this. It decodes video on the GPU by
+ * default and its compositor is on a path everybody tests; a switch added for
+ * Linux that reached it would be a regression on the platform that works.
+ */
+assert.deepEqual(platform.gpuSwitches({ mode: 'auto', platform: 'win32' }),
+  { disableHardwareAcceleration: false, switches: [] }, 'Windows must be left exactly as it was');
+assert.deepEqual(platform.gpuSwitches({ mode: 'off', platform: 'linux' }),
+  { disableHardwareAcceleration: false, switches: [] }, "'off' is the behaviour of every earlier version");
+assert.equal(platform.gpuSwitches({ mode: 'software', platform: 'linux' }).disableHardwareAcceleration, true);
+assert.deepEqual(platform.gpuSwitches({ mode: 'software', platform: 'linux' }).switches, [],
+  'giving up on the GPU and then configuring it is incoherent');
+
+const auto = platform.gpuSwitches({ mode: 'auto', platform: 'linux' });
+const named = Object.fromEntries(auto.switches.map(([name, value]) => [name, value]));
+assert.ok('enable-features' in named, 'Linux decodes video on the CPU unless the feature is named');
+assert.match(named['enable-features'], /AcceleratedVideoDecodeLinuxGL/);
+// Spelled differently across Chromium versions; unknown names are ignored, so
+// listing them all is how one build gets the one it has.
+assert.match(named['enable-features'], /VaapiVideoDecoder/);
+assert.ok('ignore-gpu-blocklist' in named);
+assert.equal(named['ozone-platform-hint'], 'auto',
+  'XWayland frame pacing is the half that stutters on content of any size');
+// An unrecognised value must land on the default rather than switching nothing
+// on, because that is what a typo in desktop.json looks like.
+assert.deepEqual(platform.gpuSwitches({ mode: 'nonsense', platform: 'linux' }), auto);
+assert.deepEqual(platform.GPU_MODES, ['auto', 'off', 'software']);
+
+// The shell has to read the setting and hand it over; the modes are useless if
+// nothing consults them.
+const mainSource = read('desktop/main.cjs');
+assert.match(mainSource, /platform\.GPU_MODES\.includes\(process\.env\.MW_GPU\)/,
+  'MW_GPU must set the mode for one run');
+assert.match(mainSource, /platform\.gpuSwitches\(\{ mode: gpuMode \}\)/);
+assert.match(mainSource, /app\.commandLine\.appendSwitch\(name, value\)/);
+// Switches only take effect before the app is ready, so they cannot be applied
+// from inside whenReady().
+assert.ok(mainSource.indexOf('gpuSwitches({ mode: gpuMode })') < mainSource.indexOf('app.whenReady()'),
+  'GPU switches must be applied before the app becomes ready, or Chromium ignores them');
+assert.match(mainSource, /getGPUFeatureStatus\(\)/,
+  'the log must say whether video is decoding on the GPU, or this is guesswork again');
+console.log('PASS: GPU switches are Linux-only, overridable, applied before ready, and reported');
+
+/* --------------------------------------------------------------------------
  * The build configuration
  * ----------------------------------------------------------------------- */
 

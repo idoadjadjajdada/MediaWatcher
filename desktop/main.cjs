@@ -61,6 +61,33 @@ const chromeOptions = chrome === 'overlay'
 const chromeCss = chrome === 'overlay' ? ''
   : '\nhtml[data-mw-desktop] #mw-titlebar { padding-right: 18px; }\n';
 
+/**
+ * What the window asks the GPU for.
+ *
+ * Windows needs none of this: Chromium decodes video on the GPU there by
+ * default and its compositor is on a path everybody tests. Linux is the
+ * opposite on both counts. Accelerated video decode is off unless it is asked
+ * for by name, the driver may be on a blocklist written years ago, and a window
+ * running through XWayland in a Wayland session gets its frames paced by two
+ * compositors that disagree — which is the shape of a stutter that comes and
+ * goes on content the machine is more than fast enough to play.
+ *
+ * So `auto` asks for the accelerated paths on Linux and leaves every other
+ * platform exactly as it was. It is a default rather than a certainty: GPU
+ * switches are the one setting that can make video worse instead of better, so
+ * `off` is today's behaviour and `software` gives up on the GPU entirely, which
+ * is the right answer on a driver that is the problem rather than the fix.
+ *
+ * MW_GPU sets it for one run; "gpu" in desktop.json remembers it.
+ */
+const gpuMode = platform.GPU_MODES.includes(process.env.MW_GPU) ? process.env.MW_GPU
+  : platform.GPU_MODES.includes(settings.gpu) ? settings.gpu : 'auto';
+{
+  const { disableHardwareAcceleration, switches } = platform.gpuSwitches({ mode: gpuMode });
+  if (disableHardwareAcceleration) app.disableHardwareAcceleration();
+  for (const [name, value] of switches) app.commandLine.appendSwitch(name, value);
+}
+
 let win, tray, child, origin, starting, stopPromise;
 let attached = false;
 let attachTimer;
@@ -626,6 +653,42 @@ const updates = createUpdates({
   }
 });
 
+/**
+ * What the GPU is actually doing, written down once at startup.
+ *
+ * "Video stutters" has too many candidate causes to argue about from the
+ * outside, and exactly one of them is settled by a fact the app already knows:
+ * whether Chromium is decoding video on the GPU or on the CPU. Chromium reports
+ * it, nobody ever looks, and so the question gets answered by guessing at
+ * switches instead. It goes in the desktop log, next to everything else worth
+ * knowing when playback is wrong.
+ */
+async function reportGpu() {
+  if (process.platform === 'win32' && gpuMode === 'auto') return;
+  try {
+    const status = app.getGPUFeatureStatus() || {};
+    // The two that decide whether a video window is smooth. The rest of the
+    // map is real but not what anybody is here for.
+    const decode = status.video_decode || 'unknown';
+    const compositing = status.gpu_compositing || 'unknown';
+    appendLog(`gpu mode=${gpuMode} video_decode=${decode} gpu_compositing=${compositing}`
+      + ` ozone=${process.env.XDG_SESSION_TYPE || 'unknown'}\n`);
+    if (!/^enabled/.test(decode)) {
+      appendLog('gpu: Chromium is decoding video on the CPU. On Linux this is the usual cause of'
+        + ' stutter that comes and goes. See docs/linux.md — playback.\n');
+    }
+    const info = await app.getGPUInfo('basic');
+    const device = (info?.gpuDevice || []).find((each) => each.active) || (info?.gpuDevice || [])[0];
+    if (device) {
+      appendLog(`gpu: vendor=0x${Number(device.vendorId || 0).toString(16)}`
+        + ` device=0x${Number(device.deviceId || 0).toString(16)}`
+        + `${device.driverVersion ? ` driver=${device.driverVersion}` : ''}\n`);
+    }
+  } catch (error) {
+    appendLog(`gpu: could not be reported: ${error.message}\n`);
+  }
+}
+
 function updateLabel() {
   const { status, latestVersion } = updates.snapshot();
   if (status === 'unmanaged') return latestVersion ? `Version ${latestVersion} is available` : 'Updates & version';
@@ -759,6 +822,7 @@ else {
       else if (behaviour === 'tray') win.hide();
       else askAboutClosing();
     });
+    void reportGpu();
     tray = new Tray(trayIcon);
     tray.setToolTip('MediaWatcher — runs in the background; right-click to quit');
     tray.on('double-click', showWindow);

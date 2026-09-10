@@ -115,6 +115,38 @@ moves for new behaviour, the patch number for fixes alone.
 
 ### Fixed
 
+- **The window decoded video on the CPU, and stuttered doing it.** Chromium
+  does not use the GPU to decode video on Linux unless the feature is named on
+  the command line, its driver blocklist is conservative and largely
+  historical, and a window running through XWayland inside a Wayland session
+  has its frames paced by two compositors that disagree. Any of those three
+  produces the same symptom — stutter that comes and goes, on content the
+  machine is more than fast enough to play — and MediaWatcher was asking for
+  none of them.
+
+  It now asks for all three on Linux, and for nothing at all anywhere else:
+  Windows already decodes on the GPU and its compositor is on a path everybody
+  tests, so a switch added for Linux that reached it would be a regression on
+  the platform that works.
+
+  GPU switches are the one setting that can make video worse rather than
+  better, so there are two ways out. `MW_GPU=off` is what every earlier version
+  did. `MW_GPU=software` gives up on the GPU entirely, which is the right answer
+  on a driver that is the problem rather than the fix. Either can live in
+  `desktop.json`.
+
+  On NVIDIA there is one thing pacman cannot decide for you: Chromium reaches
+  NVDEC through VAAPI, so hardware decoding needs `libva-nvidia-driver`. It is
+  an optional dependency, named at install time rather than pulled in.
+
+- **What the GPU is doing is written down now.** "Video stutters" has too many
+  candidate causes to argue about from the outside, and one of them is settled
+  by a fact the app already had and never reported: whether Chromium is
+  decoding video on the GPU or on the CPU. It goes in the desktop log at every
+  start, with the compositing mode, the session type and the adapter — so the
+  next person with this problem reads the answer instead of guessing at
+  switches.
+
 - **A window nobody can move is worse than one that is the wrong colour.** The
   dark title bar with Electron's caption buttons drawn over it depends on the
   desktop drawing client-side decorations, and on a tiling or minimal window

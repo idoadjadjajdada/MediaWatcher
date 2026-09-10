@@ -110,7 +110,57 @@ function makeUpdater(options, platform = process.platform) {
   return new updater.NsisUpdater(options);
 }
 
+/** The modes the window's GPU use can be put into. */
+const GPU_MODES = ['auto', 'off', 'software'];
+
+/**
+ * What to ask Chromium for, given a mode and a platform.
+ *
+ * Windows needs none of it: video decodes on the GPU there by default and the
+ * compositor is on a path everybody tests. Linux is the opposite on both
+ * counts — accelerated decode is off unless asked for by name, the driver may
+ * be on a blocklist written years ago, and a window running through XWayland in
+ * a Wayland session has its frames paced by two compositors that disagree,
+ * which is the shape of a stutter that comes and goes on content the machine is
+ * more than fast enough to play.
+ *
+ * Returned as data rather than applied here so the decision can be tested
+ * without a display, a GPU, or Electron.
+ *
+ * @returns {{ disableHardwareAcceleration: boolean, switches: [string, string?][] }}
+ */
+function gpuSwitches({ mode = 'auto', platform = process.platform } = {}) {
+  const chosen = GPU_MODES.includes(mode) ? mode : 'auto';
+  // Not a fallback but an instruction: some drivers composite worse than the
+  // CPU does, and a smooth software window beats a stuttering accelerated one.
+  if (chosen === 'software') return { disableHardwareAcceleration: true, switches: [] };
+  // 'off' is what every version before this did, on every platform.
+  if (chosen === 'off' || platform !== 'linux') return { disableHardwareAcceleration: false, switches: [] };
+  return {
+    disableHardwareAcceleration: false,
+    switches: [
+      // Chromium ignores feature names it does not know, which is what makes
+      // naming several safe: these are one capability as it has been spelled
+      // across Chromium versions, and the build takes whichever it has.
+      ['enable-features', [
+        'AcceleratedVideoDecodeLinuxGL',
+        'AcceleratedVideoDecodeLinuxZeroCopyGL',
+        'VaapiVideoDecoder',
+        'VaapiVideoDecodeLinuxGL'
+      ].join(',')],
+      // Conservative and largely historical; a driver good enough to run this
+      // window is good enough to decode into it.
+      ['ignore-gpu-blocklist'],
+      // Wayland natively where there is a Wayland session, rather than through
+      // XWayland. 'auto' is Chromium's own detection, so an X11 session is
+      // unaffected — and this is the half most likely to be the stutter,
+      // because XWayland pacing errors show up on content of any size.
+      ['ozone-platform-hint', 'auto']
+    ]
+  };
+}
+
 module.exports = {
   TARGETS, target, requireTarget, executableName, bundledNode,
-  selfUpdating, updateHint, makeUpdater
+  selfUpdating, updateHint, makeUpdater, GPU_MODES, gpuSwitches
 };

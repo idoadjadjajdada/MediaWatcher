@@ -216,18 +216,70 @@ that server on the port and joins it rather than starting a second one — closi
 the window leaves the library serving. `sudo loginctl enable-linger "$USER"`
 makes it run without a login session, for a machine that is only a server.
 
-## Wayland
+## Playback stutters
 
-Electron runs under XWayland by default, which works. For native Wayland —
-better fractional scaling, no blurry text on a HiDPI screen:
+Press `i` during playback for the stats overlay. It separates the two causes,
+which have nothing to do with each other:
 
-```bash
-mediawatcher --ozone-platform-hint=auto
+- **Dropped frames climbing while the buffer stays healthy** — the window
+  cannot draw the frames fast enough. That is the client side, below.
+- **Buffer ahead falling towards zero** — the server cannot produce video
+  faster than you are watching it. That is the encoder; check the server log
+  at startup for `hardware H.264 encoder verified: …` or `using software H.264
+  encoding`, and for whether HDR tone mapping went to the GPU.
+
+### The window decoding on the CPU
+
+Chromium does not decode video on the GPU on Linux unless it is asked to by
+name, its driver blocklist is conservative and largely historical, and a window
+running through XWayland inside a Wayland session has its frames paced by two
+compositors that disagree. Any of the three produces the same symptom: stutter
+that comes and goes, on content the machine is more than fast enough to play.
+
+MediaWatcher asks for the accelerated paths on Linux by default. What it got is
+written to the desktop log at every start — **Open desktop log** in the tray
+menu:
+
+```
+gpu mode=auto video_decode=enabled gpu_compositing=enabled ozone=wayland
 ```
 
-Add it to `Exec=` in `~/.local/share/applications/mediawatcher.desktop` to make
-it stick without editing the packaged entry. Hardware video decoding under
-Wayland varies by driver; if playback stutters, drop the flag first.
+`video_decode=disabled_software` there means the window is decoding on the CPU,
+and the log says so in the next line.
+
+**On NVIDIA**, Chromium reaches NVDEC through VAAPI, so it needs the shim:
+
+```bash
+sudo pacman -S libva-nvidia-driver libva-utils
+vainfo | grep -i h264          # should list H264 decode entrypoints
+```
+
+Both are optional dependencies of the package, so pacman names them at install
+time but does not pull them in. On AMD and Intel the driver is already in
+`mesa` and there is nothing to install.
+
+If accelerated video makes things *worse* — some drivers do — turn it off, or
+give up on the GPU entirely:
+
+```bash
+MW_GPU=off mediawatcher        # what every version before 1.5.0 did
+MW_GPU=software mediawatcher   # no GPU at all; a smooth software window
+                               # beats a stuttering accelerated one
+```
+
+Set `"gpu": "off"` in `~/.config/MediaWatcher/desktop.json` to keep it. Try each
+for a few minutes with the stats overlay open — the dropped-frame counter
+answers it faster than an opinion does.
+
+## Wayland
+
+MediaWatcher asks Chromium for native Wayland where there is a Wayland session,
+and X11 everywhere else — `--ozone-platform-hint=auto`, applied as part of
+`MW_GPU=auto` above. That means better fractional scaling, no blurry text on a
+HiDPI screen, and frames paced by one compositor instead of two.
+
+`MW_GPU=off` drops it along with the rest, which is the thing to try if native
+Wayland is worse on your driver than XWayland was.
 
 ## Verification
 
