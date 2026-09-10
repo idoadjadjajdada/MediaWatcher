@@ -27,11 +27,14 @@ moves for new behaviour, the patch number for fixes alone.
   separately. A payload staged as `node.exe` for a runtime that forks `node` is
   not a bug anybody finds by reading either file.
 
-  The PKGBUILD packages the clone it is sitting in, at the commit checked out,
-  rather than only a published tag — the case it is most often used from is a
-  branch that has not been released, and a source line that can only fetch a
-  tag fails there before it compiles a line. `_ref` picks another commit and
-  `_upstream=1` fetches from GitHub instead.
+  The PKGBUILD packages the clone it is sitting in, and has no `source=` line
+  at all. A git source has three ways to fail before the build compiles a line:
+  a ref that has to exist, a working copy makepkg has to create, and a
+  `git rev-parse` that quietly returns nothing when git distrusts a directory's
+  ownership. Each ends in "invalid reference" about a tag that was never the
+  point — which is what packaging an unreleased branch means. `prepare()`
+  exports the tree from a path worked out from the PKGBUILD's own location, so
+  none of that machinery is there to fail; `_ref` selects a different commit.
 
   From a checkout there is `./mediawatcher`, which is what `start.bat` is on
   Windows: first-run setup, then the server, with `app` for the desktop window

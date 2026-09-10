@@ -66,16 +66,27 @@ launcher at `/usr/bin/mediawatcher`, the application under `/opt/mediawatcher`,
 and `ffmpeg` pulled in as a dependency. Launch it and choose **Set up a new
 library**, or **Use existing library** and select a folder you already have.
 
-It packages the clone it is sitting in, at the commit you have checked out, and
-pins that commit so the build is reproducible. Nothing has to be published for
-this to work: the package you install is the code you are looking at. To build
-some other ref from the same clone, or to fetch a published tag from GitHub
-without a clone at all:
+It packages the clone it is sitting in, at the commit you have checked out.
+Nothing has to be published for this to work, and there is nothing to
+configure: the package you install is the code you are looking at.
+
+There is deliberately no `source=` line. A git source has to resolve a ref,
+create a working copy, and ask git where the repository is — and each of those
+can fail before the build compiles a line, with an error about a tag that was
+never the point. `prepare()` exports the tree instead, from a path it works out
+from the PKGBUILD's own location, so none of that machinery exists to break.
+It uses `git archive`, which leaves your `.env`, database, library and
+`node_modules` behind; where git is unavailable it falls back to a copy that
+excludes them by name.
+
+To build a different commit, tag or branch from the same clone:
 
 ```bash
-_ref=v1.4.1 makepkg -si              # another commit, tag or branch, from this clone
-_upstream=1 _ref=v1.4.1 makepkg -si  # from GitHub instead
+_ref=some-branch makepkg -si
 ```
+
+To build from somewhere else, clone it there and run `makepkg -si` from that
+clone's `packaging/arch`.
 
 To run it from a checkout without installing anything:
 

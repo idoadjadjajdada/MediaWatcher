@@ -9,14 +9,13 @@
 # published for it to work, and the package you install is the code you are
 # looking at.
 #
-# To package a specific ref from this clone:
+# To package a different commit, tag or branch from the same clone:
 #
-#   _ref=v1.4.1 makepkg -si
+#   _ref=some-branch makepkg -si
 #
-# To package straight from GitHub without a clone, use the tag it is published
-# under — makepkg reads _upstream from the environment as well:
-#
-#   _upstream=1 _ref=v1.4.1 makepkg -si
+# To build from somewhere else entirely, clone it there and run this from that
+# clone — there is nothing to configure, because this always packages the
+# checkout it is inside.
 #
 # Or skip pacman entirely: `npm run dist:linux` builds the same application as
 # an AppImage, a .pkg.tar.zst and a tarball in dist/.
@@ -74,30 +73,69 @@ optdepends=('tailscale: reach your library from outside the house')
 # hunting for their debug symbols achieves nothing and can break signatures.
 options=('!strip' '!debug' '!lto')
 
-# Where the source comes from.
+# There is no source= line, and that is the point.
 #
-# A PKGBUILD that only knows how to fetch a published tag is useless in the case
-# it is most often used from: a clone of a branch that has not been released
-# yet, sitting on the disk beside it. Asking git for the enclosing repository
-# gets that case right, pins the commit so the build is reproducible, and falls
-# back to the published tag when this file has been copied somewhere on its own.
-_ref="${_ref:-HEAD}"
-_worktree="$(git -C "$startdir" rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "${_upstream:-}" ] && [ -n "$_worktree" ]; then
-  _commit="$(git -C "$_worktree" rev-parse --verify "$_ref^{commit}")"
-  source=("$pkgname::git+file://$_worktree#commit=$_commit")
-else
-  # Fetching from GitHub needs a name that exists there, and "HEAD" is only
-  # meaningful to a clone on this disk.
-  _tag="$_ref"
-  [ "$_tag" = HEAD ] && _tag="v$pkgver"
-  source=("$pkgname::git+$url.git#tag=$_tag")
-fi
-sha256sums=('SKIP')
+# This packages the checkout it is sitting in, and a git source cannot express
+# that without going through machinery that has three ways to fail before it
+# compiles a line: a ref that has to exist, a working copy makepkg has to be
+# able to create, and a `git rev-parse` that quietly returns nothing when git
+# distrusts the directory's ownership — each of which ends in "invalid
+# reference" or "failure while creating working copy", about a tag that was
+# never the point.
+#
+# prepare() exports the tree instead. The PKGBUILD's own location says where
+# the repository is, so nothing has to be looked up, fetched, resolved or
+# trusted, and the failure modes above cannot occur.
+source=()
+sha256sums=()
 
-# Named by the source line above, so it does not depend on what the directory
-# somebody cloned into happens to be called.
 _srcdir="$pkgname"
+
+# The tree to package. HEAD by default — the commit you have checked out — or
+# any commit, tag or branch in this clone:  _ref=some-branch makepkg -si
+# It has to be a tree that carries packaging/, since package() installs from it.
+_ref="${_ref:-HEAD}"
+
+prepare() {
+  # ../.. from packaging/arch is the repository root, whatever it is called and
+  # wherever it was cloned. No git query, so no ownership check to fail.
+  local repo
+  repo="$(cd "$startdir/../.." && pwd -P)"
+  [ -f "$repo/package.json" ] || {
+    printf 'This PKGBUILD builds the MediaWatcher checkout it lives in, and\n' >&2
+    printf 'there is no package.json at %s.\n' "$repo" >&2
+    printf 'Run it from packaging/arch inside a clone of the repository.\n' >&2
+    return 1
+  }
+
+  rm -rf "$srcdir/$_srcdir"
+  mkdir -p "$srcdir/$_srcdir"
+
+  if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 \
+    && git -C "$repo" archive --format=tar "$_ref" 2>/dev/null | tar -x -C "$srcdir/$_srcdir"; then
+    # Tracked files at $_ref, which is also what leaves behind the .env, the
+    # database, the library and node_modules: git archive carries none of them.
+    msg2 "Packaging %s at %s" "$repo" "$(git -C "$repo" rev-parse --short "$_ref" 2>/dev/null || echo "$_ref")"
+  else
+    # No git, or a repository git will not read. Copy the tree instead, and
+    # name everything that must not travel with it rather than hoping.
+    msg2 "Packaging %s without git; excluding data, secrets and build output" "$repo"
+    [ "$_ref" = HEAD ] || {
+      printf '_ref=%s needs git to resolve, and git could not read %s.\n' "$_ref" "$repo" >&2
+      return 1
+    }
+    tar -c -C "$repo" \
+      --exclude=./.git --exclude=./node_modules --exclude=./dist \
+      --exclude=./.desktop-build --exclude=./test-results \
+      --exclude=./.env --exclude='./.env.*' --exclude=./config/admin-key \
+      --exclude=./db/mediawatcher.db --exclude='./db/mediawatcher.db-*' \
+      --exclude=./library --exclude=./temp --exclude=./cache \
+      . | tar -x -C "$srcdir/$_srcdir"
+  fi
+
+  # Whatever route got us here, a secret must not be sitting in the build tree.
+  rm -f "$srcdir/$_srcdir/.env" "$srcdir/$_srcdir/config/admin-key"
+}
 
 # No pkgver(): makepkg would rewrite this file mid-build to whatever the
 # checkout says, which dirties the working tree it just packaged. The version

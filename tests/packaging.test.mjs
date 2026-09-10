@@ -180,17 +180,29 @@ assert.match(pkgbuild, /chmod 4755 "\$pkgdir\/opt\/\$pkgname\/chrome-sandbox"/,
 assert.match(pkgbuild, /MW_LINUX_PACKAGE=pacman/,
   'the launcher is what tells the updates window who installed this');
 /*
- * The case this is used from most is a clone of a branch that has not been
- * released. A source line that only knows how to fetch a published tag fails
- * there before it compiles a line — "invalid reference: v1.5.0" — so the
- * enclosing checkout has to be what it packages by default.
+ * It packages the checkout it lives in, and it does that without a VCS source.
+ *
+ * A git source has three ways to fail before this compiles a line — a ref that
+ * has to exist, a working copy makepkg has to create, and a `git rev-parse`
+ * that returns nothing when git distrusts the directory's ownership, which
+ * silently falls back to fetching a tag. Every one of them ends in "invalid
+ * reference" about a tag that was never the point. So there is no source= to
+ * resolve: prepare() exports the tree from a path it works out from its own
+ * location.
  */
-assert.match(pkgbuild, /rev-parse --show-toplevel/,
-  'the PKGBUILD must package the clone it lives in, not only a published tag');
-assert.match(pkgbuild, /git\+file:\/\/\$_worktree#commit=/,
-  'the local build should pin a commit, so the package is reproducible');
-assert.equal(/^source=\("git\+\$url\.git#tag=v\$pkgver"\)$/m.test(pkgbuild), false,
-  'a tag-only source cannot build an unreleased branch');
+assert.match(pkgbuild, /^source=\(\)$/m, 'a VCS source is what kept failing; there must not be one');
+assert.equal(/^source=\(["']?git\+/m.test(pkgbuild), false, 'no git source may come back');
+assert.match(pkgbuild, /^prepare\(\) \{/m, 'the tree is exported by prepare()');
+assert.match(pkgbuild, /cd "\$startdir\/\.\.\/\.\." /,
+  'the repository root is found from this file\'s own location, not by asking git');
+assert.match(pkgbuild, /git -C "\$repo" archive/, 'git archive leaves untracked and ignored files behind');
+// git archive already excludes them, but the no-git fallback is a plain copy
+// and the build tree must never carry a password or a key either way.
+for (const secret of ['.env', 'config/admin-key']) {
+  assert.ok(pkgbuild.includes(secret), `prepare() must exclude ${secret} from the build tree`);
+}
+assert.match(pkgbuild, /rm -f "\$srcdir\/\$_srcdir\/\.env"/,
+  'whichever route was taken, the secrets are removed afterwards');
 for (const file of ['packaging/linux/mediawatcher.desktop', 'packaging/linux/mediawatcher-server.service',
   'public/icons/icon-512.png', 'docs/linux.md', 'README.md']) {
   assert.ok(pkgbuild.includes(file), `the PKGBUILD installs ${file}, which must exist`);
