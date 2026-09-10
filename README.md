@@ -83,8 +83,10 @@ makepkg -si
 ```
 
 That installs `mediawatcher` with an application-menu entry, an icon, a tray
-icon and `ffmpeg` as a dependency. Launch it and choose **Set up a new library**,
-or **Use existing library** and point it at a folder you already have.
+icon and `ffmpeg` as a dependency. It packages the clone it is sitting in, at
+whatever commit you have checked out, so nothing has to be published first.
+Launch it and choose **Set up a new library**, or **Use existing library** and
+point it at a folder you already have.
 
 Elsewhere, `npm run dist:linux` builds an AppImage, a pacman package and a
 tarball into `dist/`. From a checkout, `./mediawatcher app` opens the window and

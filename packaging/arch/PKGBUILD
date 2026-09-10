@@ -4,12 +4,22 @@
 #
 #   cd packaging/arch && makepkg -si
 #
-# To package the working tree instead of a tag, point the source at it:
+# By default that packages the clone it is sitting in, at the commit currently
+# checked out — a branch, a tag, whatever you cloned. Nothing has to be
+# published for it to work, and the package you install is the code you are
+# looking at.
 #
-#   makepkg -si --skipinteg  # after: source=("git+file://$(git rev-parse --show-toplevel)")
+# To package a specific ref from this clone:
 #
-# or skip pacman entirely and use `npm run dist:linux`, which builds the same
-# application as an AppImage, a .pkg.tar.zst and a tarball in dist/.
+#   _ref=v1.4.1 makepkg -si
+#
+# To package straight from GitHub without a clone, use the tag it is published
+# under — makepkg reads _upstream from the environment as well:
+#
+#   _upstream=1 _ref=v1.4.1 makepkg -si
+#
+# Or skip pacman entirely: `npm run dist:linux` builds the same application as
+# an AppImage, a .pkg.tar.zst and a tarball in dist/.
 #
 # This builds the Electron shell, the backend and its Node runtime, and installs
 # the lot under /opt/mediawatcher with a launcher, a desktop entry and icons.
@@ -35,13 +45,35 @@ optdepends=('tailscale: reach your library from outside the house')
 # Electron and the bundled Node are prebuilt binaries; stripping them or
 # hunting for their debug symbols achieves nothing and can break signatures.
 options=('!strip' '!debug' '!lto')
-source=("git+$url.git#tag=v$pkgver")
+
+# Where the source comes from.
+#
+# A PKGBUILD that only knows how to fetch a published tag is useless in the case
+# it is most often used from: a clone of a branch that has not been released
+# yet, sitting on the disk beside it. Asking git for the enclosing repository
+# gets that case right, pins the commit so the build is reproducible, and falls
+# back to the published tag when this file has been copied somewhere on its own.
+_ref="${_ref:-HEAD}"
+_worktree="$(git -C "$startdir" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "${_upstream:-}" ] && [ -n "$_worktree" ]; then
+  _commit="$(git -C "$_worktree" rev-parse --verify "$_ref^{commit}")"
+  source=("$pkgname::git+file://$_worktree#commit=$_commit")
+else
+  # Fetching from GitHub needs a name that exists there, and "HEAD" is only
+  # meaningful to a clone on this disk.
+  _tag="$_ref"
+  [ "$_tag" = HEAD ] && _tag="v$pkgver"
+  source=("$pkgname::git+$url.git#tag=$_tag")
+fi
 sha256sums=('SKIP')
 
-_srcdir="MediaWatcher"
+# Named by the source line above, so it does not depend on what the directory
+# somebody cloned into happens to be called.
+_srcdir="$pkgname"
 
-# No pkgver(): the source is pinned to a tag, so the version is decided above
-# and by the tag together. Raise both when packaging a new release.
+# No pkgver(): makepkg would rewrite this file mid-build to whatever the
+# checkout says, which dirties the working tree it just packaged. The version
+# lives in package.json, and tests/packaging.test.mjs fails if the two drift.
 
 build() {
   cd "$srcdir/$_srcdir"

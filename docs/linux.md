@@ -23,6 +23,17 @@ launcher at `/usr/bin/mediawatcher`, the application under `/opt/mediawatcher`,
 and `ffmpeg` pulled in as a dependency. Launch it and choose **Set up a new
 library**, or **Use existing library** and select a folder you already have.
 
+It packages the clone it is sitting in, at the commit you have checked out, and
+pins that commit so the build is reproducible. Nothing has to be published for
+this to work: the package you install is the code you are looking at. To build
+some other ref from the same clone, or to fetch a published tag from GitHub
+without a clone at all:
+
+```bash
+_ref=v1.4.1 makepkg -si              # another commit, tag or branch, from this clone
+_upstream=1 _ref=v1.4.1 makepkg -si  # from GitHub instead
+```
+
 To run it from a checkout without installing anything:
 
 ```bash
@@ -49,6 +60,11 @@ run the built application without packaging it.
 which avoids electron-builder downloading `fpm` in the middle of the run. It is
 the recommended path on Arch. Both need the network for npm packages, Electron
 and the Node license.
+
+`pkgver` in the PKGBUILD is the version the package reports; it does not choose
+what gets built. There is deliberately no `pkgver()` function, because makepkg
+would rewrite the PKGBUILD mid-build and dirty the working tree it just
+packaged — `packaging.test.mjs` fails instead if it drifts from `package.json`.
 
 ## FFmpeg is a dependency, not a payload
 

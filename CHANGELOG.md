@@ -27,6 +27,12 @@ moves for new behaviour, the patch number for fixes alone.
   separately. A payload staged as `node.exe` for a runtime that forks `node` is
   not a bug anybody finds by reading either file.
 
+  The PKGBUILD packages the clone it is sitting in, at the commit checked out,
+  rather than only a published tag — the case it is most often used from is a
+  branch that has not been released, and a source line that can only fetch a
+  tag fails there before it compiles a line. `_ref` picks another commit and
+  `_upstream=1` fetches from GitHub instead.
+
   From a checkout there is `./mediawatcher`, which is what `start.bat` is on
   Windows: first-run setup, then the server, with `app` for the desktop window
   and `doctor` for what is missing and the command to install it. There is no

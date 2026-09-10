@@ -152,6 +152,18 @@ assert.match(pkgbuild, /chmod 4755 "\$pkgdir\/opt\/\$pkgname\/chrome-sandbox"/,
   'without a setuid sandbox helper Chromium either fails or runs unsandboxed');
 assert.match(pkgbuild, /MW_LINUX_PACKAGE=pacman/,
   'the launcher is what tells the updates window who installed this');
+/*
+ * The case this is used from most is a clone of a branch that has not been
+ * released. A source line that only knows how to fetch a published tag fails
+ * there before it compiles a line — "invalid reference: v1.5.0" — so the
+ * enclosing checkout has to be what it packages by default.
+ */
+assert.match(pkgbuild, /rev-parse --show-toplevel/,
+  'the PKGBUILD must package the clone it lives in, not only a published tag');
+assert.match(pkgbuild, /git\+file:\/\/\$_worktree#commit=/,
+  'the local build should pin a commit, so the package is reproducible');
+assert.equal(/^source=\("git\+\$url\.git#tag=v\$pkgver"\)$/m.test(pkgbuild), false,
+  'a tag-only source cannot build an unreleased branch');
 for (const file of ['packaging/linux/mediawatcher.desktop', 'packaging/linux/mediawatcher-server.service',
   'public/icons/icon-512.png', 'docs/linux.md', 'README.md']) {
   assert.ok(pkgbuild.includes(file), `the PKGBUILD installs ${file}, which must exist`);
