@@ -147,7 +147,34 @@ const pkgbuild = read('packaging/arch/PKGBUILD');
 assert.match(pkgbuild, /^pkgname=mediawatcher$/m);
 assert.match(pkgbuild, new RegExp(`^pkgver=${pkg.version.replace(/\./g, '\\.')}$`, 'm'),
   'the PKGBUILD version has drifted from package.json');
-assert.match(pkgbuild, /^depends=\(.*'ffmpeg'.*\)$/m, 'Arch installs FFmpeg rather than bundling it');
+/*
+ * What the machine has to have.
+ *
+ * Electron is bundled, so these are the system libraries Chromium links
+ * against. Getting one wrong is not a build failure — it is an application
+ * that installs cleanly and then does nothing when its icon is clicked, with
+ * the missing library named only in a terminal nobody ran it from. Each of
+ * these was checked against Arch's package list, and libappindicator-gtk3 is
+ * asserted absent because it no longer exists there under that name.
+ */
+const pkgbuildDepends = (pkgbuild.match(/^depends=\(([\s\S]*?)^\)$/m)?.[1] || '')
+  .split('\n').map((line) => line.replace(/#.*$/, '').trim().replace(/^'|'$/g, ''))
+  .filter(Boolean);
+for (const need of ['ffmpeg', 'gtk3', 'nss', 'alsa-lib', 'libcups', 'mesa', 'at-spi2-core', 'ttf-font',
+  // The tray is how the app runs with its window closed, which is its default.
+  // An optional dependency is one pacman does not install.
+  'libayatana-appindicator']) {
+  assert.ok(pkgbuildDepends.includes(need), `Arch needs ${need} at runtime and the PKGBUILD omits it`);
+}
+assert.equal(pkgbuild.includes('libappindicator-gtk3'), false,
+  'Arch has no libappindicator-gtk3; the tray library is libayatana-appindicator');
+// Two packaging paths, one application: they cannot need different things.
+assert.deepEqual([...builder.pacman.depends].sort(), [...pkgbuildDepends].sort(),
+  'the PKGBUILD and the electron-builder pacman target disagree about dependencies');
+// nodejs builds this and does not run it; the package carries its own copy.
+assert.equal(pkgbuildDepends.some((each) => each.startsWith('nodejs')), false,
+  'the packaged backend brings its own Node, so nothing should depend on the system one');
+assert.match(pkgbuild, /makedepends=\(.*'nodejs>=20'.*\)/, 'building needs Node 20 or newer');
 assert.match(pkgbuild, /chmod 4755 "\$pkgdir\/opt\/\$pkgname\/chrome-sandbox"/,
   'without a setuid sandbox helper Chromium either fails or runs unsandboxed');
 assert.match(pkgbuild, /MW_LINUX_PACKAGE=pacman/,

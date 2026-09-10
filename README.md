@@ -77,13 +77,17 @@ notes are in [docs/desktop.md](docs/desktop.md).
 The same application, the same window, the same library. On Arch:
 
 ```bash
+sudo pacman -S --needed base-devel git
 git clone https://github.com/idoadjadjajdada/MediaWatcher.git
 cd MediaWatcher/packaging/arch
 makepkg -si
 ```
 
-That installs `mediawatcher` with an application-menu entry, an icon, a tray
-icon and `ffmpeg` as a dependency. It packages the clone it is sitting in, at
+That installs `mediawatcher` with an application-menu entry, an icon and a tray
+icon. You do not install anything by hand: `makepkg -si` has pacman pull every
+dependency it needs, and the package carries its own copy of Node for the
+backend, so nothing needs Node installed to run it and your existing Node is
+left alone. The full list is in [docs/linux.md](docs/linux.md). It packages the clone it is sitting in, at
 whatever commit you have checked out, so nothing has to be published first.
 Launch it and choose **Set up a new library**, or **Use existing library** and
 point it at a folder you already have.

@@ -39,7 +39,35 @@ pkgdesc='Self-hosted media library with TMDB metadata, a debrid downloader and a
 arch=('x86_64')
 url='https://github.com/idoadjadjajdada/MediaWatcher'
 license=('custom')
-depends=('ffmpeg' 'gtk3' 'nss' 'alsa-lib' 'libxtst' 'libnotify' 'at-spi2-core' 'libxss')
+# What a machine needs to run this.
+#
+# Electron is bundled, so these are the system libraries Chromium links against
+# rather than anything of MediaWatcher's own — every one of them verified to
+# exist under this name in Arch's repositories. ffmpeg is the exception and the
+# only one that is ours: the Linux build depends on the system copy instead of
+# carrying one, because a distribution's ffmpeg is linked against a dozen of its
+# own libraries and would not run anywhere else.
+depends=(
+  'ffmpeg'          # remuxing, transcoding, thumbnails, seek previews
+  'gtk3'            # Electron's window toolkit, and most of Chromium's X deps
+  'nss'             # TLS for the app's own requests to TMDB and AllDebrid
+  'alsa-lib'        # audio output
+  'libcups'         # Chromium links libcups.so.2 whether or not anything prints
+  'mesa'            # libgbm, which Chromium's compositor needs even on software
+  'libdrm'
+  'libxtst'
+  'libxss'
+  'libnotify'       # download-finished notifications
+  'at-spi2-core'    # accessibility bridge; Chromium fails to start without it
+  'ttf-font'        # any font — without one every label renders as boxes
+  # The tray, which is not a decoration here: closing the window keeps the
+  # server running by default, and without an indicator library that leaves
+  # somebody with a running library and no icon to click. An optional
+  # dependency would not be installed, and this is small.
+  'libayatana-appindicator'
+)
+# nodejs is only needed to build. The package carries its own copy of it for the
+# backend, so nothing here is required at runtime.
 makedepends=('git' 'nodejs>=20' 'npm' 'python' 'gcc' 'make')
 optdepends=('tailscale: reach your library from outside the house')
 # Electron and the bundled Node are prebuilt binaries; stripping them or
@@ -84,7 +112,18 @@ build() {
   export ELECTRON_CACHE="$srcdir/electron-cache"
   export ELECTRON_BUILDER_CACHE="$srcdir/electron-builder-cache"
 
-  npm ci
+  # The native SQLite module has to build against the Node that Arch installs,
+  # and Arch's Node is usually newer than any prebuild the package publishes.
+  # When it is too new, `npm ci` fails a long way into the run with a wall of
+  # C++ — so say what happened, once, in a sentence somebody can act on.
+  if ! npm ci; then
+    printf '\n' >&2
+    printf 'better-sqlite3 could not be built against %s.\n' "$(node -v)" >&2
+    printf 'Arch ships Node ahead of its prebuilds. Either wait for a\n' >&2
+    printf 'better-sqlite3 release that supports it, or build with an older\n' >&2
+    printf 'Node — nodejs-lts-jod, or a copy in your PATH for this build.\n' >&2
+    return 1
+  fi
   # Stages the backend, the shell, a copy of this machine's Node for the
   # backend's ABI, and — on Arch — a note that FFmpeg comes from the system.
   npm run desktop:prepare

@@ -83,7 +83,12 @@ module.exports = {
     }
   },
   pacman: {
-    depends: ['ffmpeg', 'gtk3', 'nss', 'alsa-lib', 'libxtst', 'libnotify', 'at-spi2-core', 'libxss'],
+    // The same runtime dependencies packaging/arch/PKGBUILD declares, and
+    // packaging.test.mjs fails if the two lists ever disagree: two packaging
+    // paths that install the same application must need the same things.
+    depends: ['ffmpeg', 'gtk3', 'nss', 'alsa-lib', 'libcups', 'mesa', 'libdrm',
+      'libxtst', 'libxss', 'libnotify', 'at-spi2-core', 'ttf-font',
+      'libayatana-appindicator'],
     // Arch calls it x86_64; the artifact name should too.
     artifactName: '${productName}-${version}-x86_64.${ext}'
   }

@@ -39,7 +39,31 @@ moves for new behaviour, the patch number for fixes alone.
   PowerShell launcher and there does not need to be — the desktop app has been
   the control panel since 1.1.0.
 
+- **The Arch package installs its own dependencies.** `makepkg -si` has pacman
+  pull everything: FFmpeg, the system libraries Chromium links against, a font,
+  and the indicator library that draws the tray — which is a hard dependency
+  rather than an optional one, because closing the window keeps the server
+  running by default and an optional dependency is one pacman does not install.
+  Nothing needs Node installed to run the app; the package carries its own copy
+  for the backend and leaves whatever Node is already there alone.
+
+  Every package name was checked against Arch's repositories rather than
+  remembered. `libappindicator-gtk3`, the name this would otherwise have used,
+  no longer exists there. And `packaging.test.mjs` now fails if the PKGBUILD and
+  the electron-builder pacman target ever disagree about what is needed: two
+  packaging paths installing one application cannot need different things.
+
 ### Changed
+
+- **better-sqlite3 moves to 13.** Arch ships Node well ahead of most native
+  modules, and 11.10.0 does not compile against Node 26 at all — `makepkg`
+  stopped a long way into the build with a wall of C++ from a file nobody in
+  this project wrote. 13.0.3 has prebuilds for it and installs without a
+  compiler. The application uses five of its methods and none of them changed.
+
+  The PKGBUILD now catches that failure whenever it comes back — a newer Node
+  will eventually outrun 13 too — and says what happened in a sentence, with the
+  fix, instead of leaving the compiler's output as the explanation.
 
 - **FFmpeg is a dependency on Linux, not a payload.** The Windows build bundles
   it because there is one obvious complete distribution and a Windows machine

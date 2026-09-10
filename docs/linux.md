@@ -10,6 +10,49 @@ it as an application, with a launcher entry, an icon, a tray and updates.
 Arch is the distribution this was tested on and the one with a package here.
 Everything except the PKGBUILD applies to any distribution.
 
+## What your machine needs
+
+**Nothing you have to install yourself.** `makepkg -si` reads the dependencies
+below and has pacman install every one that is missing — build tools first, then
+the runtime libraries when the package goes in. The only things you need before
+you start are `base-devel` and `git`, which is what makepkg itself runs on:
+
+```bash
+sudo pacman -S --needed base-devel git
+```
+
+The list is here so you know what is landing, and for anyone installing another
+way.
+
+**To run it**, pacman installs these for you:
+
+| | |
+|---|---|
+| `ffmpeg` | Remuxing, transcoding, thumbnails and seek previews. The one dependency that is MediaWatcher's rather than Electron's. |
+| `gtk3` `nss` `alsa-lib` `libcups` `mesa` `libdrm` `libxtst` `libxss` `libnotify` `at-spi2-core` | The system libraries Chromium links against. Electron is bundled; these are not. |
+| `ttf-font` | Any font package. Without one, every label renders as boxes. |
+| `libayatana-appindicator` | The system tray icon. A hard dependency rather than an optional one, because closing the window keeps the server running by default — without it you get a running library and no icon to click. |
+
+Optional: `tailscale`, for reaching your library from outside the house.
+
+**To build it**, `nodejs` 20 or newer, `npm` and `python`, all pulled in by
+`makepkg -s` as well. Node is a build dependency only: the package carries its
+own copy for the backend, so nothing needs Node installed to *run* MediaWatcher,
+and installing this will not disturb whatever Node you already have.
+
+The build needs network access for npm packages, Electron and the Node license.
+
+> **Arch's Node runs ahead of the native SQLite module's prebuilds.** When it
+> gets too far ahead, `npm ci` stops partway through a build with a wall of C++
+> errors from `better-sqlite3`. The PKGBUILD catches that and says so in a
+> sentence; the fix is to build with an older Node — `nodejs-lts-jod`, or any
+> Node 20–24 first in your `PATH` for that build — until a `better-sqlite3`
+> release catches up.
+
+**AppImage instead of the package?** It needs its execute bit (`chmod +x`),
+`fuse2`, and `ffmpeg` — nothing else, since Electron travels inside it. Or run
+it with `--appimage-extract-and-run` and skip FUSE.
+
 ## The short version, on Arch
 
 ```bash
