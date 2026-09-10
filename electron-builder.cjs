@@ -37,5 +37,54 @@ module.exports = {
     createStartMenuShortcut: true,
     shortcutName: 'MediaWatcher',
     deleteAppDataOnUninstall: false
+  },
+  /*
+   * Two Linux artefacts, because they answer to different owners.
+   *
+   * The AppImage is one file that runs anywhere and is the only Linux format
+   * electron-updater can replace in place, so it is what the app's own update
+   * flow talks about. The pacman package is the one an Arch machine should
+   * actually have installed: it lands in /opt with a desktop entry and icons,
+   * pulls in FFmpeg as a dependency, and is updated by pacman rather than by
+   * the app — which the updates window says rather than trying anyway.
+   *
+   * packaging/arch/PKGBUILD builds the same thing from source for anyone who
+   * would rather not have electron-builder's fpm download in the middle of it.
+   */
+  linux: {
+    // A single PNG of at least 256px; electron-builder derives the size set
+    // Linux desktops ask for, so there is no generated icon folder to commit.
+    icon: 'public/icons/icon-512.png',
+    target: [
+      { target: 'AppImage', arch: ['x64'] },
+      { target: 'pacman', arch: ['x64'] },
+      { target: 'tar.gz', arch: ['x64'] }
+    ],
+    artifactName: '${productName}-${version}-${arch}.${ext}',
+    // Named here rather than left to a default, because /usr/bin, the desktop
+    // entry's Exec line and the PKGBUILD all have to say the same word.
+    executableName: 'mediawatcher',
+    category: 'AudioVideo;Video;Player;Network',
+    synopsis: 'Self-hosted media library with a built-in player',
+    description: 'MediaWatcher scans your movies and TV shows, enriches them with TMDB metadata, '
+      + 'fetches new releases through a debrid service and plays them back with resume, subtitles '
+      + 'and next-episode autoplay.',
+    maintainer: 'MediaWatcher <noreply@example.invalid>',
+    desktop: {
+      entry: {
+        Name: 'MediaWatcher',
+        Comment: 'Self-hosted media library with a built-in player',
+        Categories: 'AudioVideo;Video;Player;Network;',
+        Keywords: 'media;video;movies;tv;library;player;',
+        // Without this the window is a second, unmatched entry in the dock.
+        StartupWMClass: 'MediaWatcher',
+        StartupNotify: 'true'
+      }
+    }
+  },
+  pacman: {
+    depends: ['ffmpeg', 'gtk3', 'nss', 'alsa-lib', 'libxtst', 'libnotify', 'at-spi2-core', 'libxss'],
+    // Arch calls it x86_64; the artifact name should too.
+    artifactName: '${productName}-${version}-x86_64.${ext}'
   }
 };

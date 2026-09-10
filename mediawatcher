@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# MediaWatcher — the Linux counterpart to start.bat and MediaWatcher.bat.
+#
+# Windows has two entry points because it has two things to start: start.bat
+# does first-run setup, MediaWatcher.bat opens the PowerShell launcher. There is
+# no PowerShell launcher here and there does not need to be — the desktop app is
+# the control panel now, and this script's job is only to get a checkout to the
+# point where either the app or the bare server will run.
+#
+#   ./mediawatcher            start the server, logs in this terminal
+#   ./mediawatcher app        start the Electron desktop app from source
+#   ./mediawatcher setup      install dependencies and create .env, then stop
+#   ./mediawatcher doctor     say what is missing and what to install it with
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")"
+command="${1:-server}"
+
+say() { printf '  %s\n' "$*"; }
+die() { printf '\n  %s\n\n' "$*" >&2; exit 1; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Every distribution spells the same three packages differently, and "install
+# ffmpeg" with no command attached is the least useful sentence in a README.
+install_hint() {
+  local package="$1"
+  if have pacman; then say "sudo pacman -S --needed $package"
+  elif have apt; then say "sudo apt install $package"
+  elif have dnf; then say "sudo dnf install $package"
+  elif have zypper; then say "sudo zypper install $package"
+  else say "install $package with your package manager"
+  fi
+}
+
+check_node() {
+  have node || {
+    printf '\n  Node.js was not found on your PATH.\n'
+    install_hint nodejs
+    die "MediaWatcher needs Node 20 or newer."
+  }
+  local major
+  major="$(node -p 'process.versions.node.split(".")[0]')"
+  [ "$major" -ge 20 ] || die "Node $(node -v) is too old; MediaWatcher needs 20 or newer."
+}
+
+check_ffmpeg() {
+  if have ffmpeg && have ffprobe; then return 0; fi
+  printf '\n  ffmpeg was not found. The server runs without it, but most .mkv\n'
+  printf '  releases will not play until it is installed.\n'
+  install_hint ffmpeg
+  printf '\n'
+}
+
+setup() {
+  check_node
+  if [ ! -d node_modules ]; then
+    say "Installing dependencies, this only happens once…"
+    npm install
+  fi
+  if [ ! -f .env ]; then
+    say "No .env yet — creating one from .env.example."
+    say "Add your TMDB and AllDebrid keys and a password before starting."
+    cp .env.example .env
+    chmod 600 .env
+  fi
+  check_ffmpeg
+}
+
+case "$command" in
+  server) setup; exec npm start ;;
+  app)    setup; exec npx electron desktop/main.cjs ;;
+  setup)  setup; say "Ready. Run ./mediawatcher to start the server." ;;
+  doctor)
+    check_node
+    say "node        $(node -v)"
+    say "npm         $(have npm && npm -v || echo 'missing')"
+    say "ffmpeg      $(have ffmpeg && ffmpeg -version | head -1 || echo 'missing')"
+    say "ffprobe     $(have ffprobe && echo present || echo 'missing')"
+    say "node_modules $([ -d node_modules ] && echo present || echo 'missing — run ./mediawatcher setup')"
+    say ".env        $([ -f .env ] && echo present || echo 'missing — run ./mediawatcher setup')"
+    ;;
+  -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "Unknown command '$command'. Try: server, app, setup, doctor." ;;
+esac

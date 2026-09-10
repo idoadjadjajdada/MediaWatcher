@@ -37,6 +37,13 @@ for (const define of ['${UNINSTALL_REGISTRY_KEY}', '${VERSION}']) {
 }
 console.log('PASS: the page skips the runs it must skip, and reads defines where they exist');
 
+// The NSIS script is Windows packaging, and makensis is downloaded by a
+// Windows packaging run. Everything above this line is text and compiles
+// nowhere, so it runs everywhere; this half only runs where it can.
+if (process.platform !== 'win32') {
+  console.log(`SKIP: makensis is a Windows toolchain — nothing to compile on ${process.platform}`);
+  process.exit(0);
+}
 const cache = path.join(os.homedir(), 'AppData/Local/electron-builder/Cache');
 const makensis = fs.existsSync(cache)
   ? fs.readdirSync(cache)

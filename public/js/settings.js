@@ -108,7 +108,7 @@ const choices = (field, value, options) => `
  * ----------------------------------------------------------------------- */
 
 /**
- * Only the Windows app has a window to close, so this section only exists
+ * Only the desktop app has a window to close, so this section only exists
  * there. In a browser tab `desktopWindow` is undefined and nothing renders.
  */
 function renderDesktop() {
@@ -818,13 +818,14 @@ function renderNotifications() {
       <section class="settings__group">
         <h2 class="settings__heading">Notifications</h2>
         <p class="settings__note">
-          A finished or failed download, shown by Windows. This works whenever
-          MediaWatcher is running, including with its window closed to the tray.
+          A finished or failed download, shown by your desktop. This works
+          whenever MediaWatcher is running, including with its window closed to
+          the tray.
         </p>
         ${allowed
     ? row('Downloads', 'Say when a download finishes or fails.',
       toggle('desktopNotifications', loadDevicePrefs().desktopNotifications))
-    : '<p class="settings__warn">Windows is not allowing notifications from MediaWatcher.</p>'}
+    : '<p class="settings__warn">Your desktop is not allowing notifications from MediaWatcher.</p>'}
         <p class="settings__note">
           Being told while MediaWatcher is not running at all needs a push
           service, which the desktop app has no way to reach. Open MediaWatcher

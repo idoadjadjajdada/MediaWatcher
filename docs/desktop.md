@@ -5,6 +5,12 @@ window and runs the existing Express backend as a child process. No frontend
 redesign or player rewrite is involved. `npm start`, browser access, the original
 launcher and Tailscale access remain available.
 
+This page is the Windows build. The same application builds and installs on
+Linux, where FFmpeg comes from the system and only the AppImage updates itself;
+that is [docs/linux.md](linux.md). Everything below about data locations,
+updates, desktop behaviour and verification applies to both except where it
+names a Windows path or the NSIS installer.
+
 ## Build and launch
 
 Build on Windows x64 with Node.js 20+ (verified with 24.17.0), npm, and a complete
@@ -14,10 +20,15 @@ Electron, installer tooling and the Node license.
 
 ```powershell
 npm install
-npm run desktop       # Develop against the existing project's .env and library
-npm run desktop:pack  # dist/win-unpacked/MediaWatcher.exe and companion files
-npm run dist          # dist/MediaWatcher-Setup-1.0.2-x64.exe
+npm run desktop         # Develop against the existing project's .env and library
+npm run desktop:pack    # dist/win-unpacked/MediaWatcher.exe and companion files
+npm run dist            # this platform's installer: dist/MediaWatcher-Setup-<version>-x64.exe
+npm run dist:win        # the same, named explicitly
 ```
+
+`npm run dist` builds for the machine it runs on. `dist:win` and `dist:linux`
+name a platform outright; there is no cross-building, because the backend ships
+a copy of the build machine's own Node.
 
 The installer creates Start menu and desktop shortcuts and supports choosing an
 installation directory. It bundles Node, production npm dependencies, FFmpeg and
@@ -35,8 +46,13 @@ is created, so missing backend dependencies fail the build.
 The backend uses a copy of the build machine's Node executable and installs
 `better-sqlite3` for that Node ABI. It does not rebuild the source project's
 SQLite binary for Electron. Both the original server and desktop build therefore
-remain usable. `MW_BUILD_FFMPEG` and `MW_BUILD_FFPROBE` can select absolute paths
-to other complete FFmpeg distributions; otherwise the build uses PATH.
+remain usable. `MW_BUILD_NODE` selects a different Node to copy, for a build
+meant to run on systems older than this one. `MW_BUILD_FFMPEG` and
+`MW_BUILD_FFPROBE` can select absolute paths to other complete FFmpeg
+distributions; otherwise the build uses PATH. `MW_BUILD_FFMPEG_MODE` decides
+whether FFmpeg is copied into the package at all — `bundle` always, `system`
+never, `auto` only when the binary is self-contained, which is the Linux
+default and why the Linux package depends on FFmpeg instead.
 
 ## Bring your current library
 
@@ -57,7 +73,8 @@ settings and remembered remote devices are preserved.
 
 **Set up a new library** collects the same required TMDB key, AllDebrid key and
 password as the existing `.env` configuration. New data defaults to
-`%APPDATA%\MediaWatcher\data`, with these paths inside it:
+`%APPDATA%\MediaWatcher\data` on Windows and `~/.config/MediaWatcher/data` on
+Linux, with these paths inside it:
 
 - `.env` and `config/admin-key`
 - `db/mediawatcher.db` and its SQLite sidecars
@@ -69,7 +86,8 @@ from the application installation; Settings writes the data folder's `.env`.
 Updates replace the application and preserve user data. Uninstalling deliberately
 leaves user data in place.
 
-`%APPDATA%\MediaWatcher\desktop.json` records the selected folder and window size.
+`desktop.json`, beside the data folder's parent, records the selected folder,
+window size and preferences.
 `desktop.log` is a bounded, redacted startup log with one previous log retained.
 The tray menu opens the data folder, configuration editor and log.
 
@@ -93,6 +111,13 @@ in one place and the app and the build follow.
 - Downloading is explicit and playback continues while it runs. Installing is
   explicit too: it stops the backend cleanly, then hands over to the NSIS
   installer, which keeps your data folder.
+- Whether the app may install anything at all depends on who owns its files. A
+  Windows installation and a Linux AppImage own theirs; a pacman, deb or rpm
+  package does not. An install the app does not own still checks and still
+  reports the newest release — that half is useful and safe — and then names
+  whatever installed it rather than overwriting files a package manager is
+  tracking. `desktop/platform.cjs` makes that call in one place, and the build
+  and the runtime both read it from there.
 - Running from source reports *Running from source* and contacts nobody; there
   is no installer to replace.
 - The updates window is a local page with the same narrow bridge as first-run
@@ -109,6 +134,12 @@ in one place and the app and the build follow.
 npm run release
 ```
 
+Run it once per platform. The first run creates the release from the changelog;
+a second, on the other platform's machine, uploads that platform's build into
+the release that already exists. Publishing the same platform twice is refused —
+the manifest is already there, and that is the case where somebody meant to
+raise the version instead.
+
 `tools/release.mjs` builds the installer and creates the GitHub release from
 one commit, and refuses rather than publishing something half-formed:
 
@@ -117,10 +148,12 @@ one commit, and refuses rather than publishing something half-formed:
 - `CHANGELOG.md` must have a `## <version>` section, which becomes the release
   notes verbatim — an installer with no notes asks people to close what they
   are watching without saying what for;
-- the build must have produced the installer, its `.blockmap` and a
-  `latest.yml` that names that installer. A release missing `latest.yml` is
-  invisible to every installed copy, and one whose `latest.yml` names a
-  different build sends them after a file that is not there;
+- the build must have produced this platform's artefacts and the manifest that
+  names them: the installer, its `.blockmap` and `latest.yml` on Windows; the
+  AppImage and `latest-linux.yml` on Linux, with the pacman package and tarball
+  attached when the build made them. A release missing its manifest is invisible
+  to every installed copy, and one whose manifest names a different build sends
+  them after a file that is not there;
 - the version must not already be released.
 
 `--dry-run` builds and checks all of that without publishing.
@@ -202,6 +235,7 @@ one commit, and refuses rather than publishing something half-formed:
 ```powershell
 npm run test:desktop
 npm run test:desktop-ui
+npm run test:packaging
 $env:MW_TEST_EXE = "$PWD\dist\win-unpacked\MediaWatcher.exe"
 npm run test:desktop-ui
 ```
@@ -210,7 +244,11 @@ The backend tests check isolated data, unchanged HTML, the authentication gate,
 remembered sessions, graceful Windows IPC shutdown, supervised restart and an
 occupied port. `npm test` includes `updates.test.mjs`, which drives the update
 state machine against a fake updater and checks the updates window, its bridge,
-the sender check and the published release source.
+the sender check and the published release source. It also includes
+`packaging.test.mjs`, which covers what a build cannot: per-platform executable
+and icon names, that an install the package manager owns reports releases and
+installs none of them, and that the Linux desktop entry, systemd unit and
+PKGBUILD agree with the build config and with each other.
 Real Electron tests cover fresh setup, login, original UI loading,
 sandboxing, actual direct and HLS video playback, tray lifetime and process cleanup.
 Test profiles and generated video clips are temporary; UI screenshots go in

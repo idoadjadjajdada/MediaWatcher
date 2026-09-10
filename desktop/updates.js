@@ -15,7 +15,13 @@ function render(state) {
     ready: ['Your update is ready', 'Restart & install closes MediaWatcher and opens the installer. Your library and settings are kept.'],
     installing: ['Starting the installer…', 'MediaWatcher will close to apply the update.'],
     error: ['Couldn’t complete the update', state.error],
-    development: ['Running from source', 'Updates are available in the packaged Windows app.']
+    development: ['Running from source', 'Updates are available in the packaged app.'],
+    // Installed by a package manager, or unpacked by hand. It can still say a
+    // newer release exists; it must not pretend it can install one.
+    unmanaged: [
+      state.latestVersion ? `Version ${state.latestVersion} is available` : 'You’re up to date',
+      [state.error, state.installHint].filter(Boolean).join(' ')
+    ]
   };
   const [title, description] = labels[state.status] || labels.idle;
   $('status').textContent = title; $('description').textContent = description;

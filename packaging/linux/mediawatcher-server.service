@@ -1,0 +1,44 @@
+# MediaWatcher without the window.
+#
+# The desktop app already keeps the server alive in the tray, so this is for the
+# other case: a machine that should serve the library from boot, whether or not
+# anybody has logged into a desktop session. It runs the packaged backend
+# directly with the Node that ships beside it, over the same data folder the
+# app uses, so the two are the same library and never both run at once — the
+# second one to start finds config/serving.json and stands down.
+#
+#   systemctl --user enable --now mediawatcher-server
+#   journalctl --user -u mediawatcher-server -f
+#
+# For a server with no login session, allow it to run without one:
+#   sudo loginctl enable-linger "$USER"
+[Unit]
+Description=MediaWatcher media library server
+Documentation=https://github.com/idoadjadjajdada/MediaWatcher
+After=network-online.target
+Wants=network-online.target
+# Exit 75 is a restart the app asked for, and Restart=on-failure is exactly
+# right for it. Exit 1 with "this library is already being served" means the
+# desktop app holds the folder; this limit stops that becoming a loop, and the
+# unit gives up rather than fighting the window for the library.
+StartLimitIntervalSec=60
+StartLimitBurst=4
+
+[Service]
+Type=simple
+Environment=NODE_ENV=production
+# The same folder the desktop app defaults to, so both see one library.
+Environment=MW_DATA_DIR=%h/.config/MediaWatcher/data
+WorkingDirectory=%h/.config/MediaWatcher/data
+# The app creates this on first run; the unit must not fail when it is asked
+# to start on a machine where nobody has opened the window yet.
+ExecStartPre=/usr/bin/mkdir -p %h/.config/MediaWatcher/data
+ExecStart=/opt/mediawatcher/resources/runtime/node /opt/mediawatcher/resources/backend/server.js
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=MediaWatcher
+GenericName=Media Library
+Comment=Self-hosted media library with a built-in player
+Exec=mediawatcher %U
+Icon=mediawatcher
+Terminal=false
+Categories=AudioVideo;Video;Player;Network;
+Keywords=media;video;movies;tv;library;player;
+# GTK reports MediaWatcher as the window's class; without this the running
+# window shows up as a second, unmatched icon beside the launcher's.
+StartupWMClass=MediaWatcher
+StartupNotify=true

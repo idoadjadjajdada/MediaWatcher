@@ -3,11 +3,22 @@ const { contextBridge, ipcRenderer } = require('electron');
 // The caption buttons and drag/snap behavior belong to Windows via Electron's
 // controls overlay; the website stays sandboxed.
 let nativeFullscreen = false;
+// Whether Electron is drawing the caption buttons over the page. When it is,
+// the overlay disappearing *is* fullscreen and is the earliest signal there is.
+// When the window has an ordinary frame instead — the Linux escape hatch — the
+// overlay reports "not visible" forever, and believing it would hide the title
+// bar, and the status light in it, for the whole life of the window.
+let overlayChrome = true;
 function syncChrome() {
-  const overlay = navigator.windowControlsOverlay;
+  const overlay = overlayChrome ? navigator.windowControlsOverlay : null;
   document.documentElement?.setAttribute('data-mw-fullscreen',
     String(Boolean(document.fullscreenElement) || (overlay ? !overlay.visible : nativeFullscreen)));
 }
+ipcRenderer.on('window:chrome', (_event, value) => {
+  overlayChrome = value !== 'native';
+  document.documentElement?.setAttribute('data-mw-frame', overlayChrome ? 'overlay' : 'native');
+  syncChrome();
+});
 ipcRenderer.on('window:fullscreen', (_event, value) => {
   nativeFullscreen = value === true;
   syncChrome();
@@ -49,7 +60,11 @@ function buildStatus(bar) {
 
   const render = (state) => {
     if (!state) return;
-    const newer = ['available', 'downloading', 'ready'].includes(state.update);
+    // 'unmanaged' is a copy the package manager owns: it knows a newer release
+    // exists and cannot install it, so the light says so and the button opens
+    // the window that explains who to ask.
+    const newer = ['available', 'downloading', 'ready'].includes(state.update)
+      || (state.update === 'unmanaged' && Boolean(state.latestVersion));
     const light = !state.connected ? 'red' : newer ? 'yellow' : 'green';
     status.dataset.state = light;
     version.textContent = state.version ? `v${state.version}` : '';
@@ -58,7 +73,9 @@ function buildStatus(bar) {
       : state.update === 'available' ? { act: 'update', label: `Update to ${state.latestVersion || 'the latest'}` }
         : state.update === 'downloading' ? { act: '', label: `Downloading ${state.percent || 0}%` }
           : state.update === 'ready' ? { act: 'install', label: 'Restart & install' }
-            : null;
+            : state.update === 'unmanaged' && state.latestVersion
+              ? { act: 'updates', label: `${state.latestVersion} is out` }
+              : null;
 
     action.hidden = !button;
     action.dataset.act = button?.act || '';
@@ -69,6 +86,7 @@ function buildStatus(bar) {
       error: 'connected — the last update check failed',
       unconfigured: 'connected — no update source is set',
       development: 'connected — running from source, so there is nothing to update',
+      unmanaged: 'connected — up to date, and updated by your package manager',
       checking: 'connected — checking for updates'
     }[state.update] || 'up to date, and connected';
     const words = light === 'red' ? 'not connected to the server'

@@ -8,11 +8,13 @@ public indexers, and plays everything back in the browser with resume, subtitles
 and next-episode autoplay.
 
 Node on the back, vanilla ES modules on the front. The web server needs no
-frontend build step; the Windows desktop edition packages the same UI in Electron.
+frontend build step; the Windows and Linux desktop editions package the same UI
+in Electron.
 
 ## Contents
 
 - [Windows desktop application](#windows-desktop-application)
+- [Linux desktop application](#linux-desktop-application)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Organising your library](#organising-your-library)
@@ -70,6 +72,45 @@ notes are in [docs/desktop.md](docs/desktop.md).
 
 ---
 
+## Linux desktop application
+
+The same application, the same window, the same library. On Arch:
+
+```bash
+git clone https://github.com/idoadjadjajdada/MediaWatcher.git
+cd MediaWatcher/packaging/arch
+makepkg -si
+```
+
+That installs `mediawatcher` with an application-menu entry, an icon, a tray
+icon and `ffmpeg` as a dependency. Launch it and choose **Set up a new library**,
+or **Use existing library** and point it at a folder you already have.
+
+Elsewhere, `npm run dist:linux` builds an AppImage, a pacman package and a
+tarball into `dist/`. From a checkout, `./mediawatcher app` opens the window and
+`./mediawatcher` runs the server alone — it is the Linux counterpart to
+`start.bat`, and `./mediawatcher doctor` says what is missing and the command to
+install it.
+
+Two things differ from Windows, and both are deliberate:
+
+- **FFmpeg is a dependency rather than a bundled copy.** A distribution's FFmpeg
+  is linked against its own system libraries, so a copy inside a package runs on
+  the machine that built it and nowhere else — and your package manager keeps it
+  more current than this ever would. `MW_BUILD_FFMPEG_MODE=bundle` with a static
+  build overrides that, for AppImages meant to travel.
+- **Only the AppImage updates itself.** A pacman package belongs to pacman, so
+  the app checks for releases, says a newer version is out, and points at
+  whatever installed it rather than overwriting files pacman is tracking.
+
+If your window manager leaves a frameless window unusable, `MW_TITLEBAR=native`
+asks for an ordinary frame; if your panel has no system tray, the shipped
+`systemctl --user enable --now mediawatcher-server` unit keeps the library
+serving without one. Both, along with Wayland flags, data locations and the
+build itself, are in [docs/linux.md](docs/linux.md).
+
+---
+
 ## Requirements
 
 | | |
@@ -86,14 +127,19 @@ releases will not play in a browser unless it is installed.
 
 ## Quick start
 
-**Double-click `MediaWatcher.bat`.** That opens the launcher — a desktop control
-panel for starting and stopping the server, with pre-flight checks, live library
-stats and a colour-coded server log.
+**On Windows, double-click `MediaWatcher.bat`.** That opens the launcher — a
+desktop control panel for starting and stopping the server, with pre-flight
+checks, live library stats and a colour-coded server log.
 
 First time out, run `start.bat` instead: it installs dependencies, creates `.env`
 from `.env.example`, and then opens the same launcher.
 
-From a terminal instead:
+**On Linux, run `./mediawatcher`.** It does the same first-run setup and then
+starts the server; `./mediawatcher app` opens the desktop window instead. There
+is no PowerShell launcher there and no need for one — the desktop app is the
+control panel.
+
+From a terminal on either:
 
 ```bash
 npm install
@@ -144,8 +190,10 @@ Beyond starting and stopping the server:
 
 ```powershell
 winget install Gyan.FFmpeg        # Windows
-brew install ffmpeg               # macOS
+sudo pacman -S ffmpeg             # Arch
 sudo apt install ffmpeg           # Debian/Ubuntu
+sudo dnf install ffmpeg           # Fedora
+brew install ffmpeg               # macOS
 ```
 
 If it is not on your `PATH`, set `FFMPEG_PATH` and `FFPROBE_PATH` in `.env` to

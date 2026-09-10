@@ -1,6 +1,6 @@
 {
   "name": "mediawatcher",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "private": true,
   "description": "Self-hosted media library with TMDB metadata enrichment, file organization and a built-in player.",
   "type": "module",
@@ -19,12 +19,17 @@
     "ui-standalone": "node tests/ui-standalone.mjs",
     "desktop": "electron desktop/main.cjs",
     "desktop:prepare": "node tools/prepare-desktop.mjs",
-    "desktop:pack": "npm run desktop:prepare && electron-builder --config electron-builder.cjs --win --x64 --dir",
-    "dist": "npm run desktop:prepare && electron-builder --config electron-builder.cjs --win --x64",
+    "desktop:pack": "npm run desktop:prepare && electron-builder --config electron-builder.cjs --dir",
+    "desktop:pack:win": "npm run desktop:prepare && electron-builder --config electron-builder.cjs --win --x64 --dir",
+    "desktop:pack:linux": "npm run desktop:prepare && electron-builder --config electron-builder.cjs --linux --x64 --dir",
+    "dist": "npm run desktop:prepare && electron-builder --config electron-builder.cjs",
+    "dist:win": "npm run desktop:prepare && electron-builder --config electron-builder.cjs --win --x64",
+    "dist:linux": "npm run desktop:prepare && electron-builder --config electron-builder.cjs --linux --x64",
     "release": "node tools/release.mjs",
     "test:desktop": "node tests/desktop.test.mjs",
     "test:desktop-ui": "node tests/desktop-ui.mjs",
-    "test:catalog": "node tests/catalog.test.mjs && node tests/catalog-ui.mjs"
+    "test:catalog": "node tests/catalog.test.mjs && node tests/catalog-ui.mjs",
+    "test:packaging": "node tests/packaging.test.mjs"
   },
   "dependencies": {
     "axios": "^1.7.7",

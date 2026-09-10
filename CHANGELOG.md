@@ -1,11 +1,97 @@
 # Changelog
 
 What changed in each release, newest first. Every version here has a GitHub
-release carrying these notes and the Windows installer built from that commit —
-`node tools/release.mjs` will not publish one without both.
+release carrying these notes and the application built from that commit —
+`node tools/release.mjs` will not publish one without both. A release built on
+more than one platform carries each platform's build in the same release.
 
 Versions follow [semantic versioning](https://semver.org): the minor number
 moves for new behaviour, the patch number for fixes alone.
+
+## 1.5.0
+
+### Added
+
+- **MediaWatcher installs as an application on Linux.** The same window, the
+  same backend, the same library folder — what was missing was everything
+  around it: a build that would run, a package to install, an entry in the
+  application menu and an icon that is not a `.ico`. On Arch that is now
+  `cd packaging/arch && makepkg -si`, and everywhere else
+  `npm run dist:linux` builds an AppImage, a pacman package and a tarball.
+
+  The differences between the two platforms are now asked for rather than
+  assumed. `desktop/platform.cjs` answers what the executables are called, which
+  icon a window and a tray can each use, and who owns the installed files — and
+  the staging build, the packaged-output check and the running shell all read
+  their answers from it instead of from string literals they each carried
+  separately. A payload staged as `node.exe` for a runtime that forks `node` is
+  not a bug anybody finds by reading either file.
+
+  From a checkout there is `./mediawatcher`, which is what `start.bat` is on
+  Windows: first-run setup, then the server, with `app` for the desktop window
+  and `doctor` for what is missing and the command to install it. There is no
+  PowerShell launcher and there does not need to be — the desktop app has been
+  the control panel since 1.1.0.
+
+### Changed
+
+- **FFmpeg is a dependency on Linux, not a payload.** The Windows build bundles
+  it because there is one obvious complete distribution and a Windows machine
+  usually has none installed. Neither is true on Linux: a distribution's FFmpeg
+  is linked against a dozen of its own system libraries, so a copy of it inside
+  a package runs on the machine that built it and nowhere else. The Linux
+  package depends on it instead, which is also how it stays current.
+
+  The build decides by looking rather than by platform: a self-contained binary
+  is bundled, a dynamically linked one is left to the system, and asking for
+  `MW_BUILD_FFMPEG_MODE=bundle` with a dynamic binary is refused rather than
+  quietly producing a package that fails at the first file it has to remux.
+  Either way it proves both executables run before packaging anything, and
+  records which it did — so the check that runs against the finished package
+  can tell a build that shipped without a bundled FFmpeg from one that never
+  meant to have one.
+
+- **An update it cannot install is now said rather than attempted.** A Windows
+  installation and a Linux AppImage own their own files; a pacman package does
+  not, and an app that overwrites one leaves pacman describing a version that is
+  no longer on disk. So those copies do the half that is useful and safe: they
+  check GitHub, report that a newer release exists, and name whatever installed
+  it. The title-bar light still turns yellow; its button opens the updates
+  window instead of downloading. Nothing reaches for electron-updater, which
+  would otherwise work out how to replace an installation it does not own and
+  fail late and obscurely.
+
+- **`npm run release` builds for the machine it runs on**, and a second platform
+  joins the release the first one created rather than colliding with it. Each
+  platform's manifest is checked against the artefact it names — `latest.yml`
+  and the installer on Windows, `latest-linux.yml` and the AppImage on Linux —
+  because a release whose manifest names a different build sends every installed
+  copy after a file that is not there. Publishing the same platform twice is
+  still refused: that is the case where somebody meant to raise the version.
+
+### Fixed
+
+- **A window nobody can move is worse than one that is the wrong colour.** The
+  dark title bar with Electron's caption buttons drawn over it depends on the
+  desktop drawing client-side decorations, and on a tiling or minimal window
+  manager a frameless window can arrive with no way to move, resize or close it.
+  `MW_TITLEBAR=native`, or `"titleBar": "native"` in `desktop.json`, asks for an
+  ordinary frame. The in-page bar stays either way — it carries the status light
+  — and stops reserving space for buttons that are now the window manager's.
+
+  The page had to be told which of the two it is in. Its fullscreen detection
+  reads the caption overlay's visibility, and an overlay that is not in use
+  reports "not visible" forever, which would have hidden the title bar, and the
+  status light in it, for the whole life of the window.
+
+- **The tray icon and the configuration editor now work on Linux.** The tray was
+  handed a `.ico`, which Linux cannot draw, and it now gets a PNG sized for a
+  panel rather than a 512px one squeezed into a 22px slot. Linux panels also
+  deliver a single click and never a double one, so a click opens the window
+  there. And **Edit configuration** falls back to `xdg-open` and then to opening
+  the containing folder, because a dotfile with no extension is the case every
+  desktop handles worst — a path somebody can see beats an error box naming a
+  file they cannot reach.
 
 ## 1.4.1
 

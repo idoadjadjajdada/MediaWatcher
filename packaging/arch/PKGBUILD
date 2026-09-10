@@ -1,0 +1,108 @@
+# Maintainer: MediaWatcher
+#
+# Build and install MediaWatcher on Arch:
+#
+#   cd packaging/arch && makepkg -si
+#
+# To package the working tree instead of a tag, point the source at it:
+#
+#   makepkg -si --skipinteg  # after: source=("git+file://$(git rev-parse --show-toplevel)")
+#
+# or skip pacman entirely and use `npm run dist:linux`, which builds the same
+# application as an AppImage, a .pkg.tar.zst and a tarball in dist/.
+#
+# This builds the Electron shell, the backend and its Node runtime, and installs
+# the lot under /opt/mediawatcher with a launcher, a desktop entry and icons.
+# FFmpeg is a dependency rather than a bundled copy: Arch's ffmpeg is linked
+# against the system's own libraries, so a copy of it inside the package would
+# run on the machine that built it and nowhere else — and pacman is better at
+# keeping FFmpeg current than this package would be.
+#
+# The build needs the network for npm packages, Electron and the Node license.
+# It does not need, read or package anything from an existing .env, database or
+# library: the staging step in tools/prepare-desktop.mjs copies an allowlist.
+
+pkgname=mediawatcher
+pkgver=1.5.0
+pkgrel=1
+pkgdesc='Self-hosted media library with TMDB metadata, a debrid downloader and a built-in player'
+arch=('x86_64')
+url='https://github.com/idoadjadjajdada/MediaWatcher'
+license=('custom')
+depends=('ffmpeg' 'gtk3' 'nss' 'alsa-lib' 'libxtst' 'libnotify' 'at-spi2-core' 'libxss')
+makedepends=('git' 'nodejs>=20' 'npm' 'python' 'gcc' 'make')
+optdepends=('tailscale: reach your library from outside the house')
+# Electron and the bundled Node are prebuilt binaries; stripping them or
+# hunting for their debug symbols achieves nothing and can break signatures.
+options=('!strip' '!debug' '!lto')
+source=("git+$url.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+_srcdir="MediaWatcher"
+
+# No pkgver(): the source is pinned to a tag, so the version is decided above
+# and by the tag together. Raise both when packaging a new release.
+
+build() {
+  cd "$srcdir/$_srcdir"
+  # Keep every cache inside the build directory. makepkg is not the place to
+  # write into somebody's home, and a shared Electron cache across versions is
+  # the classic source of a package built from a stale download.
+  export npm_config_cache="$srcdir/npm-cache"
+  export ELECTRON_CACHE="$srcdir/electron-cache"
+  export ELECTRON_BUILDER_CACHE="$srcdir/electron-builder-cache"
+
+  npm ci
+  # Stages the backend, the shell, a copy of this machine's Node for the
+  # backend's ABI, and — on Arch — a note that FFmpeg comes from the system.
+  npm run desktop:prepare
+  # --dir stops at the unpacked application. The packaging below is pacman's
+  # job, and electron-builder's own pacman target would want fpm downloaded
+  # halfway through a makepkg run.
+  npx electron-builder --config electron-builder.cjs --linux --x64 --dir
+}
+
+package() {
+  cd "$srcdir/$_srcdir"
+  local unpacked="dist/linux-unpacked"
+
+  install -dm755 "$pkgdir/opt/$pkgname"
+  cp -a "$unpacked/." "$pkgdir/opt/$pkgname/"
+
+  # Chromium's sandbox helper has to be setuid root, or every launch either
+  # fails outright or falls back to running without a sandbox.
+  chmod 4755 "$pkgdir/opt/$pkgname/chrome-sandbox"
+
+  # The launcher, rather than a symlink: it is where MW_LINUX_PACKAGE is set, so
+  # the app's updates window says "pacman" instead of guessing.
+  install -dm755 "$pkgdir/usr/bin"
+  cat > "$pkgdir/usr/bin/$pkgname" <<'EOF'
+#!/bin/sh
+# MediaWatcher is installed by pacman, so the app checks for releases and then
+# points at the package manager rather than replacing its own files.
+MW_LINUX_PACKAGE=pacman
+export MW_LINUX_PACKAGE
+exec /opt/mediawatcher/mediawatcher "$@"
+EOF
+  chmod 755 "$pkgdir/usr/bin/$pkgname"
+
+  install -Dm644 packaging/linux/mediawatcher.desktop \
+    "$pkgdir/usr/share/applications/$pkgname.desktop"
+  install -Dm644 packaging/linux/mediawatcher-server.service \
+    "$pkgdir/usr/lib/systemd/user/$pkgname-server.service"
+
+  install -Dm644 public/icons/icon-512.png \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"
+  install -Dm644 public/icons/icon-192.png \
+    "$pkgdir/usr/share/pixmaps/$pkgname.png"
+
+  # Electron's, Node's and Chromium's notices travel with the package.
+  install -Dm644 "$unpacked/LICENSE.electron.txt" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE.electron.txt"
+  install -Dm644 "$unpacked/LICENSES.chromium.html" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSES.chromium.html"
+  install -Dm644 "$unpacked/resources/runtime/LICENSE.node.txt" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE.node.txt"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 docs/linux.md "$pkgdir/usr/share/doc/$pkgname/linux.md"
+}

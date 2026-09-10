@@ -6,10 +6,12 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import { fork } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { _electron as electron } from 'playwright';
 import { execFileSync } from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const platform = createRequire(import.meta.url)(path.join(root, 'desktop', 'platform.cjs'));
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mediawatcher-desktop-ui-'));
 const data = path.join(scratch, 'data');
 const profile = path.join(scratch, 'profile');
@@ -45,7 +47,12 @@ try {
   await page.waitForURL(`${origin}/`);
   await page.waitForSelector('#navrail');
   await page.waitForFunction(() => document.querySelector('#mw-titlebar')?.getBoundingClientRect().height > 20);
-  assert.equal(await page.evaluate(() => navigator.windowControlsOverlay.visible), true);
+  // The overlay is what the app asks for by default. A run told to use a real
+  // window frame instead — the Linux escape hatch — has no overlay to check,
+  // and the title bar is still there because the status light lives in it.
+  if ((process.env.MW_TITLEBAR || 'overlay') === 'overlay') {
+    assert.equal(await page.evaluate(() => navigator.windowControlsOverlay.visible), true);
+  }
   assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('#mw-titlebar')).webkitAppRegion), 'drag');
   fs.mkdirSync(path.join(root, 'test-results'), { recursive: true });
   await page.screenshot({ path: path.join(root, 'test-results', executablePath ? 'desktop-packaged.png' : 'desktop-development.png') });
@@ -57,7 +64,16 @@ try {
   assert.equal((await page.request.get(`${origin}/api/media/library`)).status(), 200);
   assert.equal(errors.length, 0, errors.join('\n'));
   console.log('PASS: setup → authenticated original UI, isolated renderer, H.264/AAC support');
-  const ffmpeg = executablePath ? path.join(path.dirname(executablePath), 'resources/bin/ffmpeg.exe') : 'ffmpeg';
+  /*
+   * The FFmpeg the app itself would reach for. A packaged build bundles one on
+   * Windows, and on Linux usually does not — there the package depends on the
+   * system copy, which is what the app puts on PATH's far end anyway. So use
+   * the bundled one when it is there and the system one when it is not, rather
+   * than assuming either.
+   */
+  const bundled = executablePath
+    && path.join(path.dirname(executablePath), 'resources', 'bin', platform.executableName('ffmpeg'));
+  const ffmpeg = bundled && fs.existsSync(bundled) ? bundled : 'ffmpeg';
   const clip = path.join(data, 'library/movies/desktop-smoke.mp4');
   execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24',
     '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',

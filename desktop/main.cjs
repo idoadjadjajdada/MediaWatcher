@@ -7,6 +7,7 @@ const { fork, execFile } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { createUpdates, repositoryName } = require('./updater.cjs');
 const { fingerprint, claim } = require('./instance.cjs');
+const platform = require('./platform.cjs');
 
 app.setName('MediaWatcher');
 const sourceRoot = path.resolve(__dirname, '..');
@@ -17,13 +18,49 @@ const profile = app.getPath('userData');
 const settingsPath = path.join(profile, 'desktop.json');
 const setupUrl = pathToFileURL(path.join(__dirname, 'setup.html')).href;
 const updatesUrl = pathToFileURL(path.join(__dirname, 'updates.html')).href;
-const icon = path.join(sourceRoot, 'public', 'icons', 'app.ico');
+/*
+ * Windows takes the .ico for both the window and the tray, because one file
+ * carries every size either asks for. Linux takes PNGs, and takes a different
+ * one for each: panels scale whatever they are handed, and a 512px source
+ * squeezed into a 22px slot comes out muddier than a 192px one does.
+ */
+const icon = path.join(sourceRoot, 'public', platform.target()?.windowIcon || 'icons/app.ico');
+const trayIcon = path.join(sourceRoot, 'public', platform.target()?.trayIcon || 'icons/app.ico');
 const titlebarCss = fs.readFileSync(path.join(__dirname, 'titlebar.css'), 'utf8');
 const closeCss = fs.readFileSync(path.join(__dirname, 'close-prompt.css'), 'utf8');
 let settings = {};
 try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { /* first launch */ }
 let dataDir = path.resolve(process.env.MW_DATA_DIR || settings.dataDir
   || (app.isPackaged ? path.join(profile, 'data') : sourceRoot));
+/**
+ * Which title bar the windows get.
+ *
+ * The dark bar drawn inside the page, with Electron's own caption buttons
+ * overlaid on it, is the design — and on Windows it is simply what happens.
+ * Linux is less uniform: the overlay depends on the desktop drawing client-side
+ * decorations, and on a tiling or minimal window manager a frameless window can
+ * arrive with no way to move, resize or close it. That is an app nobody can
+ * use, and it is not worth risking for a colour.
+ *
+ * So `native` exists, and asks the window manager for an ordinary frame. The
+ * in-page bar stays either way: it carries the status light, which is the part
+ * that had something to say. MW_TITLEBAR overrides it for one run; desktop.json
+ * remembers it.
+ */
+const CHROME = ['overlay', 'native'];
+const chrome = CHROME.includes(process.env.MW_TITLEBAR) ? process.env.MW_TITLEBAR
+  : CHROME.includes(settings.titleBar) ? settings.titleBar : 'overlay';
+const chromeOptions = chrome === 'overlay'
+  ? {
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#090a0c', symbolColor: '#a5a7ad', height: 36 }
+  }
+  : {};
+// With a real frame there are no caption buttons to keep clear of, so the bar
+// stops reserving 150px of nothing on its right.
+const chromeCss = chrome === 'overlay' ? ''
+  : '\nhtml[data-mw-desktop] #mw-titlebar { padding-right: 18px; }\n';
+
 let win, tray, child, origin, starting, stopPromise;
 let attached = false;
 let attachTimer;
@@ -67,15 +104,29 @@ function openExternal(value) {
   } catch { /* never pass arbitrary protocols to the operating system */ }
 }
 
+/**
+ * Open the configuration in whatever this machine edits text with.
+ *
+ * A dotfile with no extension is the case desktops handle worst. Windows has no
+ * association for it on a fresh installation, and a Linux desktop may hand it
+ * to an archive manager, to nothing at all, or to xdg-open with no MIME match.
+ * So the system gets first refusal and each platform has one fallback that is
+ * always installed — after which the folder is opened instead, because a path
+ * someone can see beats an error box naming a file they cannot reach.
+ */
 async function openConfiguration() {
   const file = path.join(dataDir, '.env');
   const error = await shell.openPath(file);
-  // .env usually has no Windows file association on a fresh installation.
-  if (error && process.platform === 'win32') {
-    execFile('notepad.exe', [file], { windowsHide: true }, (failure) => {
-      if (failure) dialog.showErrorBox('Open configuration', failure.message);
-    });
-  }
+  if (!error) return;
+  const fallback = process.platform === 'win32' ? ['notepad.exe', [file]]
+    : process.platform === 'linux' ? ['xdg-open', [file]] : null;
+  if (!fallback) { dialog.showErrorBox('Open configuration', error); return; }
+  execFile(fallback[0], fallback[1], { windowsHide: true }, (failure) => {
+    if (!failure) return;
+    shell.showItemInFolder(file);
+    dialog.showErrorBox('Open configuration',
+      `MediaWatcher could not open an editor for:\n\n${file}\n\nIt has opened the folder instead.`);
+  });
 }
 
 function appendLog(chunk) {
@@ -279,7 +330,7 @@ function forkBackend(port) {
     // to the bundled copies, even on a machine without them on PATH.
     const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') || 'PATH';
     if (app.isPackaged) env[pathKey] = `${path.join(process.resourcesPath, 'bin')}${path.delimiter}${env[pathKey] || ''}`;
-    const node = app.isPackaged ? path.join(process.resourcesPath, 'runtime', 'node.exe')
+    const node = app.isPackaged ? platform.bundledNode(process.resourcesPath)
       : (process.env.MW_NODE_PATH || 'node');
     const proc = fork(path.join(backendRoot, 'server.js'), [], {
       execPath: node, execArgv: [], cwd: dataDir, env,
@@ -475,6 +526,9 @@ ipcMain.handle('status:act', async (event, action) => {
   requireWindow(event);
   if (action === 'update') await updates.download();
   else if (action === 'install') await updates.install();
+  // Nothing to download here — this copy is replaced from outside — so the
+  // button opens the window that names the release and says how.
+  else if (action === 'updates') openUpdates();
   else if (action === 'reconnect') {
     /*
      * Ask the cheap question first. A server that is answering again needs
@@ -540,7 +594,12 @@ const updates = createUpdates({
   version: appVersion(),
   packaged: app.isPackaged,
   repository: savedRepository,
-  makeUpdater: (options) => new (require('electron-updater').NsisUpdater)(options),
+  // Which updater, and whether this copy is even allowed to replace itself,
+  // are the same question asked of the platform: an NSIS installer and an
+  // AppImage own their own files, a distribution package does not.
+  selfUpdating: platform.selfUpdating({ packaged: app.isPackaged }),
+  installHint: platform.updateHint(),
+  makeUpdater: (options) => platform.makeUpdater(options),
   saveRepository: (repository) => { settings.updateRepository = repository; saveSettings(); },
   changed: (state) => {
     if (updatesWin && !updatesWin.isDestroyed()) updatesWin.webContents.send('updates:status', state);
@@ -569,6 +628,7 @@ const updates = createUpdates({
 
 function updateLabel() {
   const { status, latestVersion } = updates.snapshot();
+  if (status === 'unmanaged') return latestVersion ? `Version ${latestVersion} is available` : 'Updates & version';
   if (status === 'available') return `Download update ${latestVersion}`;
   if (status === 'downloading') return 'Downloading update…';
   if (status === 'ready') return 'Restart & install update';
@@ -594,8 +654,7 @@ function openUpdates() {
   updatesWin = new BrowserWindow({
     width: 560, height: 660, minWidth: 460, minHeight: 520,
     parent: win, backgroundColor: '#090a0c', title: 'MediaWatcher updates', icon,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#090a0c', symbolColor: '#a5a7ad', height: 36 },
+    ...chromeOptions,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -603,7 +662,8 @@ function openUpdates() {
     }
   });
   updatesWin.webContents.on('did-finish-load', () => {
-    updatesWin.webContents.insertCSS(titlebarCss).catch(appendLog);
+    updatesWin.webContents.send('window:chrome', chrome);
+    updatesWin.webContents.insertCSS(titlebarCss + chromeCss).catch(appendLog);
     // The menu item says "Check for updates", so opening it checks rather than
     // waiting to be asked again. Nothing downloads either way.
     void updates.check();
@@ -640,8 +700,7 @@ else {
       width: bounds.width || 1440, height: bounds.height || 940,
       minWidth: 800, minHeight: 600, show: false,
       backgroundColor: '#0b0b0d', title: 'MediaWatcher', icon,
-      titleBarStyle: 'hidden',
-      titleBarOverlay: { color: '#090a0c', symbolColor: '#a5a7ad', height: 36 },
+      ...chromeOptions,
       autoHideMenuBar: true,
       webPreferences: {
         preload: path.join(__dirname, 'preload.cjs'),
@@ -653,8 +712,11 @@ else {
       if (!win.isDestroyed()) win.webContents.send('window:fullscreen', win.isFullScreen());
     };
     win.webContents.on('did-finish-load', () => {
+      // The page has to know whether the caption buttons are its problem before
+      // it decides what "fullscreen" means; see syncChrome in preload.cjs.
+      win.webContents.send('window:chrome', chrome);
       // Kept in the desktop shell so browser/phone layouts never get a title bar.
-      win.webContents.insertCSS(titlebarCss).catch(appendLog);
+      win.webContents.insertCSS(titlebarCss + chromeCss).catch(appendLog);
       win.webContents.insertCSS(closeCss).catch(appendLog);
       syncWindowChrome();
     });
@@ -697,9 +759,13 @@ else {
       else if (behaviour === 'tray') win.hide();
       else askAboutClosing();
     });
-    tray = new Tray(icon);
+    tray = new Tray(trayIcon);
     tray.setToolTip('MediaWatcher — runs in the background; right-click to quit');
     tray.on('double-click', showWindow);
+    // Linux panels deliver a single click and never a double one, and several
+    // of them show only the menu — which is why "Open MediaWatcher" is the
+    // first item in it rather than something the icon alone has to carry.
+    if (process.platform === 'linux') tray.on('click', showWindow);
     updateMenu();
     if (configured()) {
       try { await win.loadURL(await startBackend()); } catch (error) { await startupFailure(error); }
