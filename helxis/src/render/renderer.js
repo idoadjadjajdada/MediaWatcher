@@ -57,6 +57,14 @@ export class Renderer {
     const bw = Math.max(64, Math.round(cssW / this.pixelScale));
     const bh = Math.max(48, Math.round(cssH / this.pixelScale));
     if (this.buffer.width !== bw || this.buffer.height !== bh) {
+      // The camera's scale is buffer pixels per metre, so resizing the buffer
+      // would change how much of the world is on screen. Rescale to keep the
+      // field of view — otherwise changing the pixel size zooms the view.
+      if (this.buffer.width > 0 && bw > 0) {
+        const k = bw / this.buffer.width;
+        this.camera.scale *= k;
+        this.camera.targetScale *= k;
+      }
       this.buffer.width = bw;
       this.buffer.height = bh;
     }
@@ -96,8 +104,7 @@ export class Renderer {
     if (settings.nebula) this.starfield.drawNebula(ctx, cam, settings.nebulaIntensity);
     if (settings.starfield) this.starfield.draw(ctx, cam, { density: settings.starDensity });
 
-    const gridInfo = drawGrid(ctx, cam, settings);
-    this.gridInfo = gridInfo;
+    drawGrid(ctx, cam, settings);
 
     drawTrails(ctx, world, cam, settings);
     drawOrbits(ctx, world, cam, settings, state.selected);
@@ -236,7 +243,10 @@ export class Renderer {
 
       // Day and night. A star lights itself; everything else is lit by whatever
       // stars are around, weighted by the flux each one delivers.
-      if (settings.shading && b.luminosity <= 0 && d >= 4) {
+      // A body glowing at three thousand kelvin lights its own far side, so it
+      // gets no terminator — the same reason a star does not.
+      const selfLit = b.luminosity > 0 || b.temperature > 1400;
+      if (settings.shading && !selfLit && d >= 4) {
         // With no star anywhere in the scene there is no physical answer, so
         // light it from over the viewer's shoulder rather than blacking out a
         // preset that simply does not include a sun.
@@ -349,7 +359,9 @@ export class Renderer {
       const x1 = Math.min(w, Math.ceil(cx + reach));
       const y1 = Math.min(h, Math.ceil(cy + reach));
       const bw = x1 - x0, bh = y1 - y0;
-      if (bw <= 0 || bh <= 0) return;
+      // `continue`, not `return`: a single off-screen hole used to disable
+      // lensing for every other hole in the scene.
+      if (bw <= 0 || bh <= 0) continue;
 
       const src = ctx.getImageData(x0, y0, bw, bh);
       const dst = ctx.createImageData(bw, bh);
@@ -444,7 +456,6 @@ export class Renderer {
       cam.project(beam.x0, beam.y0, P);
       const ax = P[0], ay = P[1];
       cam.project(beam.x1, beam.y1, P);
-      ctx.globalAlpha = 0.9;
       ctx.strokeStyle = beam.hue || '#ff5f7a';
       ctx.lineWidth = beam.width + 2;
       ctx.globalAlpha = 0.28;

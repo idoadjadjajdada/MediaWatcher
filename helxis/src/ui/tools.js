@@ -138,6 +138,7 @@ export class ToolController {
       }
       case 'grab': {
         const b = pickBody(world, worldPos.x, worldPos.y, camera, 6, this.app.settings);
+        if (b) this.app.pushUndo();
         if (b) {
           this.grabbed = b;
           this.grabOffset = { x: b.x - worldPos.x, y: b.y - worldPos.y };
@@ -151,12 +152,18 @@ export class ToolController {
         break;
       }
       case 'explode':
+        // Every tool that destroys or transforms a body records a restore point
+        // first. Only placement and preset loads used to, so undoing after
+        // blowing up a planet restored something else entirely.
+        this.app.pushUndo();
         this.explode(worldPos);
         break;
       case 'delete':
+        this.app.pushUndo();
         this.deleteAt(worldPos);
         break;
       case 'collapse': {
+        this.app.pushUndo();
         this.collapsing = pickBody(world, worldPos.x, worldPos.y, camera, 6, this.app.settings);
         this.collapseProgress = 0;
         if (this.collapsing) this.app.select(this.collapsing);
@@ -190,6 +197,7 @@ export class ToolController {
 
   up() {
     this.active = false;
+    this._laserUndo = false;
     if (this.tool === 'grab') this.releaseGrab();
     this.collapsing = null;
     this.collapseProgress = 0;
@@ -228,11 +236,20 @@ export class ToolController {
    */
   update(dtReal, dtSim) {
     if (!this.active) return;
+    // The field tools are measured against gravity, so they have to act over
+    // the same interval gravity does — otherwise, at a week of simulated time
+    // per real second, a second of holding attract competes with a week of the
+    // Sun and loses by five orders of magnitude. The floor keeps them usable
+    // while paused or at realtime.
+    const dtField = Math.max(dtSim, dtReal);
     switch (this.tool) {
-      case 'laser': this.fireLaser(dtReal); break;
-      case 'attract': this.applyField(dtReal, 1); break;
-      case 'repel': this.applyField(dtReal, -1); break;
-      case 'collapse': this.applyCollapse(dtReal); break;
+      case 'laser':
+        if (!this._laserUndo) { this._laserUndo = true; this.app.pushUndo(); }
+        this.fireLaser(dtReal);
+        break;
+      case 'attract': this.applyField(dtField, 1); break;
+      case 'repel': this.applyField(dtField, -1); break;
+      case 'collapse': this.applyCollapse(dtReal, dtField); break;
       default: break;
     }
   }
@@ -319,8 +336,18 @@ export class ToolController {
     const { world, camera, effects } = this.app;
     const radiusPx = toolRadiusPixels(this.tool, this.intensity, camera);
     const R = radiusPx / camera.scale;
-    // Scale the strength to the view, so the tool feels the same at every zoom.
-    const accel = sign * 2.2 * Math.pow(10, this.intensity * 1.2) * (R / 60) * camera.scale * 0.6;
+
+    // Strength as a multiple of the gravity each body is already feeling.
+    //
+    // Neither of the obvious alternatives works across twenty orders of
+    // magnitude of zoom. A fixed acceleration in m/s² is imperceptible against
+    // an orbital speed of 30 km/s and overwhelming for a moon. A fixed number
+    // of screen pixels per second is worse: at a view four astronomical units
+    // wide, "move it 120 pixels" means 7 × 10¹¹ m in one second. Measuring the
+    // push against the local gravitational acceleration makes it mean the same
+    // thing everywhere — at 1.5 g_local you can lift a planet out of its orbit
+    // in a few seconds, whether the planet is Mercury or a moon of Jupiter.
+    const strength = sign * 0.15 * Math.pow(10, this.intensity);
 
     for (const b of world.bodies) {
       if (b.fixed) continue;
@@ -330,7 +357,8 @@ export class ToolController {
       // Falls off to nothing at the edge of the ring, so there is no visible
       // discontinuity when a body crosses it.
       const falloff = 1 - (d / R) * (d / R);
-      const a = accel * falloff;
+      const local = Math.hypot(b.ax, b.ay);
+      const a = strength * falloff * Math.max(local, 1e-9);
       b.vx += (dx / d) * a * dt;
       b.vy += (dy / d) * a * dt;
     }
@@ -472,7 +500,7 @@ export class ToolController {
    * above that nothing does. Compression work is real work, so the body heats
    * up as it shrinks.
    */
-  applyCollapse(dt) {
+  applyCollapse(dt, dtField = dt) {
     const { world, camera, effects } = this.app;
     const b = this.collapsing;
 
@@ -492,9 +520,10 @@ export class ToolController {
         const dx = cx - o.x, dy = cy - o.y;
         const d = Math.hypot(dx, dy);
         if (d > R || d < 1e-9) continue;
-        const pull = 4 * Math.pow(10, this.intensity) * camera.scale * (R / 60) * 0.5;
-        o.vx += (dx / d) * pull * dt;
-        o.vy += (dy / d) * pull * dt;
+        // Against local gravity, as the attract field is.
+        const pull = 0.4 * Math.pow(10, this.intensity) * Math.max(Math.hypot(o.ax, o.ay), 1e-9);
+        o.vx += (dx / d) * pull * dtField;
+        o.vy += (dy / d) * pull * dtField;
         // Bleed off the orbital motion, or it just forms a disc and stays there.
         const damp = Math.exp(-dt * 1.6 * this.intensity);
         const vr = (o.vx * dx + o.vy * dy) / d;

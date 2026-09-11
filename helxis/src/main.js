@@ -91,12 +91,17 @@ class App {
 
   loadPreset(id, opts = {}) {
     // Push the undo entry only once the preset is known to exist, or a typo in
-    // an id leaves a junk snapshot on the stack.
-    const before = this.world.snapshot();
+    // an id leaves a junk snapshot on the stack. And never push an empty world:
+    // the first preset loads during construction, which seeded the stack with a
+    // zero-body snapshot — so the very first Ctrl+Z on a fresh page deleted
+    // everything, with nothing left to undo back to.
+    const before = this.world.bodies.length ? this.world.snapshot() : null;
     const info = loadPreset(this.world, id);
     if (!info) return;
-    this.undoStack.push(before);
-    if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
+    if (before) {
+      this.undoStack.push(before);
+      if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
+    }
     this.currentPreset = id;
     this.effects.clear();
     this.select(null);
@@ -472,6 +477,9 @@ class App {
     switch (e.key) {
       case ' ': e.preventDefault(); this.togglePause(); break;
       case ',': this.nudgeSpeed(-1); break;
+      // With Shift held the key is '>' on most layouts, never '.', so the
+      // documented frame-step had never once fired.
+      case '>': this.stepFrame(); break;
       case '.': e.shiftKey ? this.stepFrame() : this.nudgeSpeed(1); break;
       case 'f': case 'F': this.frameAll(); break;
       case 'g': case 'G': this.toggleFollow(); break;

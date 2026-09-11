@@ -76,9 +76,25 @@ export class Camera {
     }
 
     if (this.follow && this.follow.alive) {
+      // Smooth only a bounded residual. An exponential approach on a wall-clock
+      // time constant lags by the body's *apparent* speed times that constant,
+      // which grows with the time scale: at a week a second — the solar
+      // system's opening speed — the followed body left the screen immediately.
       const f = 1 - Math.exp(-dt / Math.max(1e-4, this.followSmoothing));
-      this.x += (this.follow.x - this.x) * f;
-      this.y += (this.follow.y - this.y) * f;
+      const nx = this.x + (this.follow.x - this.x) * f;
+      const ny = this.y + (this.follow.y - this.y) * f;
+      const maxLag = (Math.min(this.width, this.height) * 0.25) / this.scale;
+      const dx = this.follow.x - nx, dy = this.follow.y - ny;
+      const lag = Math.hypot(dx, dy);
+      if (lag > maxLag) {
+        // Too far behind to catch up smoothly: go the rest of the way now.
+        const k = (lag - maxLag) / lag;
+        this.x = nx + dx * k;
+        this.y = ny + dy * k;
+      } else {
+        this.x = nx;
+        this.y = ny;
+      }
     } else if (this.follow && !this.follow.alive) {
       this.follow = null;
     }

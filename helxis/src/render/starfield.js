@@ -53,7 +53,12 @@ export class Starfield {
 
     const img = ctx.getImageData(0, 0, w, h);
     const data = img.data;
-    const n = Math.round(this.count * density);
+    // The density control goes above 100%, so this has to be clamped to what
+    // was actually generated. Reading past the end produced NaN coordinates and
+    // an undefined colour, and the exception — thrown from the second thing the
+    // renderer does — blanked the whole viewport. Worse, the setting persists,
+    // so the app reopened dead.
+    const n = Math.min(this.count, Math.max(0, Math.round(this.count * density)));
 
     // The field tiles over a region twice the buffer so rotation never reveals
     // an edge.

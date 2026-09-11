@@ -1,5 +1,6 @@
 import { G, AU, TAU, clamp, rocheLimit, hillRadius } from '../core/const.js';
 import { orbitalElements, sampleConic } from '../core/kepler.js';
+import { displayRadiusPx } from './scale.js';
 
 const P = [0, 0];
 const Q = [0, 0];
@@ -306,7 +307,10 @@ export function collectLabels(world, camera, settings, selected) {
   for (const b of world.bodies) {
     if (b.kind === 'debris' && !settings.labelDebris) continue;
     if (!camera.visible(b.x, b.y, b.radius, 8)) continue;
-    const pr = b.radius * camera.scale;
+    // The size it is *drawn* at, as every other consumer uses. Against the true
+    // radius the Sun is a tenth of a pixel at the opening zoom and the Earth a
+    // thousandth, so nothing in a solar system was ever labelled.
+    const pr = displayRadiusPx(b, camera, settings);
     // Do not label things too small to point at, unless they are selected.
     if (pr < 1.2 && b !== selected && !settings.labelAll) continue;
     camera.project(b.x, b.y, P);

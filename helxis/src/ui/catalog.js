@@ -56,8 +56,9 @@ export const CATALOG = [
   {
     id: 'red-giant', name: 'Red giant', category: 'star', kind: 'star',
     mass: 1.2 * M_SUN, radius: 44 * R_SUN, temperature: 4300, period: 300 * DAY,
+    evolved: true,
     composition: { hydrogen: 0.66, helium: 0.32, carbon: 0.02 },
-    note: 'A Sun-like star after the main sequence, swollen past Mercury’s orbit.',
+    note: 'A Sun-like star after the main sequence. 44 R☉ and about 600 L☉.',
   },
   {
     id: 'white-dwarf', name: 'White dwarf', category: 'star', kind: 'wd',
@@ -78,8 +79,12 @@ export const CATALOG = [
     id: 'venus', name: 'Venus', category: 'rocky', kind: 'planet',
     mass: 4.8675e24, radius: 6.0518e6, temperature: 737, period: -243.025 * DAY,
     composition: { iron: 0.31, silicate: 0.69 },
-    crust: { basalt: 0.90, feldspar: 0.07, co2: 0.03 },
-    note: 'Retrograde, 737 K at the surface under 92 bar of CO₂.',
+    // The ground, not the cloud deck. Venus is the brightest object in the sky
+    // because of sulfuric acid clouds at around 250 K, and a body here carries
+    // one temperature — so it is drawn as the basalt and iron oxide the Venera
+    // landers photographed, not as the white disc from outside.
+    crust: { basalt: 0.50, hematite: 0.30, feldspar: 0.20 },
+    note: 'Retrograde, 737 K under 92 bar of CO₂. Drawn as the surface, not the clouds.',
   },
   {
     id: 'earth', name: 'Earth', category: 'rocky', kind: 'planet',
@@ -150,28 +155,28 @@ export const CATALOG = [
     id: 'jupiter', name: 'Jupiter', category: 'giant', kind: 'gasgiant',
     mass: M_JUP, radius: R_JUP, temperature: 165, period: 0.41354 * DAY,
     composition: { hydrogen: 0.71, helium: 0.24, silicate: 0.04, ice: 0.01 },
-    crust: { hydrogen: 0.75, helium: 0.23, ammonia: 0.02 },
+    crust: { hydrogen: 0.52, helium: 0.16, ammonia: 0.24, sulfur: 0.08 },
     note: '318 Earth masses. Its barycentre with the Sun is outside the Sun.',
   },
   {
     id: 'saturn', name: 'Saturn', category: 'giant', kind: 'gasgiant',
     mass: 5.6834e26, radius: 5.8232e7, temperature: 134, period: 0.44401 * DAY,
     composition: { hydrogen: 0.73, helium: 0.25, silicate: 0.02 },
-    crust: { hydrogen: 0.76, helium: 0.22, ammonia: 0.02 },
+    crust: { hydrogen: 0.60, helium: 0.18, ammonia: 0.22 },
     note: 'Less dense than water — 687 kg/m³.',
   },
   {
     id: 'uranus', name: 'Uranus', category: 'giant', kind: 'gasgiant',
     mass: 8.6810e25, radius: 2.5362e7, temperature: 76, period: -0.71833 * DAY,
     composition: { hydrogen: 0.18, helium: 0.14, ice: 0.60, ammonia: 0.05, methane: 0.03 },
-    crust: { methane: 0.30, hydrogen: 0.5, helium: 0.2 },
+    crust: { methane: 0.62, hydrogen: 0.26, helium: 0.12 },
     note: 'An ice giant on its side. Methane haze is what makes it cyan.',
   },
   {
     id: 'neptune', name: 'Neptune', category: 'giant', kind: 'gasgiant',
     mass: 1.02413e26, radius: 2.4622e7, temperature: 72, period: 0.6713 * DAY,
     composition: { hydrogen: 0.19, helium: 0.13, ice: 0.60, ammonia: 0.05, methane: 0.03 },
-    crust: { methane: 0.34, hydrogen: 0.46, helium: 0.20 },
+    crust: { methane: 0.72, hydrogen: 0.19, helium: 0.09 },
     note: 'The fastest winds in the solar system, above 2 000 km/h.',
   },
   {
@@ -183,7 +188,9 @@ export const CATALOG = [
   },
   {
     id: 'sub-neptune', name: 'Sub-Neptune', category: 'giant', kind: 'gasgiant',
-    mass: 8 * M_EARTH, radius: 2.4 * R_EARTH, temperature: 320, period: 0.8 * DAY,
+    // 8 M⊕ at 2.7 R⊕, after K2-18b. The 2.4 R⊕ this used to carry implied a
+    // bulk density its own composition could not reach.
+    mass: 8 * M_EARTH, radius: 2.7 * R_EARTH, temperature: 320, period: 0.8 * DAY,
     composition: { hydrogen: 0.08, helium: 0.04, ice: 0.5, silicate: 0.38 },
     crust: { hydrogen: 0.6, helium: 0.2, water: 0.2 },
     note: 'The commonest kind of planet in the galaxy, and absent from ours.',
@@ -313,14 +320,20 @@ export const CATALOG = [
   },
   {
     id: 'm-asteroid', name: 'M-type asteroid', category: 'small', kind: 'asteroid',
-    mass: 2.3e18, radius: 3.1e4, temperature: 190, period: 0.19 * DAY,
+    // Psyche: 2.29e19 kg at a volume-equivalent radius of 111 km, which is
+    // 3400 kg/m³. The pair this used to carry worked out at 18 400 — over twice
+    // the density of solid iron.
+    mass: 2.29e19, radius: 1.11e5, temperature: 190, period: 0.19 * DAY,
     composition: { iron: 0.75, nickel: 0.15, silicate: 0.10 },
     crust: { iron: 0.8, nickel: 0.2 },
     note: 'Nickel-iron: the exposed core of a shattered protoplanet.',
   },
   {
     id: 'rubble-pile', name: 'Rubble pile', category: 'small', kind: 'asteroid',
-    mass: 7.33e10, radius: 1.63e2, temperature: 255, period: 4.3 * 3600,
+    // Bennu: the mass is right, but its volume-equivalent radius is 245 m, not
+    // its 163 m polar one — which gives the 1190 kg/m³ that makes it a rubble
+    // pile rather than something denser than basalt.
+    mass: 7.33e10, radius: 2.45e2, temperature: 255, period: 4.3 * 3600,
     composition: { silicate: 0.8, carbon: 0.2 },
     crust: { regolith: 0.9, carbon: 0.1 },
     note: 'Loose gravel held together by almost nothing, after Bennu.',
@@ -430,6 +443,7 @@ export function instantiate(entry, opts = {}) {
   const body = new Body({
     name: opts.name || entry.name,
     kind: entry.kind,
+    evolved: !!entry.evolved,
     catalogId: entry.id,
     mass,
     radius,

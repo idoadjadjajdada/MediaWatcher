@@ -6,12 +6,51 @@ import { makeRng, gaussian, powerLawSample, hashSeed } from './rng.js';
 /** Bodies held up by degeneracy pressure, or by nothing at all. */
 const isCompact = (b) => b.kind === 'bh' || b.kind === 'ns' || b.kind === 'wd';
 
+/**
+ * The smallest thing worth tracking as a body.
+ *
+ * Every debris gate used to be a fraction of the pair that produced it, which
+ * is scale-free: debris sheds smaller debris, which sheds smaller debris still,
+ * with nothing to stop it. A settling cluster of six asteroids could run away
+ * into five hundred fragments reaching down to eighty tonnes — objects no
+ * larger than a car, individually integrated, each able to start the cycle
+ * again. The floor comes from the scene, so it does not shrink as the debris
+ * does; anything under it stays with its parent, where its mass is still
+ * conserved and still gravitates.
+ */
+function fragmentFloor(opts, fallback) {
+  const floor = opts && opts.minFragmentMass;
+  return floor > 0 ? Math.max(floor, fallback) : fallback;
+}
+
 // Leinhardt & Stewart (2012) parameters.
 const RHO1 = 1000;        // kg/m^3, the reference density their scaling uses
 const C_STAR = 5.0;       // dissipation constant; ~5 for hydrodynamic bodies
 const MU_BAR = 0.36;      // velocity exponent, gravity regime (rock)
 const SUPERCAT = 1.8;     // Q_R/Q*_RD above which the outcome is supercatastrophic
 const FRAG_SLOPE = 1.83;  // differential mass distribution slope, ~Dohnanyi 11/6
+
+/**
+ * Translate a set of products so their centre of mass sits where it did before.
+ *
+ * Spawning debris on a ring while leaving the body it came from where it was
+ * teleports mass: the ring carries a mass-weighted offset that nothing answers
+ * for. It is invisible to a momentum check — momentum stays exact — but it
+ * steps the barycentre's *position*, and with it the system's potential energy.
+ * A supercatastrophic impact was moving the centre of mass by 1.2 contact radii.
+ *
+ * The correction is a rigid translation of the whole set, not a nudge to one
+ * member. Moving only the survivor fixes the sum, but when the survivor is
+ * light next to its own debris the shift is large — and it lands inside the
+ * ring it just threw off.
+ */
+function recenterProducts(products, comX, comY) {
+  let m = 0, cx = 0, cy = 0;
+  for (const p of products) { m += p.mass; cx += p.mass * p.x; cy += p.mass * p.y; }
+  if (!(m > 0)) return;
+  const dx = comX - cx / m, dy = comY - cy / m;
+  for (const p of products) { p.x += dx; p.y += dy; }
+}
 
 /**
  * Lay a swarm of pieces out on a ring without any of them starting inside one
@@ -166,23 +205,28 @@ export function resolveCollision(a, b, opts = {}) {
   const bCrit = target.radius / Rsum;
   const grazing = bImp > bCrit;
 
-  // How grazing this is, normalised: 0 at the hit-and-run boundary, 1 at a
-  // tangent brush past the limb.
-  const graze = clamp((bImp - bCrit) / Math.max(1 - bCrit, 1e-6), 0, 1);
-
   // Between plain merging and true hit-and-run there is a band where the
   // impactor loses enough energy on the pass to stay bound, and merges on a
-  // later one — Genda et al. (2012). The band is widest for near-head-on
-  // impacts, which shed the most energy, and narrows as the encounter becomes
-  // a tangent brush.
+  // later one — Genda et al. (2012).
   //
-  // It never narrows to nothing, though: separating at all requires beating the
-  // mutual escape velocity, and a pair that grazes at exactly v_esc is still
-  // bound however lightly they touched. Letting the band close to v_esc made
-  // every tangential encounter in an accreting disc a hit-and-run that shed
-  // debris, so a disc of a hundred and sixty planetesimals grew to twelve
-  // hundred fragments instead of merging into planets.
-  const vGrazeMerge = vEsc * (1.05 + 0.6 * (1 - graze));
+  // Rather than fit a curve to that band, ask the question directly. Only the
+  // parts that actually touch are brought to rest against each other, so the
+  // energy dissipated is roughly the interacting pair's kinetic energy in the
+  // centre-of-mass frame. The pair stays bound when that exceeds the surplus
+  // over escape:
+  //
+  //     ½·mu_i·v²  >  ½·mu·(v² − v_esc²)      =>      v < v_esc·sqrt(mu/(mu − mu_i))
+  //
+  // which behaves correctly at both ends: a head-on hit has mu_i -> mu and
+  // always merges, and a tangent brush has mu_i -> 0 and separates the moment
+  // it beats escape velocity. An earlier fitted version put the boundary at
+  // 1.05 v_esc for anything grazing, which made two rubble piles falling
+  // together at 1.1 v_esc a hit-and-run that shed debris — and in a settling
+  // cluster that ran away, six asteroids becoming five hundred fragments.
+  const muInteract = (Mt * Minteract) / (Mt + Minteract);
+  const vGrazeMerge = muInteract >= reduced
+    ? vEsc * 8
+    : Math.min(vEsc * 8, vEsc * Math.sqrt(reduced / (reduced - muInteract)));
 
   let regime;
   if (vImp < vEsc * 1.02) {
@@ -295,6 +339,11 @@ function doMerge(target, proj, ctx) {
     differentiation: (target.differentiation * Mt + proj.differentiation * Mp) / Mtot,
     seed: target.seed,
     craters: target.craters,
+    // Carry the history forward. Leaving `mixes` out of the options meant the
+    // constructor started the merged body with an empty list, so every merge
+    // erased every earlier one and a body could only ever remember the last
+    // thing that hit it — which is precisely the claim the textures rest on.
+    mixes: target.mixes.concat(proj.mixes),
     rotation: target.rotation,
     spin: target.spin,
     luminosity: target.luminosity + proj.luminosity,
@@ -385,10 +434,9 @@ function doMerge(target, proj, ctx) {
       if (newM > 0) {
         merged.vx = (Mtot * comVx - dpx) / newM;
         merged.vy = (Mtot * comVy - dpy) / newM;
-        merged.x = comX - dx / newM;
-        merged.y = comY - dy / newM;
         merged.mass = newM;
         merged.refresh();
+        recenterProducts([merged].concat(discBodies), comX, comY);
 
         // And audit the energy, as the disruption branch does. The disc bodies
         // were handed Keplerian velocities outright; between that and the work
@@ -447,7 +495,7 @@ function doMerge(target, proj, ctx) {
 }
 
 function doCratering(target, proj, ctx) {
-  const { nx, ny, vImp, kImpact, Minteract, rng } = ctx;
+  const { nx, ny, vImp, kImpact, rng, opts } = ctx;
   // The projectile is absorbed; the target keeps its identity and gains a scar.
   const Mt = target.mass, Mp = proj.mass;
   const Mtot = Mt + Mp;
@@ -467,7 +515,7 @@ function doCratering(target, proj, ctx) {
   let ejectaMass = ejectaFrac * Mp;
   // Anything below this is dust: unresolvable as a body, and it re-accretes.
   // Leave it on the target rather than tracking or deleting it.
-  if (ejectaMass <= 1e-5 * Mt) ejectaMass = 0;
+  if (ejectaMass <= fragmentFloor(opts, 1e-5 * Mt) * 2) ejectaMass = 0;
 
   // Momentum first: the survivor takes everything the ejecta does not.
   const pX = Mt * target.vx + Mp * proj.vx;
@@ -507,7 +555,10 @@ function doCratering(target, proj, ctx) {
   // Take the survivor's mass from what the fragments actually carried away, not
   // from the requested ejecta budget: rounding in the split must not leak mass.
   const survivorMass = Mtot - sumM;
+  const comX = (target.x * Mt + proj.x * Mp) / Mtot;
+  const comY = (target.y * Mt + proj.y * Mp) / Mtot;
   target.mass = survivorMass;
+  recenterProducts([target].concat(fragments), comX, comY);
   target.composition = mixCompositions(target.composition, Mt, proj.composition, Math.max(0, Mp - sumM));
   target.vx = (pX - sumPx) / survivorMass;
   target.vy = (pY - sumPy) / survivorMass;
@@ -529,7 +580,7 @@ function doCratering(target, proj, ctx) {
 }
 
 function doHitAndRun(target, proj, ctx) {
-  const { nx, ny, vImp, alpha, kImpact, rng } = ctx;
+  const { nx, ny, vImp, alpha, kImpact, rng, opts } = ctx;
   const Mt = target.mass, Mp = proj.mass;
 
   // Only the interacting cap is stripped from the projectile; the rest of it
@@ -555,7 +606,7 @@ function doHitAndRun(target, proj, ctx) {
   const fragments = [];
   const relDir = Math.atan2(proj.vy - target.vy, proj.vx - target.vx);
   // As with cratering ejecta, debris below this is dust rather than bodies.
-  if (debrisMass > 1e-4 * Mt) {
+  if (debrisMass > fragmentFloor(opts, 1e-4 * Mt) * 2) {
     const n = clamp(Math.round(4 + rng() * 8), 1, 16);
     const each = debrisMass / n;
     const vEsc = Math.sqrt((2 * G * (Mt + Mp)) / (target.radius + proj.radius));
@@ -598,6 +649,14 @@ function doHitAndRun(target, proj, ctx) {
   target.mass = Mt + Mp - sumM;
   target.vx = (pX - sumPx) / target.mass;
   target.vy = (pY - sumPy) / target.mass;
+
+  // The debris was spawned on a ring around the projectile; move the target to
+  // answer for it, so the trio's centre of mass does not jump.
+  if (added.length) {
+    const comX = (target.x * Mt + proj.x * Mp) / (Mt + Mp);
+    const comY = (target.y * Mt + proj.y * Mp) / (Mt + Mp);
+    recenterProducts([target, proj].concat(added), comX, comY);
+  }
 
   // Push them apart so the pair is not re-detected while still overlapping.
   separate(target, proj);
@@ -645,6 +704,7 @@ function doDisruption(target, proj, ctx) {
     temperature: (target.temperature * target.mass + proj.temperature * proj.mass) / Mtot,
     differentiation: Math.max(target.differentiation, proj.differentiation),
     seed: hashSeed(target.seed, proj.seed, 'lr'),
+    mixes: target.mixes.concat(proj.mixes),
   });
   largest.mixes.push({
     seedA: target.seed, seedB: proj.seed,
@@ -661,7 +721,7 @@ function doDisruption(target, proj, ctx) {
   // Fragments: a power-law mass distribution capped at half the largest
   // remnant, which is what the second-remnant relation gives near threshold.
   const maxFrag = Math.min(remainder, lrMass * 0.5);
-  const minFrag = Math.max(remainder * 1e-4, Mtot * 1e-6);
+  const minFrag = Math.max(remainder * 1e-4, Mtot * 1e-6, fragmentFloor(ctx.opts, 0));
   const fragments = [];
   let guard = 0;
   const cap = ctx.opts && ctx.opts.maxFragments ? ctx.opts.maxFragments : 48;
@@ -727,6 +787,8 @@ function doDisruption(target, proj, ctx) {
       spin: (rng() - 0.5) * 1e-3,
     }));
   }
+
+  recenterProducts(largest.mass > 0 ? [largest].concat(bodies) : bodies, comX, comY);
 
   // Close the books on mass first, so the products sum to exactly what went in.
   let sumM = 0;
@@ -812,19 +874,29 @@ function accreteIntoCompact(target, proj, ctx) {
   const host = isCompact(target) && (!isCompact(proj) || target.mass >= proj.mass) ? target : proj;
   const other = host === target ? proj : target;
 
-  const eff = host.kind === 'bh' ? 0.057 : host.kind === 'ns' ? 0.2 : 0.0003;
+  // Radiative efficiency: the fraction of infalling rest mass that leaves as
+  // energy rather than joining the remnant. ~5.7% for matter spiralling to a
+  // Schwarzschild horizon, and well under 1% for a neutron-star merger — the
+  // 20% an earlier version used is a *surface accretion* figure, and applying
+  // it to a merger took away so much mass that a 1.5 + 1.6 M☉ pair landed at
+  // 2.80 M☉ and stayed a neutron star, so the TOV collapse this branch exists
+  // to show could never happen.
+  const merger = isCompact(other);
+  const eff = host.kind === 'bh' ? 0.057 : (merger ? 0.005 : 0.002);
   const radiated = other.mass * C * C * eff;
-  // Radiated energy carries away mass, but never more than a sane fraction of
-  // what fell in.
   const massLost = Math.min(other.mass * eff, other.mass * 0.5);
 
   const pX = host.mass * host.vx + other.mass * other.vx;
   const pY = host.mass * host.vy + other.mass * other.vy;
   const Mtot = host.mass + other.mass - massLost;
 
+  // The radiation is isotropic in the centre-of-mass frame, so it carries away
+  // mass but no net momentum: the remnant keeps the pair's centre-of-mass
+  // velocity, and the books balance against (mass + radiated), not against the
+  // remnant's mass alone.
   host.mass = Mtot;
-  host.vx = pX / (host.mass + massLost);
-  host.vy = pY / (host.mass + massLost);
+  host.vx = pX / (Mtot + massLost);
+  host.vy = pY / (Mtot + massLost);
 
   // Re-derive what it now is from its mass alone.
   const wasKind = host.kind;

@@ -281,9 +281,18 @@ Node — the tests do.
 - Attract and repel are openly unphysical, and a pinned body exerts gravity
   without accepting any — both break momentum conservation while in use, by
   design.
-- Fragmentation is capped by the body limit. Mass evicted at that cap, bodies
-  culled for going non-finite, and a step too fine to be meaningful are all
-  counted and shown under **Show diagnostics** rather than absorbed silently.
+- Fragmentation is capped by the body limit, and by a floor on how small a
+  piece is worth tracking — a millionth of the largest body in the scene.
+  Without a scene-wide floor, debris sheds smaller debris without limit, since
+  a gate expressed as a fraction of the pair that produced it shrinks exactly
+  as fast as the pieces do. Mass under the floor stays with its parent, where
+  it still gravitates. Mass evicted at the body cap, bodies culled for going
+  non-finite, and a step too fine to be meaningful are all counted and shown
+  under **Show diagnostics** rather than absorbed silently.
+- Porosity is not modelled, so a comet's or a rubble pile's quoted density is
+  well under what its materials imply. That is the real number, not an error.
+- Atmospheres are not modelled. Venus is drawn as the basalt the Venera landers
+  photographed, not as the white disc its clouds present from outside.
 - The 2D projection is a real one — concentric gas-giant bands and impact
   bearings follow from it — but it is not a thin slice of a 3D system, and
   orbits that would be inclined simply are not.

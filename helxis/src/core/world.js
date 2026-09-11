@@ -128,6 +128,21 @@ export class World {
     return best;
   }
 
+  /**
+   * The smallest mass worth tracking as its own body in this scene, taken as a
+   * fraction of the largest body present. Without a scene-wide floor, debris
+   * sheds debris without limit — a gate expressed as a fraction of the pair
+   * that produced it shrinks exactly as fast as the pieces do.
+   */
+  fragmentFloor() {
+    if (this._floorFrame === this._frame && this._floor != null) return this._floor;
+    let biggest = 0;
+    for (const b of this.bodies) if (b.mass > biggest) biggest = b.mass;
+    this._floor = biggest * 1e-6;
+    this._floorFrame = this._frame;
+    return this._floor;
+  }
+
   /** Mean softening length, in metres. Zero unless the user asks for it. */
   get softening() {
     const f = this.settings.softeningFraction;
@@ -493,6 +508,8 @@ export class World {
       const result = resolveCollision(best.a, best.b, {
         maxFragments: clamp(Math.floor(room / 3), 2, this.settings.maxFragments),
         allowBounce: this.settings.bounce !== false,
+        // Scene-wide, so it does not shrink along with the debris it bounds.
+        minFragmentMass: this.fragmentFloor(),
       });
       this.applyResult(result);
       this.collisionCount++;
@@ -738,7 +755,10 @@ export class World {
 
   loadJSON(data) {
     this.clear();
-    if (data.settings) Object.assign(this.settings, data.settings);
+    // Deliberately *not* Object.assign(this.settings, data.settings): a scene
+    // file is untrusted input, and letting it set maxBodies, the substep
+    // ceiling or the frame budget hands it the engine's limits. The UI reapplies
+    // the user's own settings after loading.
     for (const o of data.bodies || []) this.add(Body.fromJSON(o));
     this.time = data.time || 0;
     this.computeAccelerations();

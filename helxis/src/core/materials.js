@@ -27,8 +27,11 @@ export const MATERIALS = {
   carbon:    { name: 'Carbon',    rho: 2200, melt: 3800, boil: 4300, cp: 710,  latent: 1.0e5,  vapour: 5.9e7,  albedo: 0.04, strength: 2.0e7, cold: [44, 42, 46],    hot: [200, 90, 40] },
   water:     { name: 'Water',     rho: 1000, melt: 273,  boil: 373,  cp: 4184, latent: 3.34e5, vapour: 2.26e6, albedo: 0.06, strength: 0,     cold: [48, 96, 152],   hot: [96, 168, 208] },
   ice:       { name: 'Water ice', rho: 917,  melt: 273,  boil: 373,  cp: 2050, latent: 3.34e5, vapour: 2.83e6, albedo: 0.60, strength: 1.0e6, cold: [206, 226, 240], hot: [140, 190, 220] },
-  ammonia:   { name: 'Ammonia',   rho: 817,  melt: 195,  boil: 240,  cp: 4700, latent: 3.32e5, vapour: 1.37e6, albedo: 0.50, strength: 5.0e5, cold: [200, 212, 188], hot: [170, 196, 176] },
-  methane:   { name: 'Methane',   rho: 656,  melt: 91,   boil: 112,  cp: 2200, latent: 5.87e4, vapour: 5.1e5,  albedo: 0.30, strength: 2.0e5, cold: [128, 196, 196], hot: [110, 176, 188] },
+  ammonia:   { name: 'Ammonia',   rho: 817,  melt: 195,  boil: 240,  cp: 4700, latent: 3.32e5, vapour: 1.37e6, albedo: 0.50, strength: 5.0e5, cold: [214, 200, 170], hot: [196, 176, 150] },
+  // Methane absorbs red light, which is the whole reason Uranus and Neptune
+  // are blue; the tabulated colour has to be the colour it *makes*, not the
+  // colour of the condensate.
+  methane:   { name: 'Methane',   rho: 656,  melt: 91,   boil: 112,  cp: 2200, latent: 5.87e4, vapour: 5.1e5,  albedo: 0.30, strength: 2.0e5, cold: [58, 124, 198],  hot: [96, 158, 214] },
   nitrogen:  { name: 'Nitrogen',  rho: 1026, melt: 63,   boil: 77,   cp: 2040, latent: 2.57e4, vapour: 1.99e5, albedo: 0.70, strength: 1.0e5, cold: [224, 224, 232], hot: [190, 200, 220] },
   co2:       { name: 'CO₂ ice',   rho: 1562, melt: 195,  boil: 195,  cp: 850,  latent: 1.96e5, vapour: 5.7e5,  albedo: 0.60, strength: 3.0e5, cold: [232, 228, 216], hot: [200, 196, 190] },
   sulfur:    { name: 'Sulfur',    rho: 2070, melt: 388,  boil: 718,  cp: 700,  latent: 5.4e4,  vapour: 1.4e6,  albedo: 0.55, strength: 5.0e6, cold: [224, 196, 92],  hot: [255, 210, 110] },

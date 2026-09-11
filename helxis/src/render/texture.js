@@ -112,6 +112,24 @@ function mixMask(u, v, mix, seed) {
 // ---------------------------------------------------------------------------
 // Rocky, icy and molten worlds
 
+/**
+ * The height field, factored out so the sea level can be taken from its own
+ * distribution before any pixel is drawn.
+ */
+function elevationAt(u, v, seed, rough, features) {
+  const wx = fbm(u * 2.3 + 4.2, v * 2.3 - 1.7, seed ^ 0x2545f491, 3) - 0.5;
+  const wy = fbm(u * 2.3 - 9.1, v * 2.3 + 6.3, seed ^ 0x27d4eb2d, 3) - 0.5;
+  const su = u + wx * 0.55 * rough;
+  const sv = v + wy * 0.55 * rough;
+  let h = fbm(su * 3.1, sv * 3.1, seed, 5, 2.05, 0.52);
+  h = h * 0.72 + ridged(su * 5.4, sv * 5.4, seed ^ 0x165667b1, 4) * 0.28 * rough;
+  for (const f of features) {
+    const d = Math.hypot(u - f.x, v - f.y);
+    if (d < f.r) h += f.s * 0.16 * smoothstep(1 - d / f.r);
+  }
+  return clamp(h, 0, 1);
+}
+
 function renderTerrestrial(body, size, data) {
   const n = size;
   const half = n / 2;
@@ -136,7 +154,6 @@ function renderTerrestrial(body, size, data) {
   // rubble pile that never relaxed.
   const rough = clamp(1.15 - body.differentiation * 0.45 - molten * 0.5, 0.25, 1.3);
 
-  const dom = MATERIALS[dominantMaterial(surf)] || MATERIALS.silicate;
   const rng = makeRng(seed ^ 0x9e3779b9);
   // A handful of large surface features, drawn as low-frequency blobs.
   const features = [];
@@ -146,6 +163,26 @@ function renderTerrestrial(body, size, data) {
       x: (rng() * 2 - 1) * 0.7, y: (rng() * 2 - 1) * 0.7,
       r: 0.18 + rng() * 0.42, s: rng() < 0.5 ? -1 : 1,
     });
+  }
+
+  // Where the sea sits, taken from the height field's own distribution rather
+  // than from `1 - liquid`. fBm is bell-shaped, not uniform, so treating the
+  // coverage fraction as a height put 18% of the surface under water on a
+  // planet asked for 66%.
+  let seaLevel = 0;
+  if (liquid > 0) {
+    const probe = [];
+    for (let i = 0; i < 24; i++) {
+      for (let j = 0; j < 24; j++) {
+        const u = ((i + 0.5) / 12) - 1, v = ((j + 0.5) / 12) - 1;
+        if (Math.hypot(u, v) > 1) continue;
+        probe.push(elevationAt(u, v, seed, rough, features));
+      }
+    }
+    probe.sort((a, b) => a - b);
+    seaLevel = probe.length
+      ? probe[Math.min(probe.length - 1, Math.floor(liquid * probe.length))]
+      : 0.5;
   }
 
   let p = 0;
@@ -162,14 +199,7 @@ function renderTerrestrial(body, size, data) {
       const wy = fbm(u * 2.3 - 9.1, v * 2.3 + 6.3, seed ^ 0x27d4eb2d, 3) - 0.5;
       const su = u + wx * 0.55 * rough;
       const sv = v + wy * 0.55 * rough;
-
-      let h = fbm(su * 3.1, sv * 3.1, seed, 5, 2.05, 0.52);
-      h = h * 0.72 + ridged(su * 5.4, sv * 5.4, seed ^ 0x165667b1, 4) * 0.28 * rough;
-      for (const f of features) {
-        const d = Math.hypot(u - f.x, v - f.y);
-        if (d < f.r) h += f.s * 0.16 * smoothstep(1 - d / f.r);
-      }
-      h = clamp(h, 0, 1);
+      const h = elevationAt(u, v, seed, rough, features);
 
       // --- base colour ----------------------------------------------------
       let cr = base[0], cg = base[1], cb = base[2];
@@ -192,7 +222,6 @@ function renderTerrestrial(body, size, data) {
 
       // --- water and ice ---------------------------------------------------
       if (liquid > 0) {
-        const seaLevel = 1 - liquid;
         if (h < seaLevel) {
           const depth = clamp((seaLevel - h) / Math.max(seaLevel, 0.001), 0, 1);
           const w = MATERIALS.water.cold;
@@ -313,8 +342,10 @@ function renderGiant(body, size, data) {
   for (let i = 0; i < bandCount; i++) {
     bands.push({
       r: (i + 0.5) / bandCount,
-      w: 0.5 / bandCount + rng() * 0.35 / bandCount,
-      tone: (rng() * 2 - 1) * 0.32,
+      // Narrow enough that neighbouring jets do not blur into one another.
+      w: 0.30 / bandCount + rng() * 0.16 / bandCount,
+      // Alternating sense, as real jets do, with varying strength.
+      tone: (i % 2 === 0 ? 1 : -1) * (0.24 + rng() * 0.26),
       shear: (rng() * 2 - 1) * 5.5,
     });
   }
@@ -348,7 +379,10 @@ function renderGiant(body, size, data) {
         const sx = Math.cos(theta + band.shear * r) * r * 5.5;
         const sy = Math.sin(theta + band.shear * r) * r * 5.5;
         const turb = fbm(sx, sy, seed ^ Math.round(band.r * 1e4), 4, 2.1, 0.55) - 0.5;
-        tone += w * (band.tone + turb * 0.85);
+          // Turbulence modulates the band, it does not replace it. At 0.85
+        // against a band tone of ±0.32 the jets were entirely swamped and all
+        // four giants came out as the same featureless pinwheel.
+        tone += w * (band.tone + turb * 0.30);
       }
 
       for (const s of storms) {

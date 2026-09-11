@@ -84,6 +84,9 @@ export class Body {
     this.crust = opts.crust ? normalizeComposition(opts.crust) : null;
 
     this.luminosity = opts.luminosity || 0;  // W, non-zero for stars
+    // Off the main sequence: keep the quoted radius and temperature rather than
+    // deriving both from mass.
+    this.evolved = !!opts.evolved;
     this.fixed = !!opts.fixed;               // held in place by the user
     this.alive = true;
     this.age = 0;                            // seconds of simulated existence
@@ -133,8 +136,17 @@ export class Body {
     const { core, surface } = differentiate(this.composition, this.differentiation);
     this.coreComposition = core;
     if (this.crust) {
-      const melt = compositionProperty(this.crust, 'melt') || 1400;
-      const molten = Math.max(0, Math.min(1, (this.temperature - melt * 0.9) / (melt * 0.25)));
+      // The melting point of what the crust is mostly *made* of, not a
+      // mass-weighted mean over everything in it. Averaged, a methane crust
+      // carrying a fraction of hydrogen melts at 60 K rather than 91 — so
+      // Uranus counted as fully molten at 76 K, its crust was discarded for the
+      // bulk mixture, and the methane that makes it blue went with it.
+      const melt = MATERIALS[dominantMaterial(this.crust)]
+        ? MATERIALS[dominantMaterial(this.crust)].melt
+        : (compositionProperty(this.crust, 'melt') || 1400);
+      const molten = melt > 0
+        ? Math.max(0, Math.min(1, (this.temperature - melt * 0.9) / (melt * 0.25)))
+        : 1;
       this.surfaceComposition = molten > 0.001
         ? mixCompositions(this.crust, 1 - molten, surface, molten)
         : this.crust;
@@ -143,22 +155,33 @@ export class Body {
     }
 
     if (this.kind === 'star') {
-      // Mass-luminosity relation, piecewise over the main sequence.
-      const m = this.mass / M_SUN;
-      let l;
-      if (m < 0.43) l = 0.23 * Math.pow(m, 2.3);
-      else if (m < 2) l = Math.pow(m, 4);
-      else if (m < 55) l = 1.4 * Math.pow(m, 3.5);
-      else l = 32000 * m;
-      this.luminosity = l * L_SUN;
-      if (!this.explicitRadius) {
-        // Main-sequence mass-radius relation.
-        this.radius = R_SUN * (m < 1 ? Math.pow(m, 0.8) : Math.pow(m, 0.57));
+      if (this.evolved) {
+        // An evolved star is not on the main sequence, and forcing it there is
+        // not a small error: a 1.2 M☉ red giant at 44 R☉ came out at 2 L☉ and
+        // 1044 K instead of 596 L☉ and 4300 K — 288 times too faint, too cool
+        // to render as anything but a dull ember, and irradiating nothing it
+        // orbited. Given a radius and an effective temperature, Stefan-Boltzmann
+        // gives the luminosity directly, with no relation to assume.
+        this.luminosity = 4 * Math.PI * this.radius * this.radius
+          * SIGMA_SB * Math.pow(this.temperature, 4);
+      } else {
+        // Mass-luminosity relation, piecewise over the main sequence.
+        const m = this.mass / M_SUN;
+        let l;
+        if (m < 0.43) l = 0.23 * Math.pow(m, 2.3);
+        else if (m < 2) l = Math.pow(m, 4);
+        else if (m < 55) l = 1.4 * Math.pow(m, 3.5);
+        else l = 32000 * m;
+        this.luminosity = l * L_SUN;
+        if (!this.explicitRadius) {
+          // Main-sequence mass-radius relation.
+          this.radius = R_SUN * (m < 1 ? Math.pow(m, 0.8) : Math.pow(m, 0.57));
+        }
+        // Effective temperature from Stefan-Boltzmann, given L and R.
+        this.temperature = Math.pow(
+          this.luminosity / (4 * Math.PI * this.radius * this.radius * SIGMA_SB), 0.25
+        );
       }
-      // Effective temperature from Stefan-Boltzmann, given L and R.
-      this.temperature = Math.pow(
-        this.luminosity / (4 * Math.PI * this.radius * this.radius * SIGMA_SB), 0.25
-      );
       this.density = this.mass / ((4 / 3) * Math.PI * Math.pow(this.radius, 3));
     }
 
@@ -356,11 +379,12 @@ export class Body {
       d = L * 10;
     }
     const size = d / this.radius;
-    // Below about a percent of the disc a crater is smaller than the texels it
-    // would be drawn into. Recording it would cost a texture regeneration and
-    // change nothing on screen.
-    if (!(size > 0.012)) return;
-    const clamped = clamp(size, 0.012, 1.4);
+    // One texel of the largest sprite the renderer uses is 1/256 of the disc.
+    // Anything smaller genuinely cannot be drawn; the previous threshold of a
+    // full percent threw away everything under 76 km across on an Earth, so a
+    // world under constant ordinary bombardment stayed unmarked.
+    if (!(size > 0.004)) return;
+    const clamped = clamp(size, 0.004, 1.4);
     this.craters.push({
       a: angle,
       // Where on the visible disc: impacts near the limb are foreshortened.
@@ -385,7 +409,7 @@ export class Body {
       differentiation: this.differentiation, rotation: this.rotation, spin: this.spin,
       seed: this.seed, craters: this.craters, mixes: this.mixes, crust: this.crust,
       revision: this.revision,
-      luminosity: this.luminosity, fixed: this.fixed,
+      luminosity: this.luminosity, fixed: this.fixed, evolved: this.evolved,
     };
   }
 

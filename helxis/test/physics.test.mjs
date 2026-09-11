@@ -20,7 +20,7 @@ import {
 } from '../src/core/kepler.js';
 import { loadPreset, PRESETS } from '../src/ui/presets.js';
 import { CATALOG, instantiate } from '../src/ui/catalog.js';
-import { radiusFromMass } from '../src/core/materials.js';
+import { radiusFromMass, bulkDensity, compressionFactor } from '../src/core/materials.js';
 
 let passed = 0, failed = 0;
 const results = [];
@@ -462,6 +462,117 @@ section('Regressions found in the second review');
   }
 }
 
+section('Regressions found in the third review');
+{
+  // Merge history is what the textures are made of. Leaving `mixes` out of the
+  // merged body's options meant every merge silently erased every earlier one,
+  // so a body could only remember the last thing that hit it.
+  let planet = new Body({
+    name: 'P', mass: M_EARTH, composition: { iron: 0.32, silicate: 0.68 }, temperature: 300,
+  });
+  const counts = [];
+  for (const comp of [{ ice: 1 }, { iron: 1 }, { carbon: 1 }]) {
+    const m = 0.05 * M_EARTH;
+    const imp = new Body({
+      name: 'I', mass: m, composition: comp, temperature: 300,
+      x: (planet.radius + new Body({ mass: m, composition: comp }).radius) * 0.999,
+      vx: -4000,
+    });
+    const r = resolveCollision(planet, imp, {});
+    planet = r.added[0];
+    counts.push(planet.mixes.length);
+  }
+  assert('every merge is remembered, not just the last',
+    counts.join(',') === '1,2,3', `mixes after each merge: ${counts.join(', ')}`);
+}
+{
+  // An evolved star must not be forced onto the main-sequence relation: the red
+  // giant came out at 2 L☉ and 1044 K instead of ~600 L☉ and 4300 K.
+  const rg = instantiate(CATALOG.find((c) => c.id === 'red-giant'));
+  check('red giant effective temperature', rg.temperature, 4300, 0.001, ' K');
+  check('red giant luminosity', rg.luminosity / 3.828e26, 596, 0.02, ' L☉');
+  const sun = instantiate(CATALOG.find((c) => c.id === 'sun'));
+  check('and the main sequence is untouched', sun.temperature, 5772, 0.001, ' K');
+}
+{
+  // No catalogue entry may be denser than the material it is made of.
+  // Compare each entry against what its own composition and mass imply. A
+  // blanket ceiling would be wrong in both directions: an iron world really is
+  // denser than iron grains, a brown dwarf is denser still, and a volatile-rich
+  // super-Earth compresses several times more than rock does. This catches an
+  // entry whose quoted mass and radius disagree with what it is made of — which
+  // is how an M-type asteroid ended up at twice the density of solid iron and a
+  // rubble pile denser than basalt.
+  // Only an impossibly *high* density is a bug. Low is ordinary: real small
+  // bodies are porous — a comet is around 500 kg/m³ and a rubble pile 1200,
+  // both well under the grain density of what they are made of — and Helxis
+  // does not model void space. Nothing may exceed what its own materials allow,
+  // though, and small bodies barely self-compress, so their grain density is
+  // very nearly the ceiling. That is what caught an M-type asteroid quoted at
+  // twice the density of solid iron, and a rubble pile denser than basalt.
+  const bad = [];
+  for (const entry of CATALOG) {
+    const b = instantiate(entry);
+    if (b.isCompact || b.kind === 'bh' || b.kind === 'star') continue;
+    // Past about five Jupiter masses the interior is electron-degenerate and
+    // the compression fit stops meaning anything — a brown dwarf really is
+    // eighty times denser than its grain density.
+    if (b.mass > 5 * 1.89813e27) continue;
+    const ceiling = bulkDensity(b.composition) * compressionFactor(b.mass, b.composition) * 1.4;
+    if (b.density > ceiling) {
+      bad.push(`${entry.id}: ${b.density.toFixed(0)} kg/m³, above the ${ceiling.toFixed(0)} its composition allows`);
+    }
+  }
+  assert('no catalogue body is denser than its materials allow', bad.length === 0, bad.join('; '));
+}
+{
+  // A neutron-star merger past the TOV limit has to collapse. A 20% radiative
+  // efficiency — a surface-accretion figure, not a merger's — took away enough
+  // mass that a 1.5 + 1.6 pair landed under the limit and stayed a neutron star.
+  const mk = (m, x, vx) => new Body({
+    name: 'NS', kind: 'ns', mass: m * M_SUN, radius: compactRadius('ns', m * M_SUN),
+    composition: { neutronium: 1 }, x, vx,
+  });
+  const a = mk(1.5, 0, 0);
+  const b = mk(1.6, 2.2e4, -1e7);
+  const m0 = a.mass + b.mass;
+  const result = resolveCollision(a, b, {});
+  const gone = new Set(result.removed || []);
+  const survivor = [a, b].find((x) => !gone.has(x));
+  assert('a 1.5 + 1.6 M☉ merger collapses to a black hole', survivor.kind === 'bh',
+    `${(survivor.mass / M_SUN).toFixed(3)} M☉, kind ${survivor.kind}`);
+  assert('and radiates under one percent of the rest mass',
+    (m0 - survivor.mass) / m0 < 0.01,
+    `${(((m0 - survivor.mass) / m0) * 100).toFixed(2)}%`);
+}
+{
+  // A crater a few tens of kilometres across is an ordinary event and has to be
+  // recorded; the old floor discarded anything under 76 km on an Earth.
+  const e = new Body({
+    name: 'E', mass: M_EARTH, radius: R_EARTH, composition: { iron: 0.32, silicate: 0.68 },
+  });
+  const rng = () => 0.5;
+  const m = 3000 * (4 / 3) * Math.PI * Math.pow(2500, 3);   // a 5 km impactor
+  e.addCrater(1, 0, m, 2500, 2e4, rng);
+  assert('a 5 km impactor leaves a recorded crater', e.craters.length === 1,
+    e.craters.length ? `${(e.craters[0].size * e.radius / 1e3).toFixed(0)} km` : 'not recorded');
+}
+{
+  // A blackbody at 1 AU sits at 278.6 K — a number from the solar constant and
+  // nothing in this codebase. The equilibrium test elsewhere compares the code
+  // against its own formula, which only shows the relaxation converges.
+  const w = new World({ collisions: false, tidalDisruption: false, frameBudgetMs: 1e9 });
+  w.add(new Body({ name: 'Sun', kind: 'star', mass: M_SUN, fixed: true }));
+  const rock = w.add(new Body({
+    name: 'Rock', mass: 1e21, composition: { carbon: 1 },   // albedo 0.04
+    temperature: 10, x: AU, y: 0, fixed: true,
+  }));
+  for (let i = 0; i < 60; i++) w.advance(1000 * YEAR);
+  // (1 - 0.04)^0.25 = 0.9899 of the zero-albedo value.
+  check('a near-black body at 1 AU sits where the textbook says',
+    rock.temperature, 278.6 * 0.9899, 0.01, ' K');
+}
+
 section('Kepler round-trip');
 {
   const mu = G * M_SUN;
@@ -524,6 +635,7 @@ section('Collision conservation, every regime');
     ['graze-and-merge', M_EARTH, 0.13 * M_EARTH, 9800, 0.7],
     ['hit-and-run', M_EARTH, 0.2 * M_EARTH, 30000, 0.95],
     ['cratering', M_EARTH, 1e16, 20000, 0.2],
+    ['cratering with ejecta', M_EARTH, 4e21, 90000, 0.2],
     ['erosion', M_EARTH, 0.3 * M_EARTH, 40000, 0],
     ['supercatastrophic', M_EARTH, 0.5 * M_EARTH, 120000, 0.1],
     ['bounce (small strong bodies)', 1e18, 4e17, 30, 0.3],
@@ -540,21 +652,40 @@ section('Collision conservation, every regime');
     const m0 = t.mass + p.mass;
     const p0x = t.mass * t.vx + p.mass * p.vx, p0y = t.mass * t.vy + p.mass * p.vy;
     const scale = Math.max(Math.abs(p0x), mp * v);
+    const c0x = (t.x * t.mass + p.x * p.mass) / m0;
+    const c0y = (t.y * t.mass + p.y * p.mass) / m0;
 
     const r = resolveCollision(t, p, {});
     const out = [];
     for (const b of [t, p]) if (!(r.removed || []).includes(b)) out.push(b);
     for (const b of (r.added || [])) out.push(b);
 
-    let m1 = 0, px = 0, py = 0, vmax = 0;
+    let m1 = 0, px = 0, py = 0, vmax = 0, cx = 0, cy = 0;
     for (const b of out) {
       m1 += b.mass; px += b.mass * b.vx; py += b.mass * b.vy;
+      cx += b.mass * b.x; cy += b.mass * b.y;
       vmax = Math.max(vmax, Math.hypot(b.vx, b.vy));
     }
     seen.add(r.regime);
     assert(`${label}: mass conserved`, Math.abs(m1 - m0) / m0 < 1e-12, `${r.regime}, ${out.length} bodies`);
     assert(`${label}: momentum conserved`, Math.hypot(px - p0x, py - p0y) / scale < 1e-12, r.regime);
     assert(`${label}: nothing goes superluminal`, vmax < C, `${(vmax / C).toExponential(2)} c`);
+    // Position, not just momentum. Spawning debris on a ring while leaving the
+    // survivor where it was moves the centre of mass without touching the
+    // momentum at all — which is exactly why it survived two reviews.
+    assert(`${label}: centre of mass does not jump`,
+      Math.hypot(cx / m1 - c0x, cy / m1 - c0y) / rsum < 1e-9,
+      `${(Math.hypot(cx / m1 - c0x, cy / m1 - c0y) / rsum).toExponential(2)} contact radii`);
+    // And nothing may be created already inside something else.
+    let born = 0;
+    const made = r.added || [];
+    for (let i = 0; i < made.length; i++) {
+      for (let j = i + 1; j < made.length; j++) {
+        const a = made[i], b = made[j];
+        if (Math.hypot(a.x - b.x, a.y - b.y) < (a.radius + b.radius) * 0.98) born++;
+      }
+    }
+    assert(`${label}: nothing is born overlapping`, born === 0, `${born} pairs, ${made.length} created`);
   }
   assert('every outcome regime is reachable', seen.size >= 6, [...seen].join(', '));
 }

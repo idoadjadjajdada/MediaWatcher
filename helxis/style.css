@@ -233,6 +233,9 @@ input[type=range]::-moz-range-thumb {
   gap: 5px;
   padding: 6px 10px;
   height: 44px;
+  /* Never run under the preset dropdown that sits at the centre of the bar. */
+  max-width: calc(50vw - 300px);
+  overflow: hidden;
 }
 .transport .select.compact { min-width: 128px; }
 .clock {
@@ -241,7 +244,9 @@ input[type=range]::-moz-range-thumb {
   letter-spacing: .05em;
   color: var(--text-dim);
   padding: 0 6px;
-  min-width: 108px;
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -884,13 +889,28 @@ input[type=range]::-moz-range-thumb {
 
 /* ── narrow windows ─────────────────────────────────────────────────── */
 
+/* The view pill sits above the radar; without the radar it has to clear the
+   tool dock rather than land on top of it. */
 @media (max-width: 1180px) {
   .radar { display: none; }
-  .viewbar { bottom: 22px; }
+  .viewbar { bottom: 108px; }
   .inspector { max-height: calc(100vh - 210px); }
 }
+@media (max-width: 1320px) {
+  /* Below this the centred preset control and the transport bar collide, so
+     move the preset out to the right-hand group. */
+  .preset-select {
+    top: 70px;
+    left: auto;
+    right: 14px;
+    transform: none;
+    min-width: 180px;
+  }
+  .transport { max-width: none; }
+  .inspector, .drawer { top: 116px; }
+}
 @media (max-width: 900px) {
-  .transport { left: 14px; top: 72px; }
+  .transport { left: 14px; top: 72px; max-width: calc(100vw - 210px); }
   .picker { top: 130px; }
   .inspector { top: 130px; }
   .drawer { top: 130px; }
@@ -901,10 +921,39 @@ input[type=range]::-moz-range-thumb {
 @media (max-width: 680px) {
   .brand { width: auto; }
   .brand-text { display: none; }
-  .picker { width: calc(100vw - 28px); max-height: 46vh; }
-  .inspector { display: none; }
+  .picker {
+    width: calc(100vw - 28px);
+    /* Room for the list to be usable: the old 46vh left a twenty-pixel sliver
+       once the tabs, search, chips and placement footer had taken their share,
+       and nothing could be picked at all. */
+    top: 120px;
+    max-height: calc(100vh - 260px);
+  }
+  /* The inspector is the only route to a body's numbers, so it cannot simply be
+     hidden on a phone. Dock it to the bottom above the tools instead. */
+  .inspector {
+    display: block;
+    top: auto;
+    bottom: 132px;
+    right: 14px;
+    left: 14px;
+    width: auto;
+    max-height: 40vh;
+  }
   .tool-hint { display: none; }
-  .dock { width: calc(100vw - 28px); overflow-x: auto; }
+  .viewbar { bottom: 108px; left: 14px; right: auto; }
+  .dock {
+    left: 14px;
+    right: 14px;
+    transform: none;
+    width: auto;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+  .tool { width: 48px; flex: none; }
+  .intensity { flex: none; }
+  .intensity input[type=range] { width: 60px; }
+  .status { font-size: 8.5px; gap: 6px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
