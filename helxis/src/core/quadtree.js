@@ -226,7 +226,7 @@ export class Quadtree {
     let bestDist = Infinity;
     const eps2 = softening * softening;
     const theta2 = theta * theta;
-    const stack = this._stack || (this._stack = new Int32Array(4096));
+    let stack = this._stack || (this._stack = new Int32Array(4096));
     let sp = 0;
     out[0] = 0; out[1] = 0; out[2] = Infinity;
     if (this.root === -1) return out;
@@ -317,7 +317,13 @@ export class Quadtree {
         for (let q = 0; q < 4; q++) {
           const c = this.child[node * 4 + q];
           if (c !== -1 && this.mass[c] !== 0) {
-            if (sp >= stack.length) { out[0] = ax; out[1] = ay; out[2] = bestDist; return out; }
+            if (sp >= stack.length) {
+              // Returning the partial sum here would be a silently wrong force.
+              // The stack is one allocation; grow it and carry on.
+              const bigger = new Int32Array(stack.length * 2);
+              bigger.set(stack);
+              stack = this._stack = bigger;
+            }
             stack[sp++] = c;
           }
         }

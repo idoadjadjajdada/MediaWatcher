@@ -81,21 +81,37 @@ export function bulkDensity(comp) {
 }
 
 /**
- * Self-compression for a rocky or icy body. Earth is denser than its grain
- * density because its own gravity squeezes it. This is a fit, not an equation
- * of state: it tracks the terrestrial planets to a few percent and saturates
- * before it can produce anything unphysical.
+ * Self-compression. Earth is denser than its grain density because its own
+ * gravity squeezes it. This is a fit, not an equation of state, but it tracks
+ * the terrestrial planets to a few percent and the ice giants to under ten.
  */
-export function compressionFactor(massKg) {
+export function compressionFactor(massKg, comp) {
   const M_E = 5.97217e24;
   const x = massKg / M_E;
   if (x <= 0) return 1;
-  return 1 + 0.55 * Math.pow(x, 0.42) / (1 + 0.35 * Math.pow(x, 0.42));
+  const p = Math.pow(x, 0.42);
+
+  // How much a body compresses depends on what it is made of, not only on how
+  // heavy it is. Rock is nearly incompressible and saturates around 2.6x;
+  // hydrogen, helium and the ices are enormously more so, which is why
+  // Neptune's mean density is six times its grain density. Treating everything
+  // as rock put Neptune half again too large.
+  const v = comp ? Math.min(1, volatileFraction(comp)) : 0;
+  const A = 0.55 + 1.67 * v;
+  const B = 0.35 - 0.25 * v;
+  return 1 + (A * p) / (1 + B * p);
 }
 
 /** Mass fraction of hydrogen and helium — what decides which relation applies. */
 export function gasFraction(comp) {
   return (comp.hydrogen || 0) + (comp.helium || 0);
+}
+
+/** Everything that is volatile rather than refractory: the compressible part. */
+export function volatileFraction(comp) {
+  return (comp.hydrogen || 0) + (comp.helium || 0) + (comp.ice || 0)
+    + (comp.methane || 0) + (comp.ammonia || 0) + (comp.water || 0)
+    + (comp.nitrogen || 0) + (comp.co2 || 0);
 }
 
 const M_JUP_KG = 1.89813e27;
@@ -128,7 +144,7 @@ export function gasGiantRadius(massKg) {
  * hydrogen grows into the gas-giant relation instead of jumping into it.
  */
 export function radiusFromMass(massKg, comp) {
-  const rocky = Math.cbrt((3 * massKg) / (4 * Math.PI * bulkDensity(comp) * compressionFactor(massKg)));
+  const rocky = Math.cbrt((3 * massKg) / (4 * Math.PI * bulkDensity(comp) * compressionFactor(massKg, comp)));
   const gas = gasFraction(comp);
   if (gas <= 0.35) return rocky;
   const w = Math.min(1, (gas - 0.35) / 0.3);

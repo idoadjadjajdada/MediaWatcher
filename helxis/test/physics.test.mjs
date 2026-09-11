@@ -14,7 +14,7 @@ import { Body } from '../src/core/body.js';
 import { World } from '../src/core/world.js';
 import { Quadtree } from '../src/core/quadtree.js';
 import { compactRadius } from '../src/core/body.js';
-import { resolveCollision } from '../src/core/collide.js';
+import { resolveCollision, sweptContactDisp } from '../src/core/collide.js';
 import {
   orbitalElements, stateFromElements, circularOrbitState,
 } from '../src/core/kepler.js';
@@ -272,20 +272,40 @@ section('Regressions found in review');
 }
 {
   // A pile of bodies in mutual contact has to come apart, not resolve one pair
-  // per substep and leave the rest interpenetrating.
-  const w = new World({ frameBudgetMs: 200 });
-  let seed = 7;
-  const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
-  for (let i = 0; i < 20; i++) {
-    const th = (i / 20) * Math.PI * 2;
+  // per step and leave the rest interpenetrating.
+  //
+  // Two earlier versions of this test were wrong in opposite directions. The
+  // first spaced the bodies 188 km apart and closed them 72 km, so nothing ever
+  // touched and "no overlapping pairs" passed for the wrong reason entirely.
+  // The second closed them at 260 m/s — nearly five times their mutual escape
+  // velocity — which shatters rather than bounces, and the cascade filled the
+  // body cap. Contact happens between about 0.2 and 1 escape velocities, which
+  // for these is 11 to 57 m/s.
+  const w = new World({ frameBudgetMs: 300 });
+  const N = 6;
+  const ring = 43e3 * 2.4;
+  for (let i = 0; i < N; i++) {
+    const th = (i / N) * Math.PI * 2;
     w.add(new Body({
       name: `R${i}`, kind: 'asteroid', mass: 1e18,
       composition: { silicate: 0.8, carbon: 0.2 },
-      x: Math.cos(th) * 6e5 + rnd() * 1e4, y: Math.sin(th) * 6e5 + rnd() * 1e4,
-      vx: -Math.cos(th) * 12, vy: -Math.sin(th) * 12,
+      x: Math.cos(th) * ring, y: Math.sin(th) * ring,
+      vx: -Math.cos(th) * 25, vy: -Math.sin(th) * 25,
     }));
   }
-  for (let i = 0; i < 200; i++) w.advance(30);
+  let collisions = 0, mostInOneStep = 0, stepsWithMany = 0;
+  w.on('collision', () => { collisions++; });
+  for (let i = 0; i < 300; i++) {
+    const before = collisions;
+    w.advance(20);
+    const inStep = collisions - before;
+    if (inStep > mostInOneStep) mostInOneStep = inStep;
+    if (inStep >= 2) stepsWithMany++;
+  }
+  assert('the cluster actually collides', collisions > 10, `${collisions} collisions`);
+  assert('and many contacts are resolved within a single step',
+    mostInOneStep >= 3, `most in one step: ${mostInOneStep}, steps with 2+: ${stepsWithMany}`);
+
   let overlapping = 0;
   for (let i = 0; i < w.bodies.length; i++) {
     for (let j = i + 1; j < w.bodies.length; j++) {
@@ -293,8 +313,40 @@ section('Regressions found in review');
       if (Math.hypot(a.x - b.x, a.y - b.y) < (a.radius + b.radius) * 0.98) overlapping++;
     }
   }
-  assert('a converging cluster leaves no interpenetrating pairs', overlapping === 0,
+  assert('and it leaves no interpenetrating pairs', overlapping === 0,
     `${overlapping} overlapping pairs among ${w.bodies.length} bodies`);
+}
+{
+  // Fragments must not be created inside one another: a swarm born overlapping
+  // is shattered again by the next contact pass, and eighteen asteroids became
+  // twelve hundred fragments in seven thousand interpenetrating pairs.
+  let worst = 0, events = 0;
+  for (let k = 0; k < 200; k++) {
+    const mt = M_EARTH * Math.pow(10, (k % 7) - 3);
+    const mp = mt * Math.pow(10, -(k % 5) * 0.5);
+    const t = new Body({ name: 'T', mass: mt, composition: { iron: 0.32, silicate: 0.68 } });
+    const probe = new Body({ mass: mp, composition: { iron: 0.3, silicate: 0.7 } });
+    const rs = t.radius + probe.radius;
+    const bp = (k % 11) / 11;
+    const p = new Body({
+      name: 'P', mass: mp, composition: { iron: 0.3, silicate: 0.7 },
+      x: Math.sqrt(Math.max(0, 1 - bp * bp)) * rs * 0.999, y: bp * rs * 0.999,
+      vx: -(50 * Math.pow(10, (k % 9) * 0.45)),
+    });
+    const made = resolveCollision(t, p, {}).added || [];
+    if (made.length < 2) continue;
+    events++;
+    let ov = 0;
+    for (let i = 0; i < made.length; i++) {
+      for (let j = i + 1; j < made.length; j++) {
+        const a = made[i], b = made[j];
+        if (Math.hypot(a.x - b.x, a.y - b.y) < (a.radius + b.radius) * 0.98) ov++;
+      }
+    }
+    if (ov > worst) worst = ov;
+  }
+  assert('no collision product is born inside another', worst === 0,
+    `${events} multi-body outcomes, worst ${worst} overlapping pairs`);
 }
 {
   // The step must not depend on how large a body is, only on where it is.
@@ -329,13 +381,97 @@ section('Regressions found in review');
   assert('mass and radius are validated, not silently defaulted', rejected === 5, `${rejected}/5 rejected`);
 }
 
+section('Regressions found in the second review');
+{
+  // Barnes-Hut evaluates each body against summarised clusters independently,
+  // so its forces are not exactly pairwise antisymmetric and the system picks
+  // up a spurious net acceleration. Unprojected, that put 4.6 mm/s on the solar
+  // system's barycentre over twenty years, and 2e-2 relative momentum error at
+  // a wide opening angle.
+  for (const theta of [0.3, 0.5, 0.8]) {
+    const w = new World({ collisions: false, thermal: false, tidalDisruption: false, frameBudgetMs: 1e9, maxSubsteps: 1e9, theta });
+    loadPreset(w, 'solar-system');
+    const bc0 = w.barycenter();
+    let scale = 0;
+    for (const b of w.bodies) scale += b.mass * Math.hypot(b.vx, b.vy);
+    for (let t = 0; t < 20 * YEAR;) t += w.advance(Math.min(YEAR / 12, 20 * YEAR - t));
+    const bc1 = w.barycenter();
+    const dP = Math.hypot(bc1.vx - bc0.vx, bc1.vy - bc0.vy) * bc1.mass;
+    assert(`momentum holds over 20 years at theta=${theta}`, dP / scale < 1e-12,
+      `|dP|/sum(m|v|) = ${(dP / scale).toExponential(2)}`);
+  }
+}
+{
+  // Every comparison against NaN is false, so `t < 0 || t > 1` accepted one as
+  // a valid contact time. A single non-finite coordinate then propagated into
+  // rolled-back positions and out of the frame loop as an exception.
+  assert('a NaN position is not a contact',
+    sweptContactDisp(
+      { x0: 0, y0: 0, x: 0, y: 0, radius: 1e6 },
+      { x0: NaN, y0: 0, x: NaN, y: 0, radius: 1e6 }
+    ) === null);
+
+  const w = new World({ frameBudgetMs: 200 });
+  const sun = w.add(new Body({ name: 'Sun', kind: 'star', mass: M_SUN }));
+  const st = circularOrbitState(sun, AU, 0, false, M_EARTH);
+  w.add(new Body({ name: 'Earth', mass: M_EARTH, ...st }));
+  const rogue = w.add(new Body({ name: 'Rogue', mass: 1e20, x: 2 * AU, y: 0, vx: 0, vy: 1e4 }));
+  rogue.vx = NaN;
+  let threw = null;
+  try { for (let i = 0; i < 20; i++) w.advance(DAY); } catch (e) { threw = e.message; }
+  assert('and a NaN body does not take the simulation down', threw === null, String(threw));
+  assert('it is removed instead', !w.bodies.includes(rogue) && w.nonFiniteRemoved > 0,
+    `${w.bodies.length} bodies left, ${w.nonFiniteRemoved || 0} culled`);
+  for (const b of w.bodies) {
+    assert(`${b.name} survived finite`, isFinite(b.x) && isFinite(b.vx));
+  }
+}
+{
+  // Shedding a circumplanetary disc must not move the pair's centre of mass:
+  // placing bodies on a ring while leaving the remnant at the centre teleports
+  // mass outward by a few planetary radii.
+  const w = new World({ frameBudgetMs: 1e9 });
+  loadPreset(w, 'giant-impact');
+  let com0 = null;
+  w.on('collision', () => { if (!com0) com0 = true; });
+  const before = w.barycenter();
+  let regime = null;
+  w.on('collision', (r) => { if (!regime) regime = r.regime; });
+  for (let t = 0; t < 80000 && !regime;) t += w.advance(30);
+  const after = w.barycenter();
+  // Compare against the planetary radius, which is the scale the error had.
+  const planet = w.bodies.slice().sort((a, b) => b.mass - a.mass)[0];
+  const shift = Math.hypot(after.x - before.x, after.y - before.y);
+  assert('the centre of mass does not jump when a disc is shed',
+    shift < planet.radius * 0.05,
+    `${regime}, shifted ${(shift / planet.radius).toExponential(2)} planetary radii`);
+}
+{
+  // The mass-radius model has to work across composition, not just for rock.
+  const cases = [
+    ['Mercury', 3.3011e23, 2.4397e6, { iron: 0.70, silicate: 0.30 }],
+    ['Earth', 5.97217e24, 6.371e6, { iron: 0.323, silicate: 0.6765, water: 0.0005 }],
+    ['Uranus', 8.6810e25, 2.5362e7, { hydrogen: 0.18, helium: 0.14, ice: 0.60, ammonia: 0.05, methane: 0.03 }],
+    ['Neptune', 1.02413e26, 2.4622e7, { hydrogen: 0.19, helium: 0.13, ice: 0.60, ammonia: 0.05, methane: 0.03 }],
+    ['Jupiter', 1.89813e27, 6.9911e7, { hydrogen: 0.71, helium: 0.24, silicate: 0.04, ice: 0.01 }],
+    ['Saturn', 5.6834e26, 5.8232e7, { hydrogen: 0.73, helium: 0.25, silicate: 0.02 }],
+    ['Europa', 4.799844e22, 1.5608e6, { iron: 0.11, silicate: 0.81, ice: 0.08 }],
+  ];
+  for (const [name, m, r, comp] of cases) {
+    check(`${name} radius from mass and composition`, radiusFromMass(m, comp), r, 0.08, ' m');
+  }
+}
+
 section('Kepler round-trip');
 {
   const mu = G * M_SUN;
   const s = stateFromElements(mu, 1.00000011 * AU, 0.0167, 0, 0);
   const el = orbitalElements(s.x, s.y, s.vx, s.vy, mu);
   check('eccentricity round-trip', el.e, 0.0167, 1e-9);
-  check('orbital period from elements', el.period, 0.99989 * YEAR, 1e-4, ' s');
+  // The sidereal year, 365.256363 days. It came out at 0.99989 yr against the
+  // older solar mass this used to carry; with the IAU nominal value it lands on
+  // the measured one.
+  check('orbital period from elements', el.period, 365.256363 * DAY, 5e-4, ' s');
   check('Earth perihelion speed', Math.hypot(s.vx, s.vy), 30290, 1e-3, ' m/s');
 }
 

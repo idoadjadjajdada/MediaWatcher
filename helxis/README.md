@@ -18,41 +18,63 @@ Everything is SI internally — metres, kilograms, seconds — and converted onl
 the way to the screen.
 
 **Gravity** is a Barnes-Hut quadtree with an adjustable opening angle, stored in
-flat typed arrays. Accuracy depends on what the scene looks like, so both
-numbers are worth quoting: against a direct N² sum at θ = 0.5, a
-star-dominated system agrees to 5 × 10⁻¹⁰ rms, and a cloud of eight hundred
-equal masses — where the forces largely cancel and relative error is
-unforgiving — to 1.3 × 10⁻³ rms. Setting θ to 0 makes it exact.
+flat typed arrays. How accurate that is depends on what the scene looks like, so
+both numbers are worth quoting. Against a direct N² sum at θ = 0.5, a
+star-dominated system agrees to 5 × 10⁻¹⁰ rms; a cloud of eight hundred equal
+masses, where the forces largely cancel and per-body relative error is
+unforgiving, comes to 2.6 × 10⁻² rms per body with a 37% worst case. Setting θ
+to 0 makes it exact.
 
-Two things the tree gets right that a naive one does not. A node containing the
-body being evaluated is never summarised by its centre of mass, so no body ever
-attracts itself (the usual opening test allows exactly that once θ passes 1/√2).
-And when two bodies overlap, the force follows Newton's shell theorem — falling
-linearly to zero at the centre — rather than a 1/d² singularity. Treating a
+Three things the tree gets right that a naive one does not.
+
+A node containing the body being evaluated is never summarised by its centre of
+mass, so no body ever attracts itself — the usual opening test allows exactly
+that once θ passes 1/√2, and the settings slider goes there.
+
+When two bodies overlap, the force follows Newton's shell theorem, falling
+linearly to zero at the centre, rather than a 1/d² singularity. Treating a
 touching pair as point masses gives 6.7 × 10¹¹ m/s² at one metre of separation,
 which used to turn them into seven hundred fragments at a quarter of light speed
 inside a single frame.
 
-**Integration** is Yoshida's fourth-order symplectic composition over a
-kick-drift-kick base, on individual timesteps.
+And the spurious net force is projected out. Barnes-Hut evaluates each body
+against summarised clusters independently, so its forces are not exactly
+pairwise antisymmetric and Σm·a comes out near zero rather than at zero — a
+residual that integrates straight into a drifting barycentre. For a closed
+system that sum *must* be zero, so subtracting the mass-weighted mean removes
+approximation error from the one mode whose true value is known. Without it the
+solar system's barycentre picks up 4.6 mm/s over twenty years, and relative
+momentum error reaches 2 × 10⁻² at a wide opening angle; with it, momentum holds
+to 2 × 10⁻¹⁵ at every angle. It is skipped whenever a body is pinned, since a
+pinned body exerts force without accepting any and the system genuinely is not
+closed.
 
-*Fourth order*, because second is not enough to see small things. Plain velocity
-Verlet at four hundred steps per orbit gives Mercury a **spurious** perihelion
-advance of 38 000″ per century, and does not get under 2″ until about
-twenty-five thousand steps per orbit — the 43″ relativistic signal is buried in
-truncation error at any step you would actually run at. The fourth-order scheme
-costs three force evaluations per step and reduces that to 3.3″, and because the
-error falls as dt⁴ it is *cheaper* than second order for equal accuracy: at
-η = 0.09 it uses fewer force evaluations than Verlet at η = 0.018 and is three
-times more accurate.
+**Integration** is Yoshida's fourth-order symplectic composition over velocity
+Verlet, on a step shared by every body.
 
-*Individual timesteps*, because a global one is hostage to its worst member. In
-the protoplanetary disc a single fragment left orbiting a merged planetesimal
-wanted a step 1 154 times finer than the median body in the scene, and every
-other body paid for it. Each body now gets a power-of-two fraction of the system
-step; positions drift at the finest cadence, but a body is only kicked — and its
-force only evaluated — at its own boundary. Kick-drift-kick is symmetric and
-symplectic, which is what lets the fourth-order composition sit on top of it.
+*Fourth order*, because second is not enough to see small things. Plain Verlet
+at four hundred steps per orbit gives Mercury a **spurious** perihelion advance
+of 38 000″ per century, and does not get under 2″ until about twenty-five
+thousand steps per orbit — the 43″ relativistic signal is buried in truncation
+error at any step you would actually run at. The fourth-order scheme costs three
+force evaluations per step and reduces that to 3.3″, and because the error falls
+as dt⁴ it is *cheaper* than second order for equal accuracy: at η = 0.09 it uses
+fewer force evaluations than Verlet at η = 0.018 and is three times more
+accurate. Measured convergence order is 4.00.
+
+*A shared step*, after trying the alternative. An earlier version gave each body
+its own power-of-two stride so a fast one could sub-cycle without dragging the
+rest down. It was measured and removed, for two reasons. A kick applied to a
+subset of bodies is not a symplectic map, and Σm·a over a subset is not zero, so
+momentum leaks — 2.6 cm/s on the solar system's barycentre over twenty years
+against 6 × 10⁻¹⁴ for a shared step, with energy drift 10⁴ times worse. And the
+criterion below scales with acceleration, so it handed the *coarsest* stride to
+the most massive body: the two halves of an action-reaction pair were integrated
+at different cadences. Getting the cost benefit the scheme was supposed to
+deliver needs a neighbour scheme — direct summation over predicted near
+neighbours, with the distant field refreshed rarely — not merely a stride per
+body. Until that exists, a shared step is both more accurate and, measured, no
+slower.
 
 The step itself comes from the local dynamical time, `η·sqrt(r/|a|)`, where r is
 the distance to whatever dominates the pull. The obvious alternative,
@@ -63,10 +85,11 @@ per orbit, and that criterion answered with steps of a few microseconds.
 
 The result is quantised to a power of two and held there with hysteresis, since
 symplectic integrators are only symplectic at a fixed step and a wandering one
-turns a bounded energy oscillation into a secular drift.
+turns a bounded energy oscillation into a secular drift. One step per frame is
+still an odd size, where the requested interval runs out.
 
-Over ten simulated years of Earth's orbit, total energy drifts by 5 × 10⁻¹⁵ and
-the semi-major axis does not move in the sixth decimal place.
+Over ten simulated years of Earth's orbit, total energy drifts by 1.6 × 10⁻¹⁴
+and the semi-major axis does not move in the sixth decimal place.
 
 **Collisions** are swept — the contact test runs over the interval that was just
 integrated and rolls the pair back to the instant of contact, so a comet cannot
@@ -217,13 +240,13 @@ the status line says **TIME LIMITED** when that is happening rather than
 pretending the requested rate was achieved. Raise **Physics time budget** to
 trade frame rate for simulated rate.
 
-What costs: body count, and the spread of timescales in the scene. Individual
-timesteps mean a fast body no longer drags everyone down to its cadence, but a
-scene holding both a tight pair and a wide orbit still has to resolve the tight
-one, and the tree is rebuilt at that cadence. The solar system, the Jovian
-system and Saturn's rings all keep up at their opening speeds; the
-protoplanetary disc — 160 bodies all interacting, all colliding — does not, and
-says so.
+What costs: body count, and the spread of timescales in the scene. The step is
+shared, so the fastest body sets it for everyone — a scene holding both a tight
+pair and a wide orbit pays the tight pair's cadence throughout. The solar system
+and the Jovian system keep up at their opening speeds; Saturn's rings manage
+about half; the protoplanetary disc — 160 bodies all interacting, all colliding
+— runs its clock well below realtime, and says so rather than pretending
+otherwise. Fixing that properly means a neighbour scheme, which is not written.
 
 Turning on **Show diagnostics** puts substeps taken, fractional energy drift and
 the live effect count in the status bar.
@@ -248,3 +271,19 @@ src/ui/        catalogue, presets, tools, settings, DOM
 
 `core/` has no idea the renderer exists. You can run the whole simulation under
 Node — the tests do.
+
+## Known limits
+
+- The step is shared by all bodies, so one tight pair slows the whole scene.
+- Barnes-Hut's per-body force error at a wide opening angle is percent-level in
+  a scene with no dominant mass. Momentum is projected back to exact; energy is
+  not.
+- Attract and repel are openly unphysical, and a pinned body exerts gravity
+  without accepting any — both break momentum conservation while in use, by
+  design.
+- Fragmentation is capped by the body limit. Mass evicted at that cap, bodies
+  culled for going non-finite, and a step too fine to be meaningful are all
+  counted and shown under **Show diagnostics** rather than absorbed silently.
+- The 2D projection is a real one — concentric gas-giant bands and impact
+  bearings follow from it — but it is not a thin slice of a 3D system, and
+  orbits that would be inclined simply are not.

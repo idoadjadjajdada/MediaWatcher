@@ -142,6 +142,9 @@ export class ToolController {
           this.grabbed = b;
           this.grabOffset = { x: b.x - worldPos.x, y: b.y - worldPos.y };
           this.grabHistory.length = 0;
+          // Remember whether it was already pinned: several presets anchor a
+          // star, and releasing a grab used to un-pin it for good.
+          this.grabWasFixed = b.fixed;
           b.fixed = true;
           this.app.select(b);
         }
@@ -196,7 +199,7 @@ export class ToolController {
   releaseGrab() {
     const b = this.grabbed;
     if (!b) return;
-    b.fixed = false;
+    b.fixed = !!this.grabWasFixed;
     // Throw velocity from the tail of the drag.
     const h = this.grabHistory;
     if (h.length >= 2) {
@@ -207,9 +210,9 @@ export class ToolController {
       // A throw faster than light is the one thing this engine will not do.
       const s = Math.hypot(b.vx, b.vy);
       if (s > 0.1 * C) { b.vx *= (0.1 * C) / s; b.vy *= (0.1 * C) / s; }
-    } else {
-      b.vx = 0; b.vy = 0;
     }
+    // No movement means a click, not a throw. Leave the velocity alone rather
+    // than bringing a planet to a dead stop because the pointer did not move.
     this.grabbed = null;
     this.grabHistory.length = 0;
     this.app.world._accelDirty = true;
@@ -410,17 +413,30 @@ export class ToolController {
       Math.sqrt((2 * surplus) / b.mass)
     );
 
+    // The ring has to be large enough that the pieces do not start off inside
+    // one another; otherwise the contact pass immediately shatters them again.
+    const pieceRadii = pieces.map((m) => radiusFromMass(m, b.composition));
+    let sumRadii = 0, maxRadius = 0;
+    for (const r of pieceRadii) { sumRadii += r; if (r > maxRadius) maxRadius = r; }
+    // The swarm occupies 2·Σr of arc; a ring of Σr/π has exactly that
+    // circumference, so 1.4x leaves room and nothing starts inside anything.
+    const ringR = Math.max((sumRadii * 1.4) / Math.PI, b.radius * 0.6 + maxRadius);
+    const arcTotal = sumRadii * 2;
+
     const made = [];
     const baseAng = Math.atan2(b.y - origin.y, b.x - origin.x);
+    let arc = 0;
     for (let i = 0; i < pieces.length; i++) {
       const m = pieces[i];
-      const ang = baseAng + (i / pieces.length) * TAU + gaussian(rng) * 0.3;
+      // Arc proportional to size, so a power-law swarm packs without overlaps.
+      const ang = baseAng + ((arc + pieceRadii[i]) / arcTotal) * TAU;
+      arc += pieceRadii[i] * 2;
       const speed = vChar * (0.4 + Math.abs(gaussian(rng)) * 0.7);
-      const r = radiusFromMass(m, b.composition);
+      const launchR = ringR;
       made.push(new Body({
         name: 'Fragment', kind: 'debris',
-        x: b.x + Math.cos(ang) * (b.radius * 0.6 + r),
-        y: b.y + Math.sin(ang) * (b.radius * 0.6 + r),
+        x: b.x + Math.cos(ang) * launchR,
+        y: b.y + Math.sin(ang) * launchR,
         vx: b.vx + Math.cos(ang) * speed,
         vy: b.vy + Math.sin(ang) * speed,
         mass: m,

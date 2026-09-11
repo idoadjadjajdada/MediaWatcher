@@ -14,6 +14,38 @@ const SUPERCAT = 1.8;     // Q_R/Q*_RD above which the outcome is supercatastrop
 const FRAG_SLOPE = 1.83;  // differential mass distribution slope, ~Dohnanyi 11/6
 
 /**
+ * Lay a swarm of pieces out on a ring without any of them starting inside one
+ * another.
+ *
+ * A power-law swarm is mostly small pieces and a few large ones, so equal
+ * angular spacing does not work: each piece gets an arc proportional to its own
+ * size, on a ring whose circumference is comfortably larger than the total arc
+ * the swarm needs. Pieces born overlapping are shattered again by the very next
+ * contact pass, which is how eighteen asteroids once became twelve hundred
+ * fragments sitting in seven thousand interpenetrating pairs.
+ *
+ * Returns the ring radius and the angle for each piece.
+ */
+function ringLayout(radii, clearance, startAngle = 0, span = TAU) {
+  let sum = 0, max = 0;
+  for (const r of radii) { sum += r; if (r > max) max = r; }
+  if (sum <= 0) return { ringR: clearance, angles: radii.map(() => startAngle) };
+  // The pieces occupy 2*sum of arc. Spread over an angle `span`, the ring has
+  // to be large enough that span*R covers it — which is why the cone this is
+  // used for has to pass its own span rather than take a full circle's layout
+  // and squeeze it, as an earlier version did.
+  const ringR = Math.max((2 * sum * 1.4) / span, clearance + max);
+  const total = sum * 2;
+  const angles = [];
+  let arc = 0;
+  for (let i = 0; i < radii.length; i++) {
+    angles.push(startAngle + (((arc + radii[i]) / total) - 0.5) * span);
+    arc += radii[i] * 2;
+  }
+  return { ringR, angles };
+}
+
+/**
  * Earliest contact along two straight displacements, as a fraction of the step.
  *
  * The swept test has to run over the interval that was just integrated, not the
@@ -35,7 +67,11 @@ export function sweptContactDisp(a, b) {
   const disc = dw * dw - ww * (d2 - R * R);
   if (disc < 0) return null;
   const t = (-dw - Math.sqrt(disc)) / ww;
-  if (t < 0 || t > 1) return null;
+  // Written as a positive test: every comparison against NaN is false, so
+  // `t < 0 || t > 1` *accepts* NaN, and a single non-finite coordinate anywhere
+  // then propagated into a contact time, into rolled-back positions, and out of
+  // the frame loop as an exception that froze the canvas permanently.
+  if (!(t >= 0 && t <= 1)) return null;
   return t;
 }
 
@@ -303,14 +339,22 @@ function doMerge(target, proj, ctx) {
       // anyway. Start from the clumps.
       const n = 1 + Math.floor(rng() * 3);
       const R = merged.radius;
+      // Just outside the Roche limit, where the sheet can re-accrete.
+      const r = R * (2.2 + rng() * 2.0);
+      const masses = [];
       let left = discMass;
       for (let i = 0; i < n; i++) {
         const m = i === n - 1 ? left : left * (0.25 + rng() * 0.4);
         left -= m;
+        masses.push(m);
+      }
+      const discLayout = ringLayout(
+        masses.map((m) => radiusFromMass(m, discComp)), R * 1.2, rng() * TAU
+      );
+      for (let i = 0; i < n; i++) {
+        const m = masses[i];
         if (m <= 0) continue;
-        // Just outside the Roche limit, where the sheet can re-accrete.
-        const r = R * (2.2 + rng() * 2.0);
-        const th = rng() * TAU;
+        const th = discLayout.angles[i];
         // Prograde with the impact, so the moon orbits the way the blow came.
         const vOrb = Math.sqrt((G * Mtot) / r) * sense;
         discBodies.push(new Body({
@@ -326,16 +370,51 @@ function doMerge(target, proj, ctx) {
           spin: (rng() - 0.5) * 1e-4,
         }));
       }
-      // Take the disc's mass out of the merged body and rebalance momentum, so
-      // the pair's total is untouched by having spawned a disc.
-      let dm = 0, dpx = 0, dpy = 0;
-      for (const d of discBodies) { dm += d.mass; dpx += d.mass * d.vx; dpy += d.mass * d.vy; }
+      // Take the disc's mass out of the merged body, and rebalance both
+      // momentum *and* position. Spawning bodies on a ring while leaving the
+      // remnant at the centre of mass teleports mass: the ring carries a
+      // mass-weighted offset that has to be answered by moving the remnant the
+      // other way, or the pair's centre of mass jumps by a few planetary radii.
+      let dm = 0, dpx = 0, dpy = 0, dx = 0, dy = 0;
+      for (const d of discBodies) {
+        dm += d.mass;
+        dpx += d.mass * d.vx; dpy += d.mass * d.vy;
+        dx += d.mass * (d.x - comX); dy += d.mass * (d.y - comY);
+      }
       const newM = Mtot - dm;
       if (newM > 0) {
         merged.vx = (Mtot * comVx - dpx) / newM;
         merged.vy = (Mtot * comVy - dpy) / newM;
+        merged.x = comX - dx / newM;
+        merged.y = comY - dy / newM;
         merged.mass = newM;
         merged.refresh();
+
+        // And audit the energy, as the disruption branch does. The disc bodies
+        // were handed Keplerian velocities outright; between that and the work
+        // done lifting them clear of the remnant, the products can carry more
+        // than the impact brought in. Scale the spread about the centre of mass
+        // until they do not — which leaves momentum untouched, since scaling
+        // velocities about the centre of mass is exactly the operation that
+        // holds the total at zero in that frame.
+        const all = [merged, ...discBodies];
+        let keCom = 0, dPE = 0;
+        for (const f of all) {
+          const rx = f.vx - comVx, ry = f.vy - comVy;
+          keCom += 0.5 * f.mass * (rx * rx + ry * ry);
+        }
+        for (const d of discBodies) {
+          const r = Math.max(Math.hypot(d.x - merged.x, d.y - merged.y), merged.radius);
+          dPE += (G * merged.mass * d.mass) * (1 / merged.radius - 1 / r);
+        }
+        const budget = kImpact;
+        if (keCom + dPE > budget && keCom > 0) {
+          const k = Math.sqrt(Math.max(0, budget - dPE) / keCom);
+          for (const f of all) {
+            f.vx = comVx + (f.vx - comVx) * k;
+            f.vy = comVy + (f.vy - comVy) * k;
+          }
+        }
       } else {
         discBodies.length = 0;
       }
@@ -398,15 +477,19 @@ function doCratering(target, proj, ctx) {
   if (ejectaMass > 0) {
     const n = clamp(Math.round(2 + rng() * 4), 1, 6);
     const each = ejectaMass / n;
+    const radii = [];
+    for (let i = 0; i < n; i++) radii.push(radiusFromMass(each, target.surfaceComposition));
+    // Ejecta leaves along a cone about the impact normal, laid out around the
+    // impact point so the pieces do not start inside one another.
+    const normalAng = Math.atan2(-ny, -nx);
+    const layout = ringLayout(radii, target.radius * 0.08, normalAng, 1.6);
     for (let i = 0; i < n; i++) {
-      // Ejecta leaves along a cone about the impact normal, just above v_esc.
-      const spread = (rng() - 0.5) * 1.6;
-      const ang = Math.atan2(-ny, -nx) + spread;
+      const ang = layout.angles[i];
       const speed = vEscT * (1.05 + rng() * 0.9);
       const f = new Body({
         name: 'Ejecta', kind: 'debris',
-        x: target.x + nx * target.radius * 1.02 + Math.cos(ang) * target.radius * 0.05,
-        y: target.y + ny * target.radius * 1.02 + Math.sin(ang) * target.radius * 0.05,
+        x: target.x + nx * (target.radius + layout.ringR) + Math.cos(ang) * layout.ringR,
+        y: target.y + ny * (target.radius + layout.ringR) + Math.sin(ang) * layout.ringR,
         vx: target.vx + Math.cos(ang) * speed,
         vy: target.vy + Math.sin(ang) * speed,
         mass: each,
@@ -476,13 +559,16 @@ function doHitAndRun(target, proj, ctx) {
     const n = clamp(Math.round(4 + rng() * 8), 1, 16);
     const each = debrisMass / n;
     const vEsc = Math.sqrt((2 * G * (Mt + Mp)) / (target.radius + proj.radius));
+    const radii = [];
+    for (let i = 0; i < n; i++) radii.push(radiusFromMass(each, proj.surfaceComposition));
+    const layout = ringLayout(radii, proj.radius * 1.1, relDir, 1.2);
     for (let i = 0; i < n; i++) {
-      const ang = relDir + (rng() - 0.5) * 1.2;
+      const ang = layout.angles[i];
       const speed = vEsc * (0.9 + rng() * 1.2);
       fragments.push(new Body({
         name: 'Debris', kind: 'debris',
-        x: proj.x + Math.cos(ang) * proj.radius * 1.1,
-        y: proj.y + Math.sin(ang) * proj.radius * 1.1,
+        x: proj.x + Math.cos(ang) * layout.ringR,
+        y: proj.y + Math.sin(ang) * layout.ringR,
         vx: (target.vx + proj.vx) / 2 + Math.cos(ang) * speed,
         vy: (target.vy + proj.vy) / 2 + Math.sin(ang) * speed,
         mass: each,
@@ -605,22 +691,33 @@ function doDisruption(target, proj, ctx) {
     ? Math.min(Math.max(Math.min(vEsc * 1.05, vImp), Math.sqrt((2 * dispersal) / fragTotal)), vImp)
     : Math.min(vEsc, vImp);
 
+  // Fragments are laid out on a ring, so the ring has to be big enough to hold
+  // them. Forty-eight pieces placed at the remnant's own radius overlap their
+  // neighbours the moment they are created, and the contact pass then shatters
+  // them again — eighteen asteroids became twelve hundred fragments sitting in
+  // seven thousand interpenetrating pairs. Size the ring from the pieces.
+  // A power-law swarm is mostly small pieces and a few large ones, so equal
+  // angular spacing does not work: give each piece an arc proportional to its
+  // own size, on a ring sized to hold the lot.
+  const fragRadii = fragments.map((m) => radiusFromMass(m, comp));
+  const layout = ringLayout(fragRadii, largest.radius * 1.2, rng() * TAU);
+
   const bodies = [];
   for (let i = 0; i < fragments.length; i++) {
     const m = fragments[i];
-    const ang = rng() * TAU;
+    const ang = layout.angles[i];
     // Fragments are launched preferentially along the impact axis, which is
     // where the shock actually goes.
     const bias = 0.45;
     const impactAng = Math.atan2(ny, nx);
     const dir = ang * (1 - bias) + (impactAng + (rng() < 0.5 ? 0 : Math.PI) + gaussian(rng) * 0.5) * bias;
     const speed = Math.abs(vChar * (0.5 + Math.abs(gaussian(rng)) * 0.6));
-    const rad = radiusFromMass(m, comp);
-    const launchR = largest.radius + rad * 1.5 + rng() * largest.radius * 0.5;
+    const rad = fragRadii[i];
+    const launchR = layout.ringR;
     bodies.push(new Body({
       name: 'Fragment', kind: 'debris',
-      x: comX + Math.cos(dir) * launchR,
-      y: comY + Math.sin(dir) * launchR,
+      x: comX + Math.cos(ang) * launchR,
+      y: comY + Math.sin(ang) * launchR,
       vx: comVx + Math.cos(dir) * speed,
       vy: comVy + Math.sin(dir) * speed,
       mass: m,
@@ -671,8 +768,12 @@ function doDisruption(target, proj, ctx) {
     const rx = f.vx - comVx, ry = f.vy - comVy;
     keCom += 0.5 * f.mass * (rx * rx + ry * ry);
   }
-  if (keCom > kImpact && keCom > 0) {
-    const k = Math.sqrt(kImpact / keCom);
+  // Pulling the pieces apart costs potential energy too, and that comes out of
+  // the same budget. Charging only for the kinetic part let a disruption net
+  // out ahead.
+  const separationWork = Math.max(0, target.bindingEnergy + proj.bindingEnergy - bindingSpent);
+  if (keCom + separationWork > kImpact && keCom > 0) {
+    const k = Math.sqrt(Math.max(0, kImpact - separationWork) / keCom);
     for (const f of products) {
       f.vx = comVx + (f.vx - comVx) * k;
       f.vy = comVy + (f.vy - comVy) * k;
@@ -726,6 +827,7 @@ function accreteIntoCompact(target, proj, ctx) {
   host.vy = pY / (host.mass + massLost);
 
   // Re-derive what it now is from its mass alone.
+  const wasKind = host.kind;
   const kind = host.kind === 'bh' ? 'bh' : classifyCompact(Mtot);
   host.kind = kind;
   host.composition = kind === 'bh' ? { degenerate: 1 }
@@ -734,7 +836,7 @@ function accreteIntoCompact(target, proj, ctx) {
   host.crust = null;
   host.explicitRadius = kind !== 'bh';
   host.radius = kind === 'bh' ? schwarzschild(Mtot) : compactRadius(kind, Mtot);
-  if (kind !== host.kind || host.name === 'Body') {
+  if (kind !== wasKind) {
     host.name = kind === 'bh' ? 'Black hole' : kind === 'ns' ? 'Neutron star' : 'White dwarf';
   }
   host.differentiation = 1;

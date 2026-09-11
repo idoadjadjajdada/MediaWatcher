@@ -427,7 +427,17 @@ export class UI {
       // Say how much integration the drift figure covers: zero drift over two
       // steps and zero over a million are not the same claim.
       const over = app.world.energySteps ? ` over ${app.world.energySteps} steps` : '';
-      diag.textContent = `${app.world.substepsTaken || 0} substeps · dE/E ${drift}${over} · ${app.effects.count} fx`;
+      const parts = [
+        `${app.world.substepsTaken || 0} substeps`,
+        `dE/E ${drift}${over}`,
+        `${app.effects.count} fx`,
+      ];
+      // Mass leaving at the body cap, and a step too fine to be meaningful, are
+      // both things the simulation should admit to rather than absorb quietly.
+      if (app.world.evictedCount) parts.push(`${app.world.evictedCount} evicted`);
+      if (app.world.nonFiniteRemoved) parts.push(`${app.world.nonFiniteRemoved} non-finite culled`);
+      if (app.world.underResolved) parts.push('under-resolved');
+      diag.textContent = parts.join(' · ');
     }
 
     $('clock').textContent = `T + ${formatClock(app.world.time)}`;

@@ -4,9 +4,9 @@ import { Quadtree } from './quadtree.js';
 import { resolveCollision, sweptContactDisp, tidallyDisrupt } from './collide.js';
 import { dominantAttractor } from './kepler.js';
 
-// How many powers of two the individual timesteps may span. Eight levels lets
-// the fastest body take 256 steps while the slowest takes one.
-const MAX_LEVELS = 8;
+// The finest step the integrator will take. Below this it is no longer
+// resolving what it claims to, and `underResolved` is set to say so.
+const MIN_DT = 1e-6;
 
 // Yoshida (1990) fourth-order composition weights. The middle step runs
 // backwards in time, which is what cancels the second-order error term.
@@ -55,7 +55,6 @@ export class World {
     this.throttled = false;
     this.achievedRate = 0;      // simulated seconds per real second, measured
     this._accel = [0, 0, Infinity];
-    this._treeFresh = false;
     this._neighbors = [];
     this._energyRef = null;
     this.energyDrift = 0;
@@ -97,7 +96,10 @@ export class World {
       if (victim < 0) return null;
       // Go through remove() so the evicted body is marked dead and every
       // cached derivative is invalidated, exactly as any other removal.
+      // Mass leaving the simulation at the body cap is still mass leaving the
+      // simulation. Record it so the diagnostics can say so.
       this.evictedMass = (this.evictedMass || 0) + this.bodies[victim].mass;
+      this.evictedCount = (this.evictedCount || 0) + 1;
       this.remove(this.bodies[victim]);
     }
     this.bodies.push(body);
@@ -145,12 +147,13 @@ export class World {
     const theta = this.settings.theta;
     const out = this._accel;
 
+    let anyFixed = false;
     for (let i = 0; i < n; i++) {
       const b = this.bodies[i];
       // A pinned body still *exerts* gravity, it just does not respond to any.
       // That is deliberate — it is what makes it useful as an anchor — but it
       // does mean momentum is not conserved while anything is pinned.
-      if (b.fixed) { b.ax = 0; b.ay = 0; continue; }
+      if (b.fixed) { b.ax = 0; b.ay = 0; anyFixed = true; continue; }
       this.tree.accelerate(i, G, theta, soft, out);
       b.ax = out[0];
       b.ay = out[1];
@@ -159,7 +162,32 @@ export class World {
     this._accelDirty = false;
 
     if (this.settings.relativity) this.applyRelativity();
-    if (this.externalForce) this.externalForce(this.bodies);
+
+    // Barnes-Hut evaluates each body against summarised clusters independently,
+    // so its forces are not exactly pairwise antisymmetric: the net
+    // acceleration of the system comes out near zero rather than at zero. For a
+    // closed system it *must* be zero, so that residual is pure approximation
+    // error in the one mode whose true value is known exactly — and it happens
+    // to be the mode that integrates straight into a drifting barycentre. Left
+    // alone at the default opening angle it puts 4.6 mm/s on the solar system's
+    // barycentre over twenty years. Projected out, momentum holds to machine
+    // precision at any opening angle.
+    //
+    // Only valid when nothing is pinned. A pinned body exerts force without
+    // accepting any, so the system genuinely is not closed and its momentum
+    // genuinely is not conserved; subtracting a mean there would be inventing a
+    // reaction the user explicitly asked not to have.
+    if (!anyFixed) {
+      let px = 0, py = 0, m = 0;
+      for (let i = 0; i < n; i++) {
+        const b = this.bodies[i];
+        px += b.mass * b.ax; py += b.mass * b.ay; m += b.mass;
+      }
+      if (m > 0) {
+        const cx = px / m, cy = py / m;
+        for (let i = 0; i < n; i++) { this.bodies[i].ax -= cx; this.bodies[i].ay -= cy; }
+      }
+    }
   }
 
   /**
@@ -198,14 +226,14 @@ export class World {
    * steps in an orbit — comfortably inside velocity Verlet's accurate range.
    */
   /**
-   * The step each body would need on its own, from the local dynamical time.
+   * The step a body needs, from the local dynamical time.
    *
    * `sqrt(r/|a|)` is P/2π on a circular orbit, and depends only on
    * frame-invariant quantities. The obvious alternative, `eta·|v|/|a|`, is not
    * frame-invariant: |v| depends on which frame you picked, and a body whose
    * speed passes through zero in that frame drives the step to nothing. Started
-   * with the Sun at rest, a Sun-Earth system did exactly that once per orbit,
-   * and answered with steps of a few microseconds.
+   * with the Sun at rest, a Sun-Earth system does exactly that once per orbit,
+   * and that criterion answered with steps of a few microseconds.
    */
   bodyStep(b) {
     const a = Math.hypot(b.ax, b.ay);
@@ -217,25 +245,37 @@ export class World {
   }
 
   /**
-   * The system step: how much time one call to `step` covers.
+   * The integration step, shared by every body.
    *
-   * Bodies that need less than this sub-cycle inside it, so this is set by the
-   * *slowest* body, not the fastest — bounded so that the fastest body still
-   * gets a step it can live with after the maximum number of subdivisions.
+   * A previous version gave each body its own power-of-two stride, so that a
+   * fast one could sub-cycle without dragging the rest down. It was measured
+   * and removed. Two things were wrong with it, and the second is not fixable
+   * by tidying:
+   *
+   *   - A kick applied to a subset of bodies is not a symplectic map, and the
+   *     sum of m·a over a subset is not zero, so momentum leaks. Over twenty
+   *     years of the solar system it put 2.6 cm/s of spurious velocity on the
+   *     barycentre — |ΔP|/Σm|v| of 8 × 10⁻⁴ against 3 × 10⁻¹⁴ for a shared
+   *     step, and energy drift 10⁴ times worse. The whole scene slowly
+   *     accelerates in a fixed direction.
+   *   - It also assigned the *coarsest* stride to the most massive body, since
+   *     `bodyStep` scales with acceleration and the dominant mass has the least
+   *     of it. The two halves of an action-reaction pair were integrated at
+   *     different cadences.
+   *
+   * Getting the cost benefit it was supposed to deliver needs a neighbour
+   * scheme — direct summation over predicted near neighbours, with the distant
+   * field refreshed rarely — not merely a stride per body. Until that exists,
+   * a shared step is both more accurate and, measured, no slower.
    */
   chooseDt(limit) {
-    let minNeed = Infinity, maxNeed = 0;
+    let dt = Infinity;
     for (const b of this.bodies) {
       if (b.fixed) continue;
       const need = this.bodyStep(b);
-      if (!isFinite(need)) continue;
-      if (need < minNeed) minNeed = need;
-      if (need > maxNeed) maxNeed = need;
+      if (need < dt) dt = need;
     }
-    if (!isFinite(minNeed)) return limit;
-
-    const span = 1 << MAX_LEVELS;
-    let dt = Math.min(maxNeed, minNeed * span);
+    if (!isFinite(dt)) return limit;
 
     // Hold the step until it is genuinely unsafe, and only grow it once it is
     // four times more cautious than it needs to be. Velocity Verlet — and the
@@ -248,72 +288,32 @@ export class World {
     while (held * 4 <= dt) held *= 2;
     this._dt = held;
 
-    return Math.max(Math.min(held, limit), 1e-6);
-  }
-
-  /** How many sub-cycles a system step of `dt` would need. */
-  subCyclesFor(dt) {
-    let sub = 1;
-    for (const b of this.bodies) {
-      if (b.fixed) continue;
-      const need = this.bodyStep(b);
-      if (!isFinite(need) || !(need > 0)) continue;
-      const k = clamp(Math.ceil(Math.log2(dt / need)), 0, MAX_LEVELS);
-      if ((1 << k) > sub) sub = 1 << k;
-    }
-    return sub;
+    // Below this the step is no longer resolving what it claims to. Say so
+    // rather than quietly stepping too coarsely.
+    this.underResolved = held < MIN_DT;
+    return Math.max(Math.min(held, limit), MIN_DT);
   }
 
   /**
-   * One kick-drift-kick step with individual timesteps.
-   *
-   * Every body is assigned a stride: a power-of-two fraction of the system step
-   * that it actually needs. Positions are drifted for everyone at the finest
-   * cadence, which is cheap and involves no forces, but a body is only kicked
-   * at its own step boundary, using forces evaluated then.
-   *
-   * The alternative — one global step, set by whichever body needs the
-   * smallest — means every other body pays for it. In a protoplanetary disc a
-   * single fragment left orbiting a merged planetesimal wanted a step eleven
-   * hundred times finer than the median body in the scene, and the whole
-   * simulation slowed by that factor to accommodate it. Here it sub-cycles
-   * alone and nobody else notices.
-   *
-   * KDK is symmetric and symplectic, which is what lets the caller compose
-   * three of these into a fourth-order scheme.
+   * One drift-kick-drift Verlet step. Accelerations must be current on entry,
+   * and are current again on exit.
    */
-  blockStep(dt, sub) {
+  verletStep(dt) {
     const bodies = this.bodies;
     const n = bodies.length;
-    const h = dt / sub;
-
+    for (let i = 0; i < n; i++) {
+      const b = bodies[i];
+      if (b.fixed) continue;
+      b.x += b.vx * dt + 0.5 * b.ax * dt * dt;
+      b.y += b.vy * dt + 0.5 * b.ay * dt * dt;
+      b.pax = b.ax; b.pay = b.ay;
+    }
     this.computeAccelerations();
-    for (let m = 0; m < sub; m++) {
-      // Opening half-kick for every body whose own step starts here.
-      for (let i = 0; i < n; i++) {
-        const b = bodies[i];
-        if (b.fixed || m % b._stride !== 0) continue;
-        const H = b._stride * h;
-        b.vx += 0.5 * b.ax * H;
-        b.vy += 0.5 * b.ay * H;
-      }
-      // Drift everyone. No forces, so this is the cheap part.
-      for (let i = 0; i < n; i++) {
-        const b = bodies[i];
-        if (b.fixed) continue;
-        b.x += b.vx * h;
-        b.y += b.vy * h;
-      }
-      // Only the bodies whose step ends here need a fresh acceleration.
-      this.computeAccelerations((m + 1) % (1 << MAX_LEVELS));
-      // Closing half-kick for every body whose own step ends here.
-      for (let i = 0; i < n; i++) {
-        const b = bodies[i];
-        if (b.fixed || (m + 1) % b._stride !== 0) continue;
-        const H = b._stride * h;
-        b.vx += 0.5 * b.ax * H;
-        b.vy += 0.5 * b.ay * H;
-      }
+    for (let i = 0; i < n; i++) {
+      const b = bodies[i];
+      if (b.fixed) continue;
+      b.vx += 0.5 * (b.pax + b.ax) * dt;
+      b.vy += 0.5 * (b.pay + b.ay) * dt;
     }
   }
 
@@ -329,48 +329,28 @@ export class World {
    *
    * Yoshida's fourth-order composition fixes that: three symmetric symplectic
    * steps with weights w1, w0, w1 summing to one, where the negative middle
-   * step cancels the leading error term. It applies to any symmetric symplectic
-   * base method, so it composes over the block scheme above just as it would
-   * over a plain Verlet step.
+   * step cancels the leading error term. Measured convergence is 4.00.
    */
   step(dt) {
     const bodies = this.bodies;
     const n = bodies.length;
 
-    for (let i = 0; i < n; i++) { bodies[i].x0 = bodies[i].x; bodies[i].y0 = bodies[i].y; }
-
-    // Assign strides once for the whole composite step, so all three stages
-    // agree on who is fast.
-    let sub = 1;
+    // Where the step began. The collision pass sweeps these segments, and each
+    // body also tracks how much of the step it has left, since a body pulled
+    // back to a contact instant has less of it remaining than its neighbours.
     for (let i = 0; i < n; i++) {
-      const b = bodies[i];
-      if (b.fixed) { b._stride = 1; continue; }
-      const need = this.bodyStep(b);
-      const k = isFinite(need) && need > 0
-        ? clamp(Math.ceil(Math.log2(dt / need)), 0, MAX_LEVELS)
-        : 0;
-      b._level = k;
-      if ((1 << k) > sub) sub = 1 << k;
+      bodies[i].x0 = bodies[i].x;
+      bodies[i].y0 = bodies[i].y;
+      bodies[i]._tLeft = 1;
     }
-    for (let i = 0; i < n; i++) {
-      const b = bodies[i];
-      b._stride = b.fixed ? sub : (sub >> (b._level || 0)) || 1;
-    }
-    this.subCycles = sub;
 
-    // Time the integration alone. The collision pass that follows is charged by
-    // its own deadline, and folding it into the per-micro-step estimate makes a
-    // busy frame look as though sub-cycling were unaffordable — which then
-    // collapses the step back to a uniform one and undoes the whole scheme.
-    const blockStart = now();
     if (this.settings.integrator === 'verlet') {
-      this.blockStep(dt, sub);
+      this.verletStep(dt);
     } else {
-      this.blockStep(YOSHIDA_W1 * dt, sub);
-      this.blockStep(YOSHIDA_W0 * dt, sub);
-      this.blockStep(YOSHIDA_W1 * dt, sub);
+      this.verletStep(YOSHIDA_W1 * dt);
+      this.verletStep(YOSHIDA_W0 * dt);
+      this.verletStep(YOSHIDA_W1 * dt);
     }
-    this.blockMs = now() - blockStart;
 
     for (let i = 0; i < n; i++) {
       const b = bodies[i];
@@ -411,11 +391,6 @@ export class World {
     // steps too large to be right; capping by time keeps the frame rate and
     // slows the clock instead, which the status line then says out loud.
     const started = now();
-    // Cost per micro-step, measured. A system step with many sub-cycles is an
-    // atomic unit — it cannot be abandoned half way without leaving bodies at
-    // different times — so the budget has to be respected by choosing a smaller
-    // step up front rather than by breaking out of a large one.
-    let perMicro = this._perMicroMs || 0.05;
     while (remaining > 1e-9 && taken < cap) {
       // A collision at the end of the previous step added and removed bodies,
       // which leaves every acceleration stale — and a body a merge just created
@@ -423,22 +398,13 @@ export class World {
       // take the entire remaining interval as one ballistic drift. That turned
       // a 49-second step into a sixteen-thousand-year one and threw the
       // giant-impact disc a light-year clear of the planet.
+      // A collision at the end of the previous step added and removed bodies,
+      // which leaves every acceleration stale — and a body a merge just created
+      // has a = 0, so the step chooser would see no acceleration at all and
+      // take the entire remaining interval as one ballistic drift.
       if (this._accelDirty) this.computeAccelerations();
-      let dt = Math.min(remaining, this.chooseDt(remaining));
-
-      // How many micro-steps this would cost, and how many are left in budget.
-      const left = budgetMs - (now() - started);
-      if (left <= 0) break;
-      const affordable = Math.max(1, left / perMicro);
-      while (this.subCyclesFor(dt) > affordable && dt > 2e-6) dt /= 2;
-
+      const dt = Math.min(remaining, this.chooseDt(remaining));
       this.step(dt);
-      if (this.subCycles > 0 && this.blockMs >= 0) {
-        // Exponential average, so one slow frame does not dominate the estimate.
-        perMicro += ((this.blockMs / this.subCycles) - perMicro) * 0.25;
-        this._perMicroMs = Math.max(perMicro, 1e-4);
-      }
-
       remaining -= dt;
       taken++;
       if (now() - started > budgetMs) break;
@@ -449,6 +415,7 @@ export class World {
     // than once per substep costs nothing physically and used to cost 43% of
     // the frame budget.
     if (this.settings.tidalDisruption) this.checkTides(seconds - remaining);
+    this.cullNonFinite();
 
     this.substepsTaken = taken;
     if (this.settings.thermal) this.thermalPass(seconds - remaining);
@@ -489,8 +456,7 @@ export class World {
 
     while (passes++ < budget) {
       if (passes > 4 && now() > deadline) break;
-      if (this._treeFresh) this._treeFresh = false;
-      else this.tree.build(bodies);
+      this.tree.build(bodies);
 
       let best = null;
       for (let i = 0; i < bodies.length; i++) {
@@ -534,15 +500,27 @@ export class World {
 
       // Everything the collision produced starts life at the contact instant;
       // let it finish the rest of the step so it is in sync with the others.
-      const catchUp = (1 - best.t) * dt;
+      // How much of the step these bodies still have left. A body pulled back
+      // to an earlier contact already spent part of its step, so the fraction
+      // `best.t` is a fraction of *its* remaining interval, not of the whole
+      // one — measuring the catch-up against the full dt over-drifts everything
+      // involved in a second or later contact by 1/(1 - t_first).
+      const wasLeft = Math.min(
+        best.a._tLeft != null ? best.a._tLeft : 1,
+        best.b._tLeft != null ? best.b._tLeft : 1
+      );
+      const left = wasLeft * (1 - best.t);
+      const catchUp = left * dt;
       for (const b of result.added || []) {
         b.x0 = b.x; b.y0 = b.y;
+        b._tLeft = left;
         b.x += b.vx * catchUp;
         b.y += b.vy * catchUp;
       }
       for (const b of [best.a, best.b]) {
         if (!b.alive) continue;
         b.x0 = b.x; b.y0 = b.y;
+        b._tLeft = left;
         b.x += b.vx * catchUp;
         b.y += b.vy * catchUp;
       }
@@ -555,7 +533,6 @@ export class World {
     if (!result) return;
     for (const b of result.removed || []) this.remove(b);
     for (const b of result.added || []) this.add(b);
-    this._treeFresh = false;
     for (const e of result.events || []) this.events.push(e);
     if (result.regime) this.emit('collision', result);
     // An inelastic collision really does change the total energy, so the drift
@@ -569,7 +546,6 @@ export class World {
    */
   checkTides(dt) {
     const bodies = this.bodies;
-    this._treeFresh = false;
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
       if (!b.alive || b.isCompact || b.kind === 'star') continue;
@@ -652,6 +628,33 @@ export class World {
     body._attractor = a;
     body._attractorFrame = this._frame;
     return a;
+  }
+
+  /**
+   * Remove any body that has gone non-finite, and report it.
+   *
+   * Nothing in the engine should produce one — but a NaN that does appear
+   * spreads through the tree into every force in the scene within one step, so
+   * it is worth one linear scan to contain it at the source instead of
+   * debugging its shadow somewhere else.
+   */
+  cullNonFinite() {
+    let removed = 0;
+    for (let i = this.bodies.length - 1; i >= 0; i--) {
+      const b = this.bodies[i];
+      if (isFinite(b.x) && isFinite(b.y) && isFinite(b.vx) && isFinite(b.vy)
+        && b.mass > 0 && isFinite(b.mass) && b.radius > 0 && isFinite(b.radius)) continue;
+      this.bodies.splice(i, 1);
+      b.alive = false;
+      removed++;
+    }
+    if (removed) {
+      this._accelDirty = true;
+      this._energyRef = null;
+      this.nonFiniteRemoved = (this.nonFiniteRemoved || 0) + removed;
+      this.emit('nonfinite', removed);
+    }
+    return removed;
   }
 
   /** Barycentre of the whole system. */

@@ -517,8 +517,21 @@ class App {
     this.camera.update(dtReal);
 
     const requested = this.paused ? 0 : this.timeScale * dtReal;
-    this.tools.update(dtReal, requested);
-    const advanced = this.paused ? 0 : this.world.advance(requested);
+    let advanced = 0;
+    try {
+      this.tools.update(dtReal, requested);
+      if (!this.paused) advanced = this.world.advance(requested);
+    } catch (err) {
+      // The frame loop is already queued for the next frame, so an exception
+      // here would otherwise throw again every frame forever and leave the
+      // canvas frozen on whatever it last drew. Pause, say so, and let the
+      // user undo or reload — a stopped clock they can see beats a live one
+      // that is lying.
+      if (!this.paused) this.togglePause();
+      this.world.cullNonFinite();
+      this.ui.toast(`Simulation halted: ${err.message}`, 8000);
+      console.error('Helxis: simulation step failed', err);
+    }
     this.world.achievedRate = dtReal > 0 ? advanced / dtReal : 0;
 
     this.effects.update(advanced, dtReal);
