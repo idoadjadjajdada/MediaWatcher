@@ -11,6 +11,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "helxis": "node helxis/serve.js",
+    "test:helxis": "node helxis/test/physics.test.mjs",
     "test": "node tests/run.mjs",
     "ui-check": "node tests/ui-check.mjs",
     "ui-player": "node tests/ui-player.mjs",

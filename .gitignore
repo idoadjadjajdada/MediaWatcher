@@ -48,3 +48,6 @@ docs/claude info.md
 .desktop-build/
 dist/
 test-results/
+
+# Helxis saved scenes
+helxis/scenes/
