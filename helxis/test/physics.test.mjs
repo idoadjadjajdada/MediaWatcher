@@ -13,13 +13,14 @@ import {
 import { Body } from '../src/core/body.js';
 import { World } from '../src/core/world.js';
 import { Quadtree } from '../src/core/quadtree.js';
+import { compactRadius } from '../src/core/body.js';
 import { resolveCollision } from '../src/core/collide.js';
 import {
   orbitalElements, stateFromElements, circularOrbitState,
 } from '../src/core/kepler.js';
 import { loadPreset, PRESETS } from '../src/ui/presets.js';
 import { CATALOG, instantiate } from '../src/ui/catalog.js';
-import { radiusFromMass, bulkDensity } from '../src/core/materials.js';
+import { radiusFromMass } from '../src/core/materials.js';
 
 let passed = 0, failed = 0;
 const results = [];
@@ -115,6 +116,28 @@ section('Barnes-Hut against a direct N² sum');
 
 section('Integrator');
 {
+  // Fourth order is not a decoration. Plain Verlet at the same step produces a
+  // spurious perihelion advance three orders of magnitude larger than the
+  // relativistic signal it would be used to measure.
+  const precess = (integrator) => {
+    const w = new World({ collisions: false, thermal: false, tidalDisruption: false, integrator, eta: 0.012, frameBudgetMs: 1e9, maxSubsteps: 1e9 });
+    w.add(new Body({ name: 'Sun', kind: 'star', mass: M_SUN, fixed: true }));
+    const st = stateFromElements(G * M_SUN, 5.790905e10, 0.20563, 0, 0, 3.3011e23);
+    const b = w.add(new Body({ name: 'M', mass: 3.3011e23, ...st }));
+    const mu = G * (M_SUN + 3.3011e23);
+    const a0 = orbitalElements(b.x, b.y, b.vx, b.vy, mu).argP;
+    for (let t = 0; t < 100 * YEAR;) t += w.advance(Math.min(YEAR / 4, 100 * YEAR - t));
+    let d = orbitalElements(b.x, b.y, b.vx, b.vy, mu).argP - a0;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    return Math.abs(d * 206264.806);
+  };
+  const v2 = precess('verlet');
+  const v4 = precess('yoshida4');
+  assert('fourth order beats second by >100x on an eccentric orbit',
+    v4 * 100 < v2, `verlet ${v2.toFixed(0)}″ vs yoshida4 ${v4.toFixed(2)}″ per century`);
+}
+{
   const w = new World({ collisions: false, thermal: false, tidalDisruption: false, frameBudgetMs: 1e9 });
   const sun = w.add(new Body({ name: 'Sun', kind: 'star', mass: M_SUN }));
   const st = circularOrbitState(sun, AU, 0, false, M_EARTH);
@@ -127,6 +150,183 @@ section('Integrator');
   const el = orbitalElements(earth.x - sun.x, earth.y - sun.y, earth.vx - sun.vx, earth.vy - sun.vy, G * (M_SUN + M_EARTH));
   check('semi-major axis after 10 years', el.a, AU, 1e-6, ' m');
   assert('a circular orbit stays circular', el.e < 1e-5, `e = ${el.e.toExponential(2)}`);
+}
+
+section('Regressions found in review');
+{
+  // A collision leaves every acceleration stale. If the next substep is chosen
+  // without recomputing them, a body a merge just created has a = 0, the step
+  // chooser sees nothing to resolve, and the whole remaining frame is taken as
+  // one ballistic drift — which threw the giant-impact disc a light-year clear
+  // of the planet at high time scales.
+  // Run at the wall-clock budget the app actually uses, since that is the
+  // configuration the bug appeared in.
+  const w = new World({ frameBudgetMs: 11 });
+  loadPreset(w, 'giant-impact');
+  const megayearPerSecond = 3.15576e13 / 60;
+  let worstFrame = 0;
+  for (let i = 0; i < 240; i++) {
+    const t0 = Date.now();
+    w.advance(megayearPerSecond);
+    worstFrame = Math.max(worstFrame, Date.now() - t0);
+  }
+  const planet = w.bodies.slice().sort((a, b) => b.mass - a.mass)[0];
+  let furthest = 0;
+  for (const b of w.bodies) furthest = Math.max(furthest, Math.hypot(b.x - planet.x, b.y - planet.y));
+  assert('debris stays bound at 1 Myr/s', furthest < planet.radius * 200,
+    `furthest ${(furthest / planet.radius).toFixed(1)} planetary radii`);
+  // And the frame budget has to actually bound the frame, including through a
+  // cascade of disruptions inside a single step.
+  assert('no frame runs away during the cascade', worstFrame < 400, `worst frame ${worstFrame} ms`);
+}
+{
+  // Two bodies inside one another must not see a 1/d² singularity. Point-mass
+  // gravity at one metre of separation gave 6.7e11 m/s², which turned a touching
+  // pair into seven hundred fragments at a quarter of light speed in one frame.
+  const w = new World({ frameBudgetMs: 1e9 });
+  const R = 8.87e5;
+  w.add(new Body({ name: 'A', mass: 1e22, radius: R, composition: { silicate: 1 } }));
+  w.add(new Body({ name: 'B', mass: 1e22, radius: R, composition: { silicate: 1 }, x: 1 }));
+  w.computeAccelerations();
+  const a = Math.hypot(w.bodies[0].ax, w.bodies[0].ay);
+  // Newton's shell theorem: the interior field falls linearly to zero.
+  assert('overlapping bodies feel the interior field, not a singularity', a < 1,
+    `${a.toExponential(2)} m/s² at 1 m separation`);
+
+  const w2 = new World({ frameBudgetMs: 200 });
+  w2.add(new Body({ name: 'A', mass: 1e22, radius: R, composition: { silicate: 1 } }));
+  w2.add(new Body({ name: 'B', mass: 1e22, radius: R, composition: { silicate: 1 }, x: 1 }));
+  let vmax = 0;
+  for (let i = 0; i < 40; i++) w2.advance(YEAR / 40);
+  for (const b of w2.bodies) vmax = Math.max(vmax, Math.hypot(b.vx, b.vy));
+  assert('and a year of it produces no explosion', w2.bodies.length <= 2 && vmax < 1e5,
+    `${w2.bodies.length} bodies, fastest ${vmax.toExponential(2)} m/s`);
+}
+{
+  // The opening criterion measures distance to a node's centre of mass, so a
+  // node containing the querent can be accepted once theta passes 1/sqrt(2) —
+  // and the body is then pulled by its own mass.
+  const qt = new Quadtree();
+  const pair = [
+    { x: 0, y: 0, vx: 0, vy: 0, mass: 1e24, radius: 1 },
+    { x: 1e9, y: 0, vx: 0, vy: 0, mass: 2e24, radius: 1 },
+  ];
+  const out = [0, 0, 0];
+  const exact = (G * 2e24) / 1e18;
+  let worst = 0;
+  for (const theta of [0.5, 0.75, 1.0]) {
+    qt.build(pair);
+    qt.accelerate(0, G, theta, 0, out);
+    worst = Math.max(worst, Math.abs(Math.hypot(out[0], out[1]) / exact - 1));
+  }
+  assert('no body attracts itself at any theta', worst < 1e-12, `worst error ${worst.toExponential(2)}`);
+}
+{
+  // Degenerate matter cannot be run through scalings calibrated on rock.
+  const ns = () => new Body({
+    name: 'NS', kind: 'ns', mass: 1.6 * M_SUN,
+    radius: compactRadius('ns', 1.6 * M_SUN), composition: { neutronium: 1 },
+  });
+  const earth = new Body({ name: 'E', mass: M_EARTH, composition: { iron: 0.32, silicate: 0.68 } });
+  const a = ns();
+  earth.x = a.radius + earth.radius;
+  earth.vx = -1e6;
+  const r = resolveCollision(a, earth, {});
+  assert('a neutron star that eats a planet stays a neutron star', a.radius < 2e4 && a.kind === 'ns',
+    `${(a.radius / 1e3).toFixed(1)} km, rho ${a.density.toExponential(2)}`);
+
+  const p = ns(), q = ns();
+  q.x = p.radius + q.radius;
+  q.vx = -1e8;
+  const r2 = resolveCollision(p, q, {});
+  assert('two neutron stars merge rather than bouncing at 0.17c',
+    r2.regime === 'compact-merger' || r2.regime === 'accretion', String(r2.regime));
+
+  const big1 = new Body({ name: 'A', kind: 'ns', mass: 2.0 * M_SUN, radius: compactRadius('ns', 2.0 * M_SUN), composition: { neutronium: 1 } });
+  const big2 = new Body({ name: 'B', kind: 'ns', mass: 2.0 * M_SUN, radius: compactRadius('ns', 2.0 * M_SUN), composition: { neutronium: 1 }, x: 3e4, vx: -1e7 });
+  resolveCollision(big1, big2, {});
+  assert('and a merger past the TOV limit collapses to a black hole', big1.kind === 'bh',
+    `${(big1.mass / M_SUN).toFixed(2)} M☉ -> ${big1.kind}`);
+}
+{
+  // Insolation has to reach everything derived from temperature, not just the
+  // number: the sprite cache is keyed on what refresh() computes.
+  const b = new Body({ name: 'Rock', mass: 1e21, composition: { silicate: 0.7, ice: 0.3 }, temperature: 120 });
+  const key0 = b.textureKey;
+  b.insolation = 3000;
+  // Radiative relaxation for a body this size runs to ~10^11 s; a couple of
+  // hundred megaseconds would move it by a quarter of a kelvin.
+  for (let i = 0; i < 400; i++) b.thermalStep(1e9);
+  assert('radiative heating warms the body', b.temperature > 250,
+    `120 K -> ${b.temperature.toFixed(0)} K`);
+  assert('and invalidates its sprite', b.textureKey !== key0,
+    `key ${key0 === b.textureKey ? 'unchanged' : 'updated'}`);
+
+  // And the key must keep changing once the crater list has hit its cap.
+  const c = new Body({ name: 'T', mass: M_EARTH, radius: R_EARTH, composition: { iron: 0.32, silicate: 0.68 } });
+  const rng = () => 0.5;
+  for (let i = 0; i < 60; i++) c.addCrater(Math.cos(i), Math.sin(i), 1e18, 3e4, 2e4, rng);
+  const keyAtCap = c.textureKey;
+  c.addCrater(1, 0, 1e18, 3e4, 2e4, rng);
+  assert('a new crater past the cap still invalidates the sprite', c.textureKey !== keyAtCap);
+}
+{
+  // A pile of bodies in mutual contact has to come apart, not resolve one pair
+  // per substep and leave the rest interpenetrating.
+  const w = new World({ frameBudgetMs: 200 });
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  for (let i = 0; i < 20; i++) {
+    const th = (i / 20) * Math.PI * 2;
+    w.add(new Body({
+      name: `R${i}`, kind: 'asteroid', mass: 1e18,
+      composition: { silicate: 0.8, carbon: 0.2 },
+      x: Math.cos(th) * 6e5 + rnd() * 1e4, y: Math.sin(th) * 6e5 + rnd() * 1e4,
+      vx: -Math.cos(th) * 12, vy: -Math.sin(th) * 12,
+    }));
+  }
+  for (let i = 0; i < 200; i++) w.advance(30);
+  let overlapping = 0;
+  for (let i = 0; i < w.bodies.length; i++) {
+    for (let j = i + 1; j < w.bodies.length; j++) {
+      const a = w.bodies[i], b = w.bodies[j];
+      if (Math.hypot(a.x - b.x, a.y - b.y) < (a.radius + b.radius) * 0.98) overlapping++;
+    }
+  }
+  assert('a converging cluster leaves no interpenetrating pairs', overlapping === 0,
+    `${overlapping} overlapping pairs among ${w.bodies.length} bodies`);
+}
+{
+  // The step must not depend on how large a body is, only on where it is.
+  const stepsPerOrbit = (radius) => {
+    const w = new World({ collisions: false, thermal: false, tidalDisruption: false, frameBudgetMs: 1e9 });
+    const sun = w.add(new Body({ name: 'Sun', kind: 'star', mass: M_SUN }));
+    const st = circularOrbitState(sun, AU, 0, false, 1e12);
+    w.add(new Body({ name: 'x', mass: 1e12, radius, ...st }));
+    w.computeAccelerations();
+    return YEAR / w.chooseDt(YEAR);
+  };
+  const big = stepsPerOrbit(6.371e6);
+  const small = stepsPerOrbit(0.5);
+  assert('a pebble does not slow the whole scene down', Math.abs(big - small) < 1,
+    `${big.toFixed(0)} vs ${small.toFixed(0)} steps per orbit`);
+}
+{
+  // A body too light for degeneracy to be relevant must not become a "white
+  // dwarf" larger than it started.
+  assert('the degenerate radius for an Earth mass exceeds Earth',
+    compactRadius('wd', M_EARTH) > R_EARTH,
+    `${(compactRadius('wd', M_EARTH) / 1e3).toExponential(2)} km`);
+}
+{
+  // Zero is a legitimate position and velocity; zero mass is not.
+  const ok = new Body({ name: 'origin', mass: 1e20, x: 0, y: 0, vx: 0, vy: 0 });
+  assert('a body at the origin, at rest, stays there', ok.x === 0 && ok.vx === 0);
+  let rejected = 0;
+  for (const bad of [{ mass: 0 }, { mass: -1 }, { mass: NaN }, { mass: 1e20, radius: 0 }, { mass: 1e20, radius: -5 }]) {
+    try { new Body({ name: 'bad', ...bad }); } catch (e) { rejected++; }
+  }
+  assert('mass and radius are validated, not silently defaulted', rejected === 5, `${rejected}/5 rejected`);
 }
 
 section('Kepler round-trip');
@@ -143,8 +343,11 @@ section('Relativistic perihelion precession');
 {
   // Mercury: a = 0.387 AU, e = 0.2056. General relativity predicts 42.98″ per
   // century; the Newtonian run measures the numerical noise floor.
+  // eta is tightened here because this is a precision measurement, not a
+  // gameplay setting: resolving a 43-arcsecond-per-century signal needs the
+  // numerical floor an order of magnitude below it.
   const run = (relativity) => {
-    const w = new World({ collisions: false, thermal: false, tidalDisruption: false, relativity, eta: 0.012, frameBudgetMs: 1e9 });
+    const w = new World({ collisions: false, thermal: false, tidalDisruption: false, relativity, eta: 0.006, frameBudgetMs: 1e9, maxSubsteps: 1e9 });
     const sun = w.add(new Body({ name: 'Sun', kind: 'star', mass: M_SUN, fixed: true }));
     const s = stateFromElements(G * M_SUN, 5.790905e10, 0.205630, 0, 0, 3.3011e23);
     const m = w.add(new Body({ name: 'Mercury', mass: 3.3011e23, ...s }));
@@ -157,7 +360,8 @@ section('Relativistic perihelion precession');
     return d * 206264.806;
   };
   const newtonian = run(false);
-  assert('Newtonian noise floor is small', Math.abs(newtonian) < 2, `${newtonian.toFixed(2)}″/century`);
+  assert('Newtonian noise floor is below the signal', Math.abs(newtonian) < 1,
+    `${newtonian.toFixed(3)}″/century vs the 42.98″ being measured`);
   check('relativistic advance', run(true) - newtonian, 42.98, 0.02, '″/century');
 }
 

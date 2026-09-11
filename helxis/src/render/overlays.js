@@ -1,5 +1,5 @@
-import { G, AU, TAU, clamp, rocheLimit, hillRadius, formatDistance } from '../core/const.js';
-import { orbitalElements, sampleConic, dominantAttractor } from '../core/kepler.js';
+import { G, AU, TAU, clamp, rocheLimit, hillRadius } from '../core/const.js';
+import { orbitalElements, sampleConic } from '../core/kepler.js';
 
 const P = [0, 0];
 const Q = [0, 0];
@@ -92,7 +92,9 @@ export function drawOrbits(ctx, world, camera, settings, selected) {
   const maxR = (Math.max(camera.width, camera.height) * 14) / camera.scale;
 
   for (const b of candidates) {
-    const primary = dominantAttractor(b, world.bodies);
+    // The world caches this per frame; rescanning every body against every
+    // other one here would repeat an O(N²) pass the simulation already did.
+    const primary = world.attractorOf(b);
     if (!primary) continue;
     // Skip pairs where the "orbit" is meaningless: a star about its own planet.
     if (primary.mass < b.mass * 3) continue;
@@ -186,8 +188,7 @@ export function drawVectors(ctx, world, camera, settings, selected) {
 /** Hill spheres and Roche limits: where moons can live, and where they die. */
 export function drawRadii(ctx, world, camera, settings, selected) {
   if (!settings.hillSpheres && !settings.rocheLimits) return;
-  const bodies = world.bodies;
-  for (const b of bodies) {
+  for (const b of world.bodies) {
     if (settings.radiiSelectedOnly && b !== selected) continue;
     if (b.kind === 'debris') continue;
 
@@ -208,7 +209,7 @@ export function drawRadii(ctx, world, camera, settings, selected) {
     }
 
     if (settings.hillSpheres) {
-      const primary = dominantAttractor(b, bodies);
+      const primary = world.attractorOf(b);
       if (!primary || primary.mass < b.mass * 8) continue;
       const a = Math.hypot(b.x - primary.x, b.y - primary.y);
       const r = hillRadius(a, b.mass, primary.mass);

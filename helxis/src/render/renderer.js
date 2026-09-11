@@ -1,4 +1,4 @@
-import { clamp, TAU, AU, formatDistance, schwarzschild } from '../core/const.js';
+import { clamp, TAU, formatDistance, schwarzschild } from '../core/const.js';
 import { incandescence, surfaceColor } from '../core/materials.js';
 import {
   bodyTexture, shadeMask, glowSprite, dotSprite, pickSize, blackbodyColor,

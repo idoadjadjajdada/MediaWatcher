@@ -206,20 +206,30 @@ export class Quadtree {
 
   /**
    * Acceleration on body `bi` from the whole tree, using the standard
-   * s/d < theta opening criterion with Plummer softening.
+   * s/d < theta opening criterion.
    *
-   * Returns [ax, ay] and, as a side effect, accumulates the potential energy
-   * term into `this.potentialAccum` when `wantPotential` is set.
+   * Writes [ax, ay, distanceToDominantContribution] into `out`.
    */
   accelerate(bi, G, theta, softening, out) {
     const b = this.bodies[bi];
     const bx = b.x, by = b.y;
+    const brad = b.radius || 0;
     let ax = 0, ay = 0;
+    // The separation of whichever single contribution is pulling hardest,
+    // reported back in out[2]. The integrator pairs it with the total |a| to
+    // get a local dynamical time, so it has to be the distance belonging to the
+    // mass that dominates that total — not the distance to the nearest body.
+    // Those differ exactly when a speck drifts close to something enormous, and
+    // using the nearest one there drove the step to its floor and the
+    // simulation to a halt.
+    let bestPull = 0;
+    let bestDist = Infinity;
     const eps2 = softening * softening;
     const theta2 = theta * theta;
     const stack = this._stack || (this._stack = new Int32Array(4096));
     let sp = 0;
-    if (this.root === -1) { out[0] = 0; out[1] = 0; return out; }
+    out[0] = 0; out[1] = 0; out[2] = Infinity;
+    if (this.root === -1) return out;
     stack[sp++] = this.root;
 
     while (sp > 0) {
@@ -237,6 +247,7 @@ export class Quadtree {
         // A leaf may hold several coincident bodies; treat them as one mass but
         // subtract self-attraction if this body is among them.
         let mm = m, mdx = dx, mdy = dy, md2 = d2;
+        let other = j >= 0 ? this.bodies[j] : null;
         if (this.overflow && this.overflow.has(node)) {
           const list = this.overflow.get(node);
           if (j === bi || list.includes(bi)) {
@@ -246,8 +257,28 @@ export class Quadtree {
             const cmy = (this.comY[node] * m - b.mass * by) / mm;
             mdx = cmx - bx; mdy = cmy - by;
             md2 = mdx * mdx + mdy * mdy;
+            other = null;
           }
         }
+        const d = Math.sqrt(md2);
+        if (d > 0) {
+          const pull = (G * mm) / (d * d);
+          if (pull > bestPull) { bestPull = pull; bestDist = d; }
+        }
+
+        // Interior gravity. Newton's shell theorem says the field inside a
+        // uniform sphere falls off linearly to zero at the centre, not as 1/r².
+        // Two overlapping bodies treated as point masses produce an arbitrarily
+        // large force — which is not a numerical nuisance but a physical error,
+        // and it used to turn a pair of touching planets into seven hundred
+        // fragments at a quarter of light speed inside one frame.
+        const reach = brad + (other ? other.radius : 0);
+        if (reach > 0 && d < reach) {
+          const f = (G * mm * d) / (reach * reach * reach);
+          if (d > 0) { ax += (f * mdx) / d; ay += (f * mdy) / d; }
+          continue;
+        }
+
         const r2 = md2 + eps2;
         const inv = 1 / (r2 * Math.sqrt(r2));
         const f = G * mm * inv;
@@ -255,23 +286,44 @@ export class Quadtree {
         continue;
       }
 
-      const s = this.half[node] * 2;
-      if (s * s < theta2 * d2) {
-        const r2 = d2 + eps2;
-        const inv = 1 / (r2 * Math.sqrt(r2));
-        const f = G * m * inv;
-        ax += f * dx; ay += f * dy;
+      // A node containing this body can never be summarised by its centre of
+      // mass — doing so has the body pulling on itself. With the opening test
+      // measured to the centre of mass rather than to the node, that is exactly
+      // what happens once θ passes 1/√2, so test containment explicitly and
+      // keep the criterion honest at any θ.
+      const half = this.half[node];
+      const inside = Math.abs(bx - this.cx[node]) <= half && Math.abs(by - this.cy[node]) <= half;
+
+      const s = half * 2;
+      if (!inside && s * s < theta2 * d2) {
+        const d = Math.sqrt(d2);
+        if (d > 0) {
+          const pull = (G * m) / d2;
+          if (pull > bestPull) { bestPull = pull; bestDist = d; }
+        }
+        // A distant clump still must not produce a singular force if the body
+        // has wandered inside its extent.
+        const reach = brad + this.maxR[node];
+        if (reach > 0 && d < reach) {
+          const f = (G * m * d) / (reach * reach * reach);
+          if (d > 0) { ax += (f * dx) / d; ay += (f * dy) / d; }
+        } else {
+          const r2 = d2 + eps2;
+          const inv = 1 / (r2 * Math.sqrt(r2));
+          const f = G * m * inv;
+          ax += f * dx; ay += f * dy;
+        }
       } else {
         for (let q = 0; q < 4; q++) {
           const c = this.child[node * 4 + q];
           if (c !== -1 && this.mass[c] !== 0) {
-            if (sp >= stack.length) { out[0] = ax; out[1] = ay; return out; }
+            if (sp >= stack.length) { out[0] = ax; out[1] = ay; out[2] = bestDist; return out; }
             stack[sp++] = c;
           }
         }
       }
     }
-    out[0] = ax; out[1] = ay;
+    out[0] = ax; out[1] = ay; out[2] = bestDist;
     return out;
   }
 

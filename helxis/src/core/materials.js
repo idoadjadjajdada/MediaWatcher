@@ -81,10 +81,10 @@ export function bulkDensity(comp) {
 }
 
 /**
- * Self-compression. A body of Earth's mass is denser than its grain density
- * because its own gravity squeezes it. This is a fit, not an equation of state:
- * it tracks the terrestrial planets to a few percent and saturates before it
- * can produce anything unphysical.
+ * Self-compression for a rocky or icy body. Earth is denser than its grain
+ * density because its own gravity squeezes it. This is a fit, not an equation
+ * of state: it tracks the terrestrial planets to a few percent and saturates
+ * before it can produce anything unphysical.
  */
 export function compressionFactor(massKg) {
   const M_E = 5.97217e24;
@@ -93,10 +93,46 @@ export function compressionFactor(massKg) {
   return 1 + 0.55 * Math.pow(x, 0.42) / (1 + 0.35 * Math.pow(x, 0.42));
 }
 
-/** Radius implied by mass and composition, including self-compression. */
+/** Mass fraction of hydrogen and helium — what decides which relation applies. */
+export function gasFraction(comp) {
+  return (comp.hydrogen || 0) + (comp.helium || 0);
+}
+
+const M_JUP_KG = 1.89813e27;
+const R_JUP_M = 6.9911e7;
+
+/**
+ * Mass-radius relation for a hydrogen-helium body.
+ *
+ * A gas giant is not a rock with a bigger number in front of it. Its radius
+ * rises as M^(1/3) while the envelope is ideal, then turns over and *falls* as
+ * electron degeneracy sets in, which is why Jupiter, a brown dwarf at forty
+ * Jupiter masses, and a 0.07 M☉ star are all about the same size. The
+ * terrestrial compression fit cannot do that — it saturates at 2.57× and gave
+ * Jupiter a radius 1.84 times too large.
+ *
+ *   R ∝ M^(1/3) / (1 + (M/M_c)^(2/3))
+ *
+ * with the two constants fixed by Jupiter and Saturn.
+ */
+export function gasGiantRadius(massKg) {
+  const m = Math.max(massKg, 1) / M_JUP_KG;
+  const K = 1.5537, Mc = 1.806;
+  return (R_JUP_M * K * Math.cbrt(m)) / (1 + Math.pow(m, 2 / 3) / Mc);
+}
+
+/**
+ * Radius implied by mass and composition.
+ *
+ * Blended across the transition rather than switched, so a body accreting
+ * hydrogen grows into the gas-giant relation instead of jumping into it.
+ */
 export function radiusFromMass(massKg, comp) {
-  const rho = bulkDensity(comp) * compressionFactor(massKg);
-  return Math.cbrt((3 * massKg) / (4 * Math.PI * rho));
+  const rocky = Math.cbrt((3 * massKg) / (4 * Math.PI * bulkDensity(comp) * compressionFactor(massKg)));
+  const gas = gasFraction(comp);
+  if (gas <= 0.35) return rocky;
+  const w = Math.min(1, (gas - 0.35) / 0.3);
+  return rocky * (1 - w) + gasGiantRadius(massKg) * w;
 }
 
 /** Mix two compositions by mass. Used on every merge and every accretion. */

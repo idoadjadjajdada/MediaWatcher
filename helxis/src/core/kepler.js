@@ -30,7 +30,8 @@ export function orbitalElements(rx, ry, vx, vy, mu) {
   const argP = e > 1e-12 ? Math.atan2(ey, ex) : Math.atan2(ry, rx);
   const retrograde = h < 0;
 
-  const periapsis = e < 1 ? a * (1 - e) : a * (1 - e); // a<0 for e>1 keeps this positive
+  // a is negative for a hyperbolic orbit, which keeps this positive either way.
+  const periapsis = a * (1 - e);
   const apoapsis = e < 1 ? a * (1 + e) : Infinity;
   const period = e < 1 && isFinite(a) && a > 0 ? TAU * Math.sqrt((a * a * a) / mu) : Infinity;
 

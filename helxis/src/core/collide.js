@@ -1,9 +1,10 @@
-import { G, C, TAU, clamp, escapeVelocity } from './const.js';
+import { G, C, TAU, clamp, escapeVelocity, schwarzschild } from './const.js';
 import { Body, classifyCompact, compactRadius } from './body.js';
-import {
-  mixCompositions, compositionProperty, normalizeComposition, radiusFromMass,
-} from './materials.js';
+import { mixCompositions, compositionProperty, radiusFromMass } from './materials.js';
 import { makeRng, gaussian, powerLawSample, hashSeed } from './rng.js';
+
+/** Bodies held up by degeneracy pressure, or by nothing at all. */
+const isCompact = (b) => b.kind === 'bh' || b.kind === 'ns' || b.kind === 'wd';
 
 // Leinhardt & Stewart (2012) parameters.
 const RHO1 = 1000;        // kg/m^3, the reference density their scaling uses
@@ -11,34 +12,6 @@ const C_STAR = 5.0;       // dissipation constant; ~5 for hydrodynamic bodies
 const MU_BAR = 0.36;      // velocity exponent, gravity regime (rock)
 const SUPERCAT = 1.8;     // Q_R/Q*_RD above which the outcome is supercatastrophic
 const FRAG_SLOPE = 1.83;  // differential mass distribution slope, ~Dohnanyi 11/6
-
-/**
- * Earliest contact time of two bodies over the interval [0, dt], treating both
- * as moving at constant velocity.
- *
- * Without this, at a million times realtime a comet crosses a planet in a
- * single step and passes straight through it.
- */
-export function sweptContact(a, b, dt) {
-  const dx = b.x - a.x, dy = b.y - a.y;
-  const R = a.radius + b.radius;
-  const d2 = dx * dx + dy * dy;
-  if (d2 <= R * R) return 0;                 // already overlapping
-
-  const wx = b.vx - a.vx, wy = b.vy - a.vy;
-  const ww = wx * wx + wy * wy;
-  if (ww === 0) return null;
-
-  const dw = dx * wx + dy * wy;
-  if (dw >= 0) return null;                  // separating
-
-  const disc = dw * dw - ww * (d2 - R * R);
-  if (disc < 0) return null;                 // closest approach still clears
-
-  const t = (-dw - Math.sqrt(disc)) / ww;
-  if (t < 0 || t > dt) return null;
-  return t;
-}
 
 /**
  * Earliest contact along two straight displacements, as a fraction of the step.
@@ -108,9 +81,15 @@ export function resolveCollision(a, b, opts = {}) {
 
   const rng = makeRng(hashSeed(target.id, proj.id, Math.round(vImp), target.craters.length));
 
-  // A black hole ends every argument.
-  if (target.kind === 'bh' || proj.kind === 'bh') {
-    return accreteIntoCompact(target, proj, { comVx, comVy, Mtot, kImpact, opts });
+  // Degenerate matter does not participate in any of the scalings below. LS12
+  // is calibrated on rock and ice; a neutron star has a strength eighteen
+  // orders of magnitude higher and a density fourteen. Feeding it through the
+  // ordinary path had a neutron star swell from 10 km to 5000 km after eating a
+  // planet — because the radius came from harmonically mixing neutronium with
+  // silicate — and had two of them bounce off each other at 0.17c, because the
+  // bounce test only asked whether they were small and strong.
+  if (isCompact(target) || isCompact(proj)) {
+    return accreteIntoCompact(target, proj, { comVx, comVy, Mtot, kImpact, vImp });
   }
 
   // --- Interacting mass -----------------------------------------------------
@@ -158,15 +137,28 @@ export function resolveCollision(a, b, opts = {}) {
   // Between plain merging and true hit-and-run there is a band where the
   // impactor loses enough energy on the pass to stay bound, and merges on a
   // later one — Genda et al. (2012). The band is widest for near-head-on
-  // impacts, which shed the most energy, and narrows to nothing at a tangent
-  // brush that barely touches.
-  const vGrazeMerge = vEsc * (1 + 0.6 * (1 - graze));
+  // impacts, which shed the most energy, and narrows as the encounter becomes
+  // a tangent brush.
+  //
+  // It never narrows to nothing, though: separating at all requires beating the
+  // mutual escape velocity, and a pair that grazes at exactly v_esc is still
+  // bound however lightly they touched. Letting the band close to v_esc made
+  // every tangential encounter in an accreting disc a hit-and-run that shed
+  // debris, so a disc of a hundred and sixty planetesimals grew to twelve
+  // hundred fragments instead of merging into planets.
+  const vGrazeMerge = vEsc * (1.05 + 0.6 * (1 - graze));
 
   let regime;
   if (vImp < vEsc * 1.02) {
     regime = 'merge';
   } else if (grazing) {
-    if (vImp < vGrazeMerge && ratio < 1) regime = 'merge';
+    // A grazing impact well below threshold is the same physical event as a
+    // head-on one well below threshold — the target survives and absorbs the
+    // projectile. Calling one "merge" and the other "cratering" made the
+    // outcome map non-monotonic in impact parameter across that boundary.
+    if (vImp < vGrazeMerge && ratio < 1) {
+      regime = (ratio < 0.1 && Mp < 0.1 * Mt) ? 'cratering' : 'merge';
+    }
     else if (ratio < 1 && Minteract < 0.5 * Mp) regime = 'hitrun';
     else if (ratio < SUPERCAT) regime = 'disruption';
     else regime = 'supercatastrophic';
@@ -303,7 +295,13 @@ function doMerge(target, proj, ctx) {
       // Mantle material: mostly the impactor's, since it is the one that was
       // sheared apart.
       const discComp = mixCompositions(proj.surfaceComposition, 0.72, target.surfaceComposition, 0.28);
-      const n = clamp(Math.round(5 + rng() * 7), 3, 14);
+      // A circumplanetary disc is a sheet of molten rock, not a handful of
+      // rocks. Splitting it into a dozen tracked bodies costs a dozen bodies
+      // per grazing merge — which in an accreting disc of planetesimals meant
+      // the body count rose while the bodies were merging — and buys nothing,
+      // since they re-accrete into one or two clumps within a few orbits
+      // anyway. Start from the clumps.
+      const n = 1 + Math.floor(rng() * 3);
       const R = merged.radius;
       let left = discMass;
       for (let i = 0; i < n; i++) {
@@ -375,13 +373,22 @@ function doCratering(target, proj, ctx) {
   const Mt = target.mass, Mp = proj.mass;
   const Mtot = Mt + Mp;
 
-  // Ejecta: a small fraction of excavated mass escapes if it can beat v_esc.
+  // Ejecta: the part of the excavated mass that actually gets away.
+  //
+  // Escaping mass goes to zero as the impact speed falls to the target's own
+  // escape velocity — at that point the ejecta is on a ballistic arc that lands
+  // again — and climbs steeply above it. An earlier version returned a floor of
+  // about one percent even at exactly v_esc, which in a disc of planetesimals
+  // meant every routine cratering impact minted a dozen new bodies: a run that
+  // should have merged 160 objects into a handful instead turned them into
+  // seventeen hundred.
   const vEscT = escapeVelocity(Mt, target.radius);
-  const ejectaFrac = clamp(0.02 * (vImp / Math.max(vEscT, 1)) - 0.01, 0, 0.25);
+  const speedRatio = vImp / Math.max(vEscT, 1);
+  const ejectaFrac = clamp(0.05 * (speedRatio * speedRatio - 1), 0, 0.3);
   let ejectaMass = ejectaFrac * Mp;
-  // Below this the ejecta would be individually unresolvable, so it stays with
-  // the target rather than being quietly deleted.
-  if (ejectaMass <= 1e-9 * Mt) ejectaMass = 0;
+  // Anything below this is dust: unresolvable as a body, and it re-accretes.
+  // Leave it on the target rather than tracking or deleting it.
+  if (ejectaMass <= 1e-5 * Mt) ejectaMass = 0;
 
   // Momentum first: the survivor takes everything the ejecta does not.
   const pX = Mt * target.vx + Mp * proj.vx;
@@ -389,7 +396,7 @@ function doCratering(target, proj, ctx) {
 
   const fragments = [];
   if (ejectaMass > 0) {
-    const n = clamp(Math.round(3 + rng() * 6), 1, 12);
+    const n = clamp(Math.round(2 + rng() * 4), 1, 6);
     const each = ejectaMass / n;
     for (let i = 0; i < n; i++) {
       // Ejecta leaves along a cone about the impact normal, just above v_esc.
@@ -422,7 +429,7 @@ function doCratering(target, proj, ctx) {
   target.vx = (pX - sumPx) / survivorMass;
   target.vy = (pY - sumPy) / survivorMass;
   target.addHeat(kImpact * 0.6);
-  target.addCrater(nx, ny, proj.radius, kImpact, rng);
+  target.addCrater(nx, ny, proj.mass, proj.radius, vImp, rng);
   target.spin += clamp(
     (ctx.bImp || 0) * vImp * (Mp / Mtot) / Math.max(target.radius, 1) * 0.5, -1e-3, 1e-3
   );
@@ -454,16 +461,18 @@ function doHitAndRun(target, proj, ctx) {
   const captured = stripped * 0.5;
   const debrisMass = stripped - captured;
 
-  const newMt = Mt + captured;
+  // Anything not spun off as tracked debris stays with the target, so the
+  // dust threshold above changes what is *resolved*, never what is conserved.
   target.composition = mixCompositions(target.composition, Mt, proj.surfaceComposition, captured);
-  target.mass = newMt;
+  target.mass = Mt + captured;
   target.addHeat(kImpact * 0.35);
-  target.addCrater(nx, ny, proj.radius * 0.7, kImpact * 0.5, rng);
+  target.addCrater(nx, ny, proj.mass * alpha, proj.radius, vImp, rng);
   target.refresh();
 
   const fragments = [];
   const relDir = Math.atan2(proj.vy - target.vy, proj.vx - target.vx);
-  if (debrisMass > 1e-9 * Mt) {
+  // As with cratering ejecta, debris below this is dust rather than bodies.
+  if (debrisMass > 1e-4 * Mt) {
     const n = clamp(Math.round(4 + rng() * 8), 1, 16);
     const each = debrisMass / n;
     const vEsc = Math.sqrt((2 * G * (Mt + Mp)) / (target.radius + proj.radius));
@@ -484,21 +493,23 @@ function doHitAndRun(target, proj, ctx) {
     }
   }
 
+  // `stripped` is at most 0.9·Mp by construction, so the projectile always
+  // survives a hit-and-run — but assert it rather than leaving a branch that
+  // would silently delete its mass if the constants above ever changed.
+  if (!(survivorMp > 0)) {
+    throw new Error(`hit-and-run stripped the whole projectile: ${survivorMp} of ${Mp}`);
+  }
   const removed = [];
   const added = fragments.slice();
-  if (survivorMp > 0 && survivorMp > 1e-6 * Mp) {
-    proj.mass = survivorMp;
-    proj.addHeat(kImpact * 0.25);
-    proj.refresh();
-  } else {
-    removed.push(proj);
-  }
+  proj.mass = survivorMp;
+  proj.addHeat(kImpact * 0.25);
+  proj.refresh();
 
   // Close the momentum books on the target, which is the only body whose
   // velocity is still free.
-  let sumPx = 0, sumPy = 0;
-  for (const f of added) { sumPx += f.mass * f.vx; sumPy += f.mass * f.vy; }
-  if (!removed.includes(proj)) { sumPx += proj.mass * proj.vx; sumPy += proj.mass * proj.vy; }
+  let sumM = proj.mass, sumPx = proj.mass * proj.vx, sumPy = proj.mass * proj.vy;
+  for (const f of added) { sumM += f.mass; sumPx += f.mass * f.vx; sumPy += f.mass * f.vy; }
+  target.mass = Mt + Mp - sumM;
   target.vx = (pX - sumPx) / target.mass;
   target.vy = (pY - sumPy) / target.mass;
 
@@ -585,11 +596,14 @@ function doDisruption(target, proj, ctx) {
   const bindingSpent = Math.min(kImpact, target.bindingEnergy + proj.bindingEnergy);
   const dispersal = Math.max(0, kImpact - bindingSpent) * 0.5;
   const fragTotal = fragments.reduce((s, m) => s + m, 0);
-  // Characteristic dispersal speed from equipartition of the surplus energy,
-  // floored at escape velocity so a disrupted body actually comes apart.
+  // Characteristic dispersal speed from equipartition of the surplus energy.
+  // It is floored at escape velocity so a disrupted body actually comes apart,
+  // but the floor is itself capped by the impact speed: a collision cannot
+  // throw its own debris faster than it arrived, and an unconditional escape
+  // floor was quietly minting GM²/R of kinetic energy out of nothing.
   const vChar = fragTotal > 0
-    ? Math.max(vEsc * 1.05, Math.sqrt((2 * dispersal) / fragTotal))
-    : vEsc;
+    ? Math.min(Math.max(Math.min(vEsc * 1.05, vImp), Math.sqrt((2 * dispersal) / fragTotal)), vImp)
+    : Math.min(vEsc, vImp);
 
   const bodies = [];
   for (let i = 0; i < fragments.length; i++) {
@@ -647,6 +661,24 @@ function doDisruption(target, proj, ctx) {
     for (const f of products) { f.vx += dvx; f.vy += dvy; }
   }
 
+  // Audit the books. The centre-of-mass kinetic energy of the products cannot
+  // exceed what the impact brought in; if the sampling overshot, scale the
+  // spread about the centre of mass until it does not. Momentum is untouched by
+  // this, because scaling velocities about the centre of mass is exactly the
+  // operation that leaves the total at zero in that frame.
+  let keCom = 0;
+  for (const f of products) {
+    const rx = f.vx - comVx, ry = f.vy - comVy;
+    keCom += 0.5 * f.mass * (rx * rx + ry * ry);
+  }
+  if (keCom > kImpact && keCom > 0) {
+    const k = Math.sqrt(kImpact / keCom);
+    for (const f of products) {
+      f.vx = comVx + (f.vx - comVx) * k;
+      f.vy = comVy + (f.vy - comVy) * k;
+    }
+  }
+
   const out = {
     regime, removed: [target, proj],
     added: products,
@@ -659,28 +691,66 @@ function doDisruption(target, proj, ctx) {
   return out;
 }
 
+/**
+ * Anything striking a degenerate object.
+ *
+ * Mass and momentum go in; the remnant is re-derived from the real limits
+ * rather than from a composition mix. Below the Chandrasekhar mass electron
+ * degeneracy holds, below the TOV limit neutron degeneracy does, and above that
+ * nothing does — so a neutron-star merger that crosses 2.9 M☉ collapses to a
+ * black hole instead of remaining a very heavy neutron star.
+ *
+ * The infalling rest mass is partly radiated: about 5.7% for a Schwarzschild
+ * horizon, more for a hard surface to land on. That energy really does leave
+ * the system, so it is deducted from the remnant's mass rather than only being
+ * reported.
+ */
 function accreteIntoCompact(target, proj, ctx) {
-  // Feeding a black hole (or a neutron star): mass and momentum are conserved,
-  // and a fraction of the rest mass of the infalling matter is radiated away as
-  // an accretion flash. For a Schwarzschild hole the efficiency is ~5.7%.
-  const bh = target.kind === 'bh' ? target : (proj.kind === 'bh' ? proj : target);
-  const other = bh === target ? proj : target;
-  const eff = bh.kind === 'bh' ? 0.057 : 0.2;
-  const radiated = other.mass * C * C * eff;
+  const { vImp } = ctx;
+  // Whichever is denser is the one doing the eating.
+  const host = isCompact(target) && (!isCompact(proj) || target.mass >= proj.mass) ? target : proj;
+  const other = host === target ? proj : target;
 
-  const Mtot = bh.mass + other.mass;
-  const pX = bh.mass * bh.vx + other.mass * other.vx;
-  const pY = bh.mass * bh.vy + other.mass * other.vy;
-  bh.mass = Mtot;
-  bh.vx = pX / Mtot; bh.vy = pY / Mtot;
-  bh.refresh();
+  const eff = host.kind === 'bh' ? 0.057 : host.kind === 'ns' ? 0.2 : 0.0003;
+  const radiated = other.mass * C * C * eff;
+  // Radiated energy carries away mass, but never more than a sane fraction of
+  // what fell in.
+  const massLost = Math.min(other.mass * eff, other.mass * 0.5);
+
+  const pX = host.mass * host.vx + other.mass * other.vx;
+  const pY = host.mass * host.vy + other.mass * other.vy;
+  const Mtot = host.mass + other.mass - massLost;
+
+  host.mass = Mtot;
+  host.vx = pX / (host.mass + massLost);
+  host.vy = pY / (host.mass + massLost);
+
+  // Re-derive what it now is from its mass alone.
+  const kind = host.kind === 'bh' ? 'bh' : classifyCompact(Mtot);
+  host.kind = kind;
+  host.composition = kind === 'bh' ? { degenerate: 1 }
+    : kind === 'ns' ? { neutronium: 1 }
+      : { carbon: 0.5, degenerate: 0.5 };
+  host.crust = null;
+  host.explicitRadius = kind !== 'bh';
+  host.radius = kind === 'bh' ? schwarzschild(Mtot) : compactRadius(kind, Mtot);
+  if (kind !== host.kind || host.name === 'Body') {
+    host.name = kind === 'bh' ? 'Black hole' : kind === 'ns' ? 'Neutron star' : 'White dwarf';
+  }
+  host.differentiation = 1;
+  host.luminosity = 0;
+  host.craters.length = 0;
+  host.mixes.length = 0;
+  host.revision++;
+  host.refresh();
 
   return {
-    regime: 'accretion', removed: [other], added: [],
+    regime: kind === 'bh' ? 'accretion' : 'compact-merger',
+    removed: [other], added: [],
     events: [{
       type: 'accretion', x: other.x, y: other.y, energy: radiated,
-      vImp: Math.hypot(other.vx - bh.vx, other.vy - bh.vy),
-      scale: Math.max(bh.radius * 40, other.radius * 3),
+      vImp: vImp || 0,
+      scale: Math.max(host.radius * 40, other.radius * 3),
     }],
   };
 }

@@ -1,4 +1,4 @@
-import { clamp, lerp, TAU } from '../core/const.js';
+import { clamp, TAU } from '../core/const.js';
 import { incandescence } from '../core/materials.js';
 import { makeRng, gaussian } from '../core/rng.js';
 
@@ -18,8 +18,20 @@ export class Effects {
     this.beams = [];
     this.flashes = [];
     this.maxParticles = 2600;
+    // Rings, flashes and beams were uncapped: one explosion at high intensity
+    // put nearly four thousand live objects on screen and halved the frame rate.
+    this.maxRings = 220;
+    this.maxFlashes = 160;
+    this.maxBeams = 24;
     // Seconds of wall time an effect is guaranteed to remain visible for.
     this.minVisible = 1.1;
+  }
+
+  /** Drop the oldest entries when a list is over its ceiling. */
+  cap() {
+    if (this.rings.length > this.maxRings) this.rings.splice(0, this.rings.length - this.maxRings);
+    if (this.flashes.length > this.maxFlashes) this.flashes.splice(0, this.flashes.length - this.maxFlashes);
+    if (this.beams.length > this.maxBeams) this.beams.splice(0, this.beams.length - this.maxBeams);
   }
 
   clear() {
@@ -29,7 +41,9 @@ export class Effects {
     this.flashes.length = 0;
   }
 
-  get count() { return this.particles.length + this.rings.length + this.flashes.length; }
+  get count() {
+    return this.particles.length + this.rings.length + this.flashes.length + this.beams.length;
+  }
 
   /**
    * Spawn the debris cloud for an impact.
@@ -229,6 +243,8 @@ export class Effects {
       this.flashes[w++] = f;
     }
     this.flashes.length = w;
+
+    this.cap();
 
     // Beams are re-emitted each frame they are active, so they expire on real
     // time rather than simulated time.

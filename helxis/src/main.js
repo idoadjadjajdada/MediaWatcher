@@ -1,13 +1,10 @@
-import {
-  G, AU, TAU, M_SUN, C, clamp, formatMass, formatDistance,
-} from './core/const.js';
+import { G, C, clamp, formatMass } from './core/const.js';
 import { World } from './core/world.js';
-import { Body } from './core/body.js';
 import { dominantAttractor } from './core/kepler.js';
 import { Camera } from './render/camera.js';
 import { Renderer } from './render/renderer.js';
 import { Effects } from './render/effects.js';
-import { clearTextureCache, textureCacheSize } from './render/texture.js';
+import { clearTextureCache } from './render/texture.js';
 import { ToolController, toolRadiusPixels, toolRingColor, pickBody } from './ui/tools.js';
 import { UI, TIME_SCALES } from './ui/ui.js';
 import { instantiate } from './ui/catalog.js';
@@ -93,9 +90,13 @@ class App {
   // --- scene ----------------------------------------------------------------
 
   loadPreset(id, opts = {}) {
-    this.pushUndo();
+    // Push the undo entry only once the preset is known to exist, or a typo in
+    // an id leaves a junk snapshot on the stack.
+    const before = this.world.snapshot();
     const info = loadPreset(this.world, id);
     if (!info) return;
+    this.undoStack.push(before);
+    if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
     this.currentPreset = id;
     this.effects.clear();
     this.select(null);

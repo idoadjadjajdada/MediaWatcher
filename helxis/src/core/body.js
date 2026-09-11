@@ -1,13 +1,22 @@
 import {
-  G, C, SIGMA_SB, T_CMB, M_SUN, R_SUN, L_SUN, T_SUN,
+  G, SIGMA_SB, T_CMB, M_SUN, R_SUN, L_SUN,
   schwarzschild, escapeVelocity, TAU, clamp,
 } from './const.js';
 import {
-  MATERIALS, normalizeComposition, bulkDensity, compressionFactor,
-  radiusFromMass, mixCompositions, differentiate, dominantMaterial,
-  compositionProperty,
+  MATERIALS, normalizeComposition, radiusFromMass, mixCompositions,
+  differentiate, dominantMaterial, compositionProperty,
 } from './materials.js';
 import { hashSeed } from './rng.js';
+
+/** `opts.x ?? fallback`, but rejecting NaN as well as undefined. */
+function num(v, fallback) {
+  return (v != null && isFinite(v)) ? v : fallback;
+}
+
+/** The logarithmic temperature bucket the sprite cache is keyed on. */
+function bucketOf(t) {
+  return Math.round(Math.log2(Math.max(1, t)) * 8);
+}
 
 let NEXT_ID = 1;
 export const resetIds = (n = 1) => { NEXT_ID = n; };
@@ -29,26 +38,38 @@ export class Body {
     this.kind = opts.kind || 'planet';   // star|planet|gasgiant|moon|asteroid|comet|debris|wd|ns|bh
     this.catalogId = opts.catalogId || null;
 
-    this.x = opts.x || 0;
-    this.y = opts.y || 0;
-    this.vx = opts.vx || 0;
-    this.vy = opts.vy || 0;
+    // `!= null` rather than `||` throughout: a body at the origin, at rest, is
+    // an entirely ordinary thing to ask for, and `||` silently replaced every
+    // legitimate zero with a default.
+    this.x = num(opts.x, 0);
+    this.y = num(opts.y, 0);
+    this.vx = num(opts.vx, 0);
+    this.vy = num(opts.vy, 0);
     this.ax = 0;
     this.ay = 0;
 
-    this.mass = opts.mass || 1e20;
+    // A mass that was *given* must be usable. Only an absent one gets a default;
+    // NaN is a bug upstream and swallowing it would hide where it came from.
+    const mass = opts.mass === undefined ? 1e20 : opts.mass;
+    if (!(mass > 0) || !isFinite(mass)) {
+      throw new RangeError(`Body ${this.name}: mass must be finite and positive, got ${opts.mass}`);
+    }
+    this.mass = mass;
     this.composition = normalizeComposition(opts.composition || { silicate: 0.68, iron: 0.32 });
 
     // Thermal state. Temperature is the primary variable; thermal energy is
     // derived, because specific heat changes as composition changes.
-    this.temperature = opts.temperature != null ? opts.temperature : 255;
+    this.temperature = Math.max(T_CMB, num(opts.temperature, 255));
     // Fraction of the interior that has melted and re-sorted by density.
     this.differentiation = opts.differentiation != null ? opts.differentiation : 0;
 
-    this.rotation = opts.rotation != null ? opts.rotation : Math.random() * TAU;
-    this.spin = opts.spin != null ? opts.spin : 0;   // rad/s
-
     this.seed = opts.seed != null ? opts.seed : hashSeed(this.name, this.id, Math.random());
+    // Derived from the seed, not from Math.random(): a body has to look the
+    // same after a save and load, and that includes which way it is facing.
+    this.rotation = opts.rotation != null
+      ? opts.rotation
+      : ((this.seed % 65536) / 65536) * TAU;
+    this.spin = num(opts.spin, 0);   // rad/s
     // Impact record. Each entry is a crater in body-local polar coordinates,
     // so the surface remembers what hit it and from where.
     this.craters = opts.craters ? opts.craters.slice() : [];
@@ -74,8 +95,20 @@ export class Body {
     this.textureKey = '';
     this.texture = null;
 
-    this.radius = opts.radius || radiusFromMass(this.mass, this.composition);
-    this.explicitRadius = opts.radius != null;
+    if (opts.radius !== undefined && opts.radius !== null) {
+      if (!(opts.radius > 0) || !isFinite(opts.radius)) {
+        throw new RangeError(`Body ${this.name}: radius must be finite and positive, got ${opts.radius}`);
+      }
+      this.radius = opts.radius;
+      this.explicitRadius = true;
+    } else {
+      this.radius = radiusFromMass(this.mass, this.composition);
+      this.explicitRadius = false;
+    }
+    // Bumped by anything that changes how the body looks. Counting craters and
+    // merges was not enough: both lists are capped, so past the cap the key
+    // stopped changing and a new impact never reached the screen.
+    this.revision = num(opts.revision, 0);
     this.refresh();
   }
 
@@ -130,9 +163,10 @@ export class Body {
     }
 
     // A short key: the texture cache invalidates when anything visible changes.
+    // Temperature is bucketed logarithmically: regenerating a sprite for every
+    // fractional kelvin would defeat the cache, and nothing visible changes.
     const tBucket = Math.round(Math.log2(Math.max(1, this.temperature)) * 8);
-    // Melting stirs the crust away, so the key has to notice.
-    this.textureKey = `${this.id}:${this.kind}:${this.seed}:${tBucket}:${this.craters.length}:${this.mixes.length}:${Math.round(this.differentiation * 16)}`;
+    this.textureKey = `${this.id}:${this.kind}:${this.seed}:${tBucket}:${this.revision}:${Math.round(this.differentiation * 16)}`;
   }
 
   get speed() { return Math.hypot(this.vx, this.vy); }
@@ -179,6 +213,7 @@ export class Body {
    */
   addHeat(joules) {
     if (this.kind === 'bh' || this.mass <= 0 || !joules) return;
+    const tBefore = this.temperature;
     const cp = this.specificHeat;
     const melt = compositionProperty(this.composition, 'melt');
     const latent = compositionProperty(this.composition, 'latent');
@@ -196,6 +231,7 @@ export class Body {
         const toMelt = (melt - this.temperature) * capacity;
         if (remaining <= toMelt) {
           this.temperature += remaining / capacity;
+          if (bucketOf(tBefore) !== bucketOf(this.temperature)) this.revision++;
           this.refresh();
           return;
         }
@@ -210,6 +246,7 @@ export class Body {
           // latent heat and the differentiation are the same bookkeeping.
           this.differentiation = clamp(this.differentiation + remaining / (this.mass * latent), 0, 1);
           this.temperature = melt;
+          this.revision++;
           this.refresh();
           return;
         }
@@ -219,6 +256,7 @@ export class Body {
     }
 
     this.temperature = Math.max(T_CMB, this.temperature + remaining / capacity);
+    if (bucketOf(tBefore) !== bucketOf(this.temperature)) this.revision++;
     this.refresh();
   }
 
@@ -259,26 +297,81 @@ export class Body {
     // A negative tau would mean the flux points away from equilibrium, which
     // cannot happen physically; if rounding produces one, go straight there.
     const f = tau > 0 ? 1 - Math.exp(-dt / tau) : 1;
-    this.temperature = Math.max(T_CMB, this.temperature + gap * f);
+    const before = this.temperature;
+    const target = Math.max(T_CMB, before + gap * f);
+
+    // Route warming through addHeat so insolation buys latent heat and drives
+    // differentiation exactly as impact heating does. Without this, a planet
+    // dragged next to a star got hotter but never melted, never re-sorted its
+    // interior, and — because the sprite cache is keyed on what refresh()
+    // computes — never stopped looking cold.
+    if (target > before) {
+      this.addHeat((target - before) * heatCapacity);
+    } else {
+      this.temperature = target;
+      // Cooling past the melting point freezes the surface back up.
+      if (bucketOf(before) !== bucketOf(target)) this.revision++;
+      this.refresh();
+    }
   }
 
-  /** Stamp a crater from an impact at world-space direction (dx, dy). */
-  addCrater(dx, dy, impactorRadius, energy, rng) {
+  /**
+   * Stamp a crater from an impact arriving along the world-space direction
+   * (dx, dy), made by a body of mass `impactorMass` and radius `impactorRadius`
+   * arriving at `vImp`.
+   *
+   * Gravity-regime pi-group scaling (Schmidt & Housen):
+   *
+   *   pi_D = K1 · pi_2^(−mu/(2+mu)),   pi_D = D (rho_t/m_i)^(1/3),
+   *                                     pi_2 = g L / v²
+   *
+   * with mu ≈ 0.55 for competent rock. Written this way the groups really are
+   * dimensionless — an earlier version raised E/(rho·g) to the 1/3.4, and
+   * E/(rho·g) has dimensions of m⁴, so the result was not a length at all and
+   * the dependence on target gravity and density was wrong by construction.
+   * This form tracks both Meteor Crater and Chicxulub across eight orders of
+   * magnitude in energy.
+   */
+  addCrater(dx, dy, impactorMass, impactorRadius, vImp, rng) {
     const angle = Math.atan2(dy, dx) - this.rotation;
-    // Crater scaling: transient diameter goes roughly as the 1/3.4 power of
-    // impact energy in the gravity regime (Schmidt-Housen pi-scaling).
-    const d = 1.8 * Math.pow(energy / (this.density * this.surfaceGravity), 1 / 3.4);
-    const size = clamp(d / this.radius, 0.02, 1.4);
+    const g = this.surfaceGravity;
+    const L = Math.max(impactorRadius * 2, 1e-3);
+    const v = Math.max(vImp, 1);
+    let d;
+    if (g > 0 && impactorMass > 0) {
+      const MU = 0.55;
+      const pi2 = (g * L) / (v * v);
+      const piD = 1.6 * Math.pow(Math.max(pi2, 1e-30), -MU / (2 + MU));
+      const transient = piD * Math.cbrt(impactorMass / Math.max(this.density, 1));
+
+      // Small craters keep their bowl; past a transition diameter the walls
+      // slump and the rim runs outward, so a big crater ends up much wider than
+      // the hole the impact dug. The transition scales inversely with gravity —
+      // about 3.2 km on Earth, and tens of kilometres on the Moon.
+      const Dc = 3.2e3 * (9.81 / Math.max(g, 1e-6));
+      d = transient < Dc
+        ? transient * 1.25
+        : 1.17 * Math.pow(transient, 1.13) / Math.pow(Dc, 0.13);
+    } else {
+      d = L * 10;
+    }
+    const size = d / this.radius;
+    // Below about a percent of the disc a crater is smaller than the texels it
+    // would be drawn into. Recording it would cost a texture regeneration and
+    // change nothing on screen.
+    if (!(size > 0.012)) return;
+    const clamped = clamp(size, 0.012, 1.4);
     this.craters.push({
       a: angle,
       // Where on the visible disc: impacts near the limb are foreshortened.
-      size,
+      size: clamped,
       depth: clamp(0.3 + rng() * 0.5, 0.1, 0.9),
       age: 0,
       // Deep enough to expose the interior?
-      exposesCore: size > 0.45,
+      exposesCore: clamped > 0.45,
     });
     if (this.craters.length > 48) this.craters.shift();
+    this.revision++;
     this.refresh();
   }
 
@@ -291,6 +384,7 @@ export class Body {
       composition: this.composition, temperature: this.temperature,
       differentiation: this.differentiation, rotation: this.rotation, spin: this.spin,
       seed: this.seed, craters: this.craters, mixes: this.mixes, crust: this.crust,
+      revision: this.revision,
       luminosity: this.luminosity, fixed: this.fixed,
     };
   }
@@ -331,6 +425,10 @@ export function compactRadius(kind, mass) {
     // Neutron star radii are nearly mass-independent, ~11-12 km.
     return 1.15e4 * Math.pow(M_SUN / Math.max(mass, 0.1 * M_SUN), 1 / 3) * 0.99;
   }
-  // White dwarf: R ∝ M^(-1/3), the degenerate mass-radius relation.
-  return 7.0e6 * Math.pow(M_SUN * 0.6 / Math.max(mass, 0.05 * M_SUN), 1 / 3);
+  // White dwarf: the non-relativistic degenerate relation, R ∝ M^(−1/3),
+  // anchored at 0.6 M☉ ≈ 7000 km. Left unclamped deliberately: for a body too
+  // light to be degenerate it returns a radius larger than the body, and that
+  // is exactly the signal a caller needs to refuse the collapse rather than
+  // produce a "white dwarf" bigger than the planet it came from.
+  return 7.0e6 * Math.pow((M_SUN * 0.6) / Math.max(mass, 1), 1 / 3);
 }

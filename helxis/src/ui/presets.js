@@ -1,10 +1,8 @@
-import {
-  G, AU, M_SUN, M_EARTH, M_JUP, R_SUN, M_MOON, DAY, YEAR, TAU, clamp,
-} from '../core/const.js';
-import { Body } from '../core/body.js';
-import { stateFromElements, trueAnomalyFromMean, circularOrbitState } from '../core/kepler.js';
+import { G, AU, M_SUN, M_EARTH, TAU, clamp } from '../core/const.js';
+import { stateFromElements, trueAnomalyFromMean } from '../core/kepler.js';
 import { instantiate, CATALOG_BY_ID } from './catalog.js';
 import { makeRng, hashSeed, gaussian } from '../core/rng.js';
+import { Body } from '../core/body.js';
 
 const deg = (d) => (d * Math.PI) / 180;
 
@@ -262,41 +260,52 @@ export const PRESETS = [
       theia.vy = 0;
       world.add(theia);
       recenter(world);
-      return { focus: earth, zoom: 1.1e8, speed: 60, hint: 'Impact in about half an hour of simulated time.' };
+      return { focus: earth, zoom: 1.1e8, speed: 3600, hint: 'Contact in about six hours of simulated time.' };
     },
   },
   {
     id: 'protoplanetary',
     name: 'Protoplanetary disc',
-    blurb: '400 planetesimals around a young star. Leave it running and watch planets form.',
+    blurb: 'A young star and 160 planetesimals on crossing orbits, merging into larger ones. The heaviest scene here.',
     build(world) {
       const star = place(world, 'sun', { massScale: 0.95, name: 'Protostar' });
       const rng = makeRng(0xd15c);
-      const inner = 0.35 * AU, outer = 3.2 * AU;
-      for (let i = 0; i < 400; i++) {
-        // Surface density ~ r^-1.5, the minimum-mass solar nebula profile.
+      // Deliberately narrow and massive. A minimum-mass nebula spread from 0.35
+      // to 3.2 AU is the honest configuration, but its accretion timescale is
+      // tens of thousands of years and its innermost orbits set a timestep that
+      // makes reaching them a day's work. Concentrating the same idea into an
+      // annulus around 1 AU, with eccentricities large enough that orbits
+      // genuinely cross, puts the first mergers a few dozen orbits away.
+      const inner = 0.75 * AU, outer = 1.7 * AU;
+      for (let i = 0; i < 160; i++) {
         const u = rng();
         const a = Math.pow(
           Math.pow(inner, -0.5) + u * (Math.pow(outer, -0.5) - Math.pow(inner, -0.5)), -2
         );
-        const th = rng() * TAU;
-        const e = Math.abs(gaussian(rng)) * 0.03;
+        // Dynamically cold. Planetesimals only accrete while their relative
+        // velocities stay below their mutual escape velocity; stir the disc
+        // much past this and encounters erode rather than build.
+        const e = 0.002 + Math.abs(gaussian(rng)) * 0.006;
         const body = new Body({
           name: 'Planetesimal', kind: 'asteroid',
-          mass: 2e22 * Math.pow(rng(), 2.2) + 4e20,
-          composition: a > 1.6 * AU
-            ? { iron: 0.2, silicate: 0.5, ice: 0.3 }    // beyond the snow line
-            : { iron: 0.3, silicate: 0.7 },
+          // Heavy enough that escape velocity comfortably exceeds the
+          // velocity dispersion, which is what puts them in the gravitational
+          // focusing regime where encounters end in mergers.
+          mass: 2.2e23 * (0.4 + Math.pow(rng(), 1.7) * 2.2),
+          composition: { iron: 0.3, silicate: 0.7 },
           temperature: clamp(280 * Math.sqrt(AU / a), 40, 1200),
           seed: hashSeed('ppd', i),
           spin: gaussian(rng) * 2e-4,
         });
-        const s = stateFromElements(G * star.mass, a, e, rng() * TAU, th, body.mass);
+        const s = stateFromElements(G * star.mass, a, e, rng() * TAU, rng() * TAU, body.mass);
         body.x = s.x; body.y = s.y; body.vx = s.vx; body.vy = s.vy;
         world.add(body);
       }
       recenter(world);
-      return { focus: star, zoom: 3.6 * AU, speed: 3.15576e10, hint: 'Accretion takes a few thousand years — try 10 kyr/s.' };
+      return {
+        focus: star, zoom: 2.0 * AU, speed: 3.15576e9,
+        hint: 'Watch the body count fall as they merge. This one runs its clock slow — 160 mutually interacting bodies is the honest cost.',
+      };
     },
   },
   {

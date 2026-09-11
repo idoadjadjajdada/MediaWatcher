@@ -1,5 +1,5 @@
-import { makeRng, valueNoise2, fbm } from '../core/rng.js';
-import { clamp, TAU } from '../core/const.js';
+import { makeRng, fbm } from '../core/rng.js';
+import { clamp } from '../core/const.js';
 import { blackbodyColor } from './texture.js';
 
 /**

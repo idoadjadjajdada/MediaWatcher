@@ -1,4 +1,4 @@
-import { fbm, ridged, valueNoise2, makeRng, hashSeed } from '../core/rng.js';
+import { fbm, ridged, valueNoise2, makeRng } from '../core/rng.js';
 import {
   MATERIALS, surfaceColor, incandescence, compositionProperty, dominantMaterial,
 } from '../core/materials.js';
@@ -43,7 +43,11 @@ function quantize(v, x, y) {
 // Cache
 
 const cache = new Map();
-const CACHE_LIMIT = 900;
+// Bound the cache by the memory it actually holds, not by how many entries it
+// has: 900 sprites is a few megabytes at 16×16 and a quarter of a gigabyte at
+// 256×256, and a count-based limit cannot tell those apart.
+const CACHE_BYTES = 64 * 1024 * 1024;
+let cacheBytes = 0;
 
 function cacheGet(key) {
   const hit = cache.get(key);
@@ -57,15 +61,19 @@ function cacheGet(key) {
 
 function cacheSet(key, value) {
   cache.set(key, value);
-  if (cache.size > CACHE_LIMIT) {
-    const oldest = cache.keys().next().value;
-    cache.delete(oldest);
+  cacheBytes += value.width * value.height * 4;
+  while (cacheBytes > CACHE_BYTES && cache.size > 1) {
+    const oldestKey = cache.keys().next().value;
+    const oldest = cache.get(oldestKey);
+    cacheBytes -= oldest.width * oldest.height * 4;
+    cache.delete(oldestKey);
   }
   return value;
 }
 
-export function clearTextureCache() { cache.clear(); }
+export function clearTextureCache() { cache.clear(); cacheBytes = 0; }
 export function textureCacheSize() { return cache.size; }
+export function textureCacheBytes() { return cacheBytes; }
 
 // ---------------------------------------------------------------------------
 // Mixing
@@ -648,9 +656,12 @@ export function dotSprite(size, r, g, b) {
 }
 
 /**
- * The thumbnail used by the body picker and the inspector. Bodies in the
- * catalogue are drawn with the same generator as the real thing, so what you
- * pick is what you get.
+ * The thumbnail used by the body picker and the inspector.
+ *
+ * Drawn by the same generator as the real thing, from a body built from the
+ * same catalogue entry — so it shows the *type* faithfully. The one you place
+ * gets its own seed, so its continents will not match the picture; two Earths
+ * should not be identical twins.
  */
 export function thumbnail(body, size = 40) {
   const key = `thumb:${body.textureKey}@${size}`;

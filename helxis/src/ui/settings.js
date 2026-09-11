@@ -65,8 +65,9 @@ export const SETTING_GROUPS = [
       { id: 'tidalDisruption', label: 'Tidal disruption', type: 'toggle', value: true, world: true, note: 'Bodies shred inside the Roche limit.' },
       { id: 'thermal', label: 'Thermal evolution', type: 'toggle', value: true, world: true, note: 'Irradiation, radiative cooling, melting.' },
       { id: 'relativity', label: 'Relativistic precession', type: 'toggle', value: false, world: true, note: 'First post-Newtonian term. Mercury gains 43″/century.' },
-      { id: 'theta', label: 'Barnes-Hut θ', type: 'range', min: 0, max: 1.2, step: 0.05, value: 0.5, world: true, format: (v) => (v === 0 ? 'exact' : v.toFixed(2)), note: '0 is an exact N² sum.' },
-      { id: 'eta', label: 'Integrator accuracy', type: 'range', min: 0.004, max: 0.08, step: 0.002, value: 0.018, world: true, format: (v) => v.toFixed(3) },
+      { id: 'theta', label: 'Barnes-Hut θ', type: 'range', min: 0, max: 1.0, step: 0.05, value: 0.5, world: true, format: (v) => (v === 0 ? 'exact' : v.toFixed(2)), note: '0 is an exact N² sum; higher is faster and coarser.' },
+      { id: 'integrator', label: 'Fourth-order integrator', type: 'toggle', value: true, world: true, mapTo: (v) => (v ? 'yoshida4' : 'verlet'), note: 'Yoshida composition: three force evaluations per step, error falling as dt⁴. Off is plain Verlet — cheaper, and far coarser.' },
+      { id: 'eta', label: 'Integrator accuracy', type: 'range', min: 0.01, max: 0.16, step: 0.005, value: 0.06, world: true, format: (v) => v.toFixed(3), note: 'Smaller is finer and slower. The fourth-order scheme earns its keep here: it is more accurate at this setting than second order is at a third of it.' },
       { id: 'softeningFraction', label: 'Softening', type: 'range', min: 0, max: 1, step: 0.05, value: 0, world: true, format: (v) => (v === 0 ? 'none' : `${v.toFixed(2)} R`) },
       { id: 'frameBudgetMs', label: 'Physics time budget', type: 'range', min: 3, max: 32, step: 1, value: 11, world: true, format: (v) => `${v} ms/frame`, note: 'Raise for faster clocks, lower for a steadier frame rate.' },
       { id: 'maxSubsteps', label: 'Substep ceiling', type: 'range', min: 20, max: 2000, step: 20, value: 600, world: true, format: (v) => `${v}` },
@@ -98,7 +99,9 @@ export function defaultSettings() {
 /** Push the world-facing settings into the simulation. */
 export function applyToWorld(settings, world) {
   for (const [id, def] of SETTING_DEFS) {
-    if (def.world && settings[id] !== undefined) world.settings[id] = settings[id];
+    if (!def.world || settings[id] === undefined) continue;
+    // A few settings are a checkbox on screen and something else underneath.
+    world.settings[id] = def.mapTo ? def.mapTo(settings[id]) : settings[id];
   }
   if (settings.trails === false) world.settings.trailLength = 0;
   else world.settings.trailLength = settings.trailLength;

@@ -18,29 +18,82 @@ Everything is SI internally — metres, kilograms, seconds — and converted onl
 the way to the screen.
 
 **Gravity** is a Barnes-Hut quadtree with an adjustable opening angle, stored in
-flat typed arrays and rebuilt every substep. At θ = 0.5 it agrees with a direct
-N² sum to about 5 parts in 10⁸. Setting θ to 0 makes it exact.
+flat typed arrays. Accuracy depends on what the scene looks like, so both
+numbers are worth quoting: against a direct N² sum at θ = 0.5, a
+star-dominated system agrees to 5 × 10⁻¹⁰ rms, and a cloud of eight hundred
+equal masses — where the forces largely cancel and relative error is
+unforgiving — to 1.3 × 10⁻³ rms. Setting θ to 0 makes it exact.
 
-**Integration** is velocity Verlet with an adaptive step from the usual
-`dt = η·|v|/|a|` criterion, which puts roughly 350 steps in an orbit at the
-default η. Over ten simulated years of Earth's orbit, total energy drifts by
-7 × 10⁻¹⁴ and the semi-major axis does not move in the sixth decimal place.
+Two things the tree gets right that a naive one does not. A node containing the
+body being evaluated is never summarised by its centre of mass, so no body ever
+attracts itself (the usual opening test allows exactly that once θ passes 1/√2).
+And when two bodies overlap, the force follows Newton's shell theorem — falling
+linearly to zero at the centre — rather than a 1/d² singularity. Treating a
+touching pair as point masses gives 6.7 × 10¹¹ m/s² at one metre of separation,
+which used to turn them into seven hundred fragments at a quarter of light speed
+inside a single frame.
+
+**Integration** is Yoshida's fourth-order symplectic composition over a
+kick-drift-kick base, on individual timesteps.
+
+*Fourth order*, because second is not enough to see small things. Plain velocity
+Verlet at four hundred steps per orbit gives Mercury a **spurious** perihelion
+advance of 38 000″ per century, and does not get under 2″ until about
+twenty-five thousand steps per orbit — the 43″ relativistic signal is buried in
+truncation error at any step you would actually run at. The fourth-order scheme
+costs three force evaluations per step and reduces that to 3.3″, and because the
+error falls as dt⁴ it is *cheaper* than second order for equal accuracy: at
+η = 0.09 it uses fewer force evaluations than Verlet at η = 0.018 and is three
+times more accurate.
+
+*Individual timesteps*, because a global one is hostage to its worst member. In
+the protoplanetary disc a single fragment left orbiting a merged planetesimal
+wanted a step 1 154 times finer than the median body in the scene, and every
+other body paid for it. Each body now gets a power-of-two fraction of the system
+step; positions drift at the finest cadence, but a body is only kicked — and its
+force only evaluated — at its own boundary. Kick-drift-kick is symmetric and
+symplectic, which is what lets the fourth-order composition sit on top of it.
+
+The step itself comes from the local dynamical time, `η·sqrt(r/|a|)`, where r is
+the distance to whatever dominates the pull. The obvious alternative,
+`η·|v|/|a|`, is not Galilean-invariant: |v| depends on which frame you picked,
+and a body whose speed passes through zero in that frame drives the step to
+nothing. A Sun-Earth system started with the Sun at rest does exactly that once
+per orbit, and that criterion answered with steps of a few microseconds.
+
+The result is quantised to a power of two and held there with hysteresis, since
+symplectic integrators are only symplectic at a fixed step and a wandering one
+turns a bounded energy oscillation into a secular drift.
+
+Over ten simulated years of Earth's orbit, total energy drifts by 5 × 10⁻¹⁵ and
+the semi-major axis does not move in the sixth decimal place.
 
 **Collisions** are swept — the contact test runs over the interval that was just
 integrated and rolls the pair back to the instant of contact, so a comet cannot
 pass through a planet at a million times realtime, and the impact parameter is
-read off the real geometry. Outcomes follow the Leinhardt & Stewart (2012)
+read off the real geometry. Every pair in contact is resolved, not just the
+first, so a cluster settling under its own gravity comes apart instead of
+leaving bodies interpenetrating. Outcomes follow the Leinhardt & Stewart (2012)
 regimes: the specific impact energy is compared against a disruption threshold
 Q*_RD corrected for mass ratio and for how much of the projectile actually
 intersects, and the result is a merge, a graze-and-merge, a hit-and-run,
 cratering, erosion, disruption, or a supercatastrophic shattering. Fragment
 masses follow a power law near the Dohnanyi slope. Mass and momentum are
-conserved to machine precision in every branch.
+conserved to machine precision in every branch, and the products' kinetic energy
+is audited against what the impact brought in — so a collision cannot fling its
+own debris out faster than it arrived.
+
+Degenerate matter gets its own path. A neutron star is eighteen orders of
+magnitude stronger than rock and fourteen denser, and running it through
+scalings calibrated on basalt had one swell from 10 km to 5 000 km after eating
+a planet, and two of them bounce off each other at 0.17c. They now accrete, and
+what is left is re-derived from the real mass limits — so a neutron-star merger
+that crosses the TOV limit collapses to a black hole rather than remaining a
+very heavy neutron star.
 
 **Relativity** is optional: the first post-Newtonian Schwarzschild term, off by
-default. Turn it on and Mercury's perihelion advances 42.8″ per century against
-the 42.98″ general relativity predicts, while the Newtonian run gives −0.25″ of
-numerical noise.
+default. Turn it on and Mercury's perihelion advances 43.07″ per century against
+the 42.98″ general relativity predicts, with a numerical floor of 0.06″.
 
 **Thermal evolution** runs on absorbed starlight against Stefan-Boltzmann
 cooling, with latent heat spent on melting before the temperature moves again.
@@ -82,9 +135,12 @@ whole surface is incandescent — and incandescence is a blackbody ramp, so how
 hot it is decides what colour it is.
 
 Craters are stamped at the bearing the impactor actually arrived from — in a
-top-down 2D world that is a real constraint, not a random placement — and scale
-with impact energy through the usual π-group exponent. A crater deep enough
-exposes core material, so a body stripped down to its iron looks like it.
+top-down 2D world that is a real constraint, not a random placement — and are
+sized by gravity-regime π-group scaling, with the simple-to-complex transition
+that makes a large crater collapse outward into a much wider rim. That tracks
+both Meteor Crater and Chicxulub to within about half a factor across eight
+orders of magnitude in impact energy. A crater deep enough exposes core
+material, so a body stripped down to its iron looks like it.
 
 Merges record what mixed with what, in what proportion, along which axis, and
 how violently. A gentle merge leaves a visible seam. A fast one warps the
@@ -160,6 +216,14 @@ scene that cannot keep up runs the clock slower instead of dropping frames, and
 the status line says **TIME LIMITED** when that is happening rather than
 pretending the requested rate was achieved. Raise **Physics time budget** to
 trade frame rate for simulated rate.
+
+What costs: body count, and the spread of timescales in the scene. Individual
+timesteps mean a fast body no longer drags everyone down to its cadence, but a
+scene holding both a tight pair and a wide orbit still has to resolve the tight
+one, and the tree is rebuilt at that cadence. The solar system, the Jovian
+system and Saturn's rings all keep up at their opening speeds; the
+protoplanetary disc — 160 bodies all interacting, all colliding — does not, and
+says so.
 
 Turning on **Show diagnostics** puts substeps taken, fractional energy drift and
 the live effect count in the status bar.

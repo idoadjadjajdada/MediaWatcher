@@ -1,7 +1,4 @@
-import {
-  AU, M_SUN, M_EARTH, TAU, clamp, formatDistance, formatMass, formatSpeed,
-  formatTime, formatRate,
-} from '../core/const.js';
+import { TAU, formatDistance, formatMass, formatSpeed, formatTime } from '../core/const.js';
 import { MATERIALS } from '../core/materials.js';
 import { CATEGORIES, CATALOG, searchCatalog, thumbnailBody, CATALOG_BY_ID } from './catalog.js';
 import { PRESETS } from './presets.js';
@@ -427,7 +424,10 @@ export class UI {
     document.querySelector('.status-sep.diag').hidden = !showDiag;
     if (showDiag) {
       const drift = isFinite(app.world.energyDrift) ? app.world.energyDrift.toExponential(1) : 'n/a';
-      diag.textContent = `${app.world.substepsTaken || 0} substeps · dE/E ${drift} · ${app.effects.count} fx`;
+      // Say how much integration the drift figure covers: zero drift over two
+      // steps and zero over a million are not the same claim.
+      const over = app.world.energySteps ? ` over ${app.world.energySteps} steps` : '';
+      diag.textContent = `${app.world.substepsTaken || 0} substeps · dE/E ${drift}${over} · ${app.effects.count} fx`;
     }
 
     $('clock').textContent = `T + ${formatClock(app.world.time)}`;

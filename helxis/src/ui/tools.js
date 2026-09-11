@@ -1,6 +1,6 @@
 import { G, C, M_SUN, TAU, clamp, schwarzschild, escapeVelocity } from '../core/const.js';
 import { Body, classifyCompact, compactRadius } from '../core/body.js';
-import { compositionProperty, mixCompositions } from '../core/materials.js';
+import { compositionProperty } from '../core/materials.js';
 import { makeRng, hashSeed, gaussian, powerLawSample } from '../core/rng.js';
 import { radiusFromMass } from '../core/materials.js';
 import { displayRadiusPx } from '../render/scale.js';
@@ -190,6 +190,7 @@ export class ToolController {
     if (this.tool === 'grab') this.releaseGrab();
     this.collapsing = null;
     this.collapseProgress = 0;
+    this._warnedCollapse = false;
   }
 
   releaseGrab() {
@@ -298,7 +299,8 @@ export class ToolController {
 
     // A shallow, hot scar where the beam lands.
     if (rng() < dt * 3) {
-      b.addCrater(hit.x - b.x, hit.y - b.y, b.radius * 0.05, energy * 40, rng);
+      // The beam excavates as if a small, very fast projectile had struck.
+      b.addCrater(hit.x - b.x, hit.y - b.y, Math.max(1, energy / 1e12), b.radius * 0.02, 1e4, rng);
     }
     this.app.markDirty(b);
   }
@@ -374,7 +376,7 @@ export class ToolController {
         b.vx += dx * dv;
         b.vy += dy * dv;
         b.addHeat(share * 0.55);
-        b.addCrater(-dx, -dy, b.radius * 0.2, share, rng);
+        b.addCrater(-dx, -dy, Math.max(1, share / 5e6), b.radius * 0.08, Math.sqrt(2 * share / Math.max(b.mass, 1)) + 1e3, rng);
         this.app.markDirty(b);
       }
     }
@@ -496,6 +498,22 @@ export class ToolController {
     this.collapseProgress += dt * (0.25 + this.intensity * 0.55);
     const kind = classifyCompact(b.mass);
     const floor = kind === 'bh' ? schwarzschild(b.mass) : compactRadius(kind, b.mass);
+
+    // A degenerate remnant has to be *smaller* than what it came from. Below
+    // roughly a tenth of a solar mass the electron-degenerate radius is larger
+    // than the body itself, so there is nothing to collapse — the tool used to
+    // announce the Earth as a white dwarf two and a half times its own size.
+    if (floor >= b.radius) {
+      if (!this._warnedCollapse) {
+        this._warnedCollapse = true;
+        this.app.toast(
+          `${b.name} is too light to collapse — degeneracy already supports it at this size`
+        );
+      }
+      this.collapsing = null;
+      return;
+    }
+
     // Within a tenth of the degenerate radius there is nothing left to squeeze;
     // waiting for exact convergence just makes the tool feel broken.
     if (b.radius <= floor * 1.1) {
