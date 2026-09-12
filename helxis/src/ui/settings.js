@@ -105,6 +105,9 @@ export function applyToWorld(settings, world) {
   }
   if (settings.trails === false) world.settings.trailLength = 0;
   else world.settings.trailLength = settings.trailLength;
+  // Energy bookkeeping is an O(n log n) pass on top of the step, so the world
+  // only does it when something is actually going to read the number.
+  world.settings.wantDiagnostics = !!settings.showDiagnostics;
 }
 
 export function loadSettings(storageKey) {

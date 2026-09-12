@@ -27,6 +27,17 @@ export class Effects {
     this.minVisible = 1.1;
   }
 
+  /**
+   * Make room for `n` more particles by dropping the oldest.
+   *
+   * The spawners used to `break` when the list was full, so once saturated the
+   * oldest particles held the slots and a fresh impact produced nothing at all.
+   */
+  room(n) {
+    const over = this.particles.length + n - this.maxParticles;
+    if (over > 0) this.particles.splice(0, over);
+  }
+
   /** Drop the oldest entries when a list is over its ceiling. */
   cap() {
     if (this.rings.length > this.maxRings) this.rings.splice(0, this.rings.length - this.maxRings);
@@ -61,8 +72,8 @@ export class Effects {
     const dirx = opts.nx || 0, diry = opts.ny || 0;
     const biased = (dirx !== 0 || diry !== 0);
 
+    this.room(n);
     for (let i = 0; i < n; i++) {
-      if (this.particles.length >= this.maxParticles) break;
       let ang = rng() * TAU;
       if (biased) {
         // Ejecta cones open away from the impact normal.
@@ -103,8 +114,8 @@ export class Effects {
       x, y, r: scale, vr: scale * 1.4, life: 2.2, age: 0,
       r0: col[0], g0: col[1], b0: col[2], width: 2,
     });
+    this.room(26);
     for (let i = 0; i < 26; i++) {
-      if (this.particles.length >= this.maxParticles) break;
       const ang = rng() * TAU;
       const speed = scale * (0.5 + rng());
       this.particles.push({
@@ -119,8 +130,8 @@ export class Effects {
   shatter(x, y, scale, energy, vImp) {
     const col = incandescence(clamp(2000 + Math.log10(Math.max(energy, 1)) * 300, 1200, 12000)) || [255, 220, 170];
     const v0 = Math.max(vImp * 0.3, scale * 0.5);
+    this.room(120);
     for (let i = 0; i < 120; i++) {
-      if (this.particles.length >= this.maxParticles) break;
       const ang = rng() * TAU;
       const speed = v0 * (0.2 + Math.abs(gaussian(rng)) * 1.1);
       this.particles.push({
@@ -143,8 +154,8 @@ export class Effects {
   /** Matter crossing a horizon: a brief, very blue flare. */
   accretion(x, y, scale, energy) {
     this.flashes.push({ x, y, radius: scale, life: 1.1, age: 0, r: 190, g: 220, b: 255 });
+    this.room(40);
     for (let i = 0; i < 40; i++) {
-      if (this.particles.length >= this.maxParticles) break;
       const ang = rng() * TAU;
       const speed = scale * (0.6 + rng() * 1.4);
       this.particles.push({
@@ -163,8 +174,8 @@ export class Effects {
   /** Vaporised surface streaming off a body under the laser. */
   ablate(x, y, nx, ny, speed, temperature) {
     const col = incandescence(temperature) || [255, 200, 120];
+    this.room(3);
     for (let i = 0; i < 3; i++) {
-      if (this.particles.length >= this.maxParticles) break;
       const ang = Math.atan2(ny, nx) + gaussian(rng) * 0.5;
       const s = speed * (0.5 + rng());
       this.particles.push({

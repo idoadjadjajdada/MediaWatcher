@@ -21,6 +21,8 @@ import {
 import { loadPreset, PRESETS } from '../src/ui/presets.js';
 import { CATALOG, instantiate } from '../src/ui/catalog.js';
 import { radiusFromMass, bulkDensity, compressionFactor } from '../src/core/materials.js';
+import { ToolController } from '../src/ui/tools.js';
+import { applyToWorld, defaultSettings } from '../src/ui/settings.js';
 
 let passed = 0, failed = 0;
 const results = [];
@@ -836,6 +838,160 @@ section('Save and load are exact');
   assert('body count survives a round-trip', w.bodies.length === n0);
   assert('total energy survives a round-trip', Math.abs((w.totalEnergy() - e0) / e0) < 1e-12);
   assert('and so does the snapshot itself', w.snapshot().length > 0 && JSON.parse(snap).bodies.length === n0);
+}
+
+section('The numbers the README quotes');
+{
+  // The README prints a table of Barnes-Hut force errors. It is quoted from
+  // this measurement, so the two cannot drift apart, and the table's whole
+  // point -- that the per-body and scene-normalised figures differ by four
+  // orders of magnitude for the same tree -- is asserted rather than asserted
+  // in prose. An earlier README compared one scene's global figure against
+  // another scene's per-body figure and made the tree look ten thousand times
+  // better than it is.
+  const treeError = (w, theta) => {
+    w.settings.theta = 0;
+    w.computeAccelerations();
+    const exact = w.bodies.map((b) => [b.ax, b.ay]);
+    w.settings.theta = theta;
+    w.computeAccelerations();
+    const mag = exact.map(([x, y]) => Math.hypot(x, y));
+    const aRms = Math.sqrt(mag.reduce((t, v) => t + v * v, 0) / mag.length);
+    let perBody2 = 0, worst = 0, global2 = 0;
+    w.bodies.forEach((b, i) => {
+      const d = Math.hypot(b.ax - exact[i][0], b.ay - exact[i][1]);
+      const rel = d / (mag[i] || Number.MIN_VALUE);
+      perBody2 += rel * rel;
+      if (rel > worst) worst = rel;
+      global2 += (d / aRms) ** 2;
+    });
+    const n = w.bodies.length;
+    return {
+      perBody: Math.sqrt(perBody2 / n),
+      worst,
+      global: Math.sqrt(global2 / n),
+    };
+  };
+
+  const sol = new World();
+  loadPreset(sol, 'solar-system');
+  const s5 = treeError(sol, 0.5);
+  check('Solar System per-body rms at theta 0.5', s5.perBody, 5.5e-6, 0.3);
+  check('Solar System scene-normalised rms at theta 0.5', s5.global, 9.4e-9, 0.3);
+
+  const cloud = new World();
+  let seed = 12345;
+  const rng = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < 800; i++) {
+    const r = 6e10 * Math.cbrt(rng()), th = rng() * Math.PI * 2;
+    cloud.add(new Body({
+      name: `c${i}`, mass: 1e24, radius: 1e6,
+      x: Math.cos(th) * r, y: Math.sin(th) * r,
+    }));
+  }
+  const c5 = treeError(cloud, 0.5);
+  check('cloud per-body rms at theta 0.5', c5.perBody, 4.7e-2, 0.3);
+  check('cloud scene-normalised rms at theta 0.5', c5.global, 1.8e-4, 0.3);
+  assert('a cancelling cloud is far worse per body than per scene',
+    c5.perBody / c5.global > 100,
+    `ratio ${(c5.perBody / c5.global).toFixed(0)}x`);
+  assert('and its worst single body is well over 100% off',
+    c5.worst > 1, `worst ${(c5.worst * 100).toFixed(0)}%`);
+
+  // The disc preset's profile, also quoted in the README.
+  const disc = new World();
+  loadPreset(disc, 'protoplanetary');
+  const a = disc.bodies.filter((b) => b.mass < 1e28)
+    .map((b) => Math.hypot(b.x, b.y) / AU).sort((x, y) => x - y);
+  assert('the disc preset has 160 planetesimals', a.length === 160, `${a.length}`);
+  check('inner edge', a[0], 0.75, 0.08, ' AU');
+  check('outer edge', a[a.length - 1], 1.7, 0.08, ' AU');
+  {
+    const lo = Math.log(a[0]), hi = Math.log(a[a.length - 1]), B = 6;
+    const count = new Array(B).fill(0);
+    for (const v of a) count[Math.min(B - 1, Math.floor((Math.log(v) - lo) / (hi - lo) * B))]++;
+    const pts = [];
+    for (let i = 0; i < B; i++) {
+      const e0 = Math.exp(lo + (hi - lo) * i / B), e1 = Math.exp(lo + (hi - lo) * (i + 1) / B);
+      pts.push([Math.log((e0 + e1) / 2), Math.log(count[i] / (e1 - e0))]);
+    }
+    const mx = pts.reduce((t, q) => t + q[0], 0) / B;
+    const my = pts.reduce((t, q) => t + q[1], 0) / B;
+    const slope = pts.reduce((t, q) => t + (q[0] - mx) * (q[1] - my), 0)
+      / pts.reduce((t, q) => t + (q[0] - mx) ** 2, 0);
+    check('dN/da power law', slope, -1.38, 0.25);
+  }
+}
+
+section('Fields and settings reach the simulation');
+{
+  // Attract and repel are a hand reaching into the scene, not extra gravity:
+  // the impulse has to be the same for two bodies at the same distance
+  // whatever their mass, and it has to scale with wall-clock time rather than
+  // with however much simulated time the current speed setting buys.
+  const w = new World({ frameBudgetMs: 1e9 });
+  const sun = new Body({ name: 'S', mass: M_SUN, radius: 7e8, fixed: true });
+  w.add(sun);
+  const light = new Body({ name: 'L', mass: 1e18, radius: 1e5, x: AU, vy: 29780 });
+  const heavy = new Body({ name: 'H', mass: 1e24, radius: 1e6, x: AU + 1e9, vy: 29780 });
+  w.add(light); w.add(heavy);
+  w.computeAccelerations();
+
+  // The attract radius is 26 + 70*intensity screen pixels, so a camera scale of
+  // one pixel per 4e7 m puts a 4e9 m field around the cursor at intensity 1.
+  const fakeApp = (world) => ({
+    world, camera: { scale: 1 / 4.16e7 }, effects: { pulse() {} },
+    toast() {}, select() {}, markDirty() {}, emit() {},
+  });
+  const tools = new ToolController(fakeApp(w));
+  tools.tool = 'attract';
+  tools.intensity = 1;
+  tools.world = { x: AU + 5e8, y: 0 };
+  const before = [light, heavy].map((b) => [b.vx, b.vy]);
+  tools.applyField(0.1, +1);
+  const dv = [light, heavy].map((b, i) =>
+    Math.hypot(b.vx - before[i][0], b.vy - before[i][1]));
+  assert('attract gives the same kick to a light and a heavy body',
+    Math.abs(dv[0] - dv[1]) / Math.max(dv[0], dv[1]) < 0.35,
+    `light ${dv[0].toExponential(2)} m/s, heavy ${dv[1].toExponential(2)} m/s`);
+  assert('and the kick is not zero', dv[0] > 0);
+
+  // Twice the wall-clock, twice the impulse -- and the simulation's own time
+  // scale must not enter into it.
+  const kick = (dtReal, timeScale) => {
+    const w2 = new World({ frameBudgetMs: 1e9 });
+    w2.add(new Body({ name: 'S', mass: M_SUN, radius: 7e8, fixed: true }));
+    const t = new Body({ name: 'T', mass: 1e20, radius: 1e5, x: AU, vy: 29780 });
+    w2.add(t);
+    w2.timeScale = timeScale;
+    w2.computeAccelerations();
+    const t2 = new ToolController(fakeApp(w2));
+    t2.tool = 'attract';
+    t2.intensity = 1;
+    t2.world = { x: AU + 2e8, y: 0 };
+    t2.applyField(dtReal, +1);
+    return Math.hypot(t.vx, t.vy - 29780);
+  };
+  const k1 = kick(0.1, 1), k2 = kick(0.2, 1), k3 = kick(0.1, 1e7);
+  check('the field impulse is linear in wall-clock time', k2 / k1, 2, 0.02);
+  assert('and independent of the simulation speed',
+    Math.abs(k3 - k1) / k1 < 1e-9,
+    `${k1.toExponential(3)} vs ${k3.toExponential(3)} m/s`);
+
+  // Energy bookkeeping costs an O(N^2) pass, so the world skips it unless the
+  // diagnostics readout is on -- and the settings layer has to actually say so.
+  const wd = new World();
+  loadPreset(wd, 'solar-system');
+  applyToWorld({ ...defaultSettings(), showDiagnostics: false }, wd);
+  assert('diagnostics off reaches the world', wd.settings.wantDiagnostics === false);
+  wd._frame = 0;
+  wd.measureEnergy();
+  assert('and the world then skips the energy pass',
+    wd.energySteps === 0 && wd._energyRef === null);
+  applyToWorld({ ...defaultSettings(), showDiagnostics: true }, wd);
+  assert('diagnostics on reaches the world', wd.settings.wantDiagnostics === true);
+  wd.measureEnergy();
+  assert('and the world then takes a reference', wd._energyRef !== null);
 }
 
 // ──────────────────────────────────────────────────────────────────────────

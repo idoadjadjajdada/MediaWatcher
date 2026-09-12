@@ -13,9 +13,40 @@ function num(v, fallback) {
   return (v != null && isFinite(v)) ? v : fallback;
 }
 
-/** The logarithmic temperature bucket the sprite cache is keyed on. */
+/**
+ * The logarithmic temperature bucket the sprite cache is keyed on.
+ *
+ * Coarser once the surface is incandescent: above a couple of thousand kelvin
+ * the blackbody ramp barely moves, and a body cooling from eight thousand was
+ * crossing a bucket every nine percent and paying for a full re-render each
+ * time.
+ */
 function bucketOf(t) {
-  return Math.round(Math.log2(Math.max(1, t)) * 8);
+  const scale = t > 2000 ? 2 : 8;
+  return Math.round(Math.log2(Math.max(1, t)) * scale);
+}
+
+/**
+ * The temperature at which a crust stops behaving like a surface.
+ *
+ * Set by the condensable materials in it — the things that are solid or liquid
+ * at the temperatures involved — ignoring hydrogen and helium, which are the
+ * medium the rest is suspended in rather than the structure.
+ */
+function crustMeltingPoint(crust) {
+  let best = 0, mass = 0;
+  for (const k in crust) {
+    if (k === 'hydrogen' || k === 'helium') continue;
+    const m = MATERIALS[k];
+    if (!m || !(crust[k] > 0)) continue;
+    // Mass-weighted over the condensates, so a mostly-ammonia deck melts near
+    // ammonia and a mostly-silicate one near silicate.
+    best += m.melt * crust[k];
+    mass += crust[k];
+  }
+  if (mass > 0) return best / mass;
+  // Nothing but gas: it has no solid structure to lose.
+  return compositionProperty(crust, 'melt') || 1400;
 }
 
 let NEXT_ID = 1;
@@ -136,14 +167,14 @@ export class Body {
     const { core, surface } = differentiate(this.composition, this.differentiation);
     this.coreComposition = core;
     if (this.crust) {
-      // The melting point of what the crust is mostly *made* of, not a
-      // mass-weighted mean over everything in it. Averaged, a methane crust
-      // carrying a fraction of hydrogen melts at 60 K rather than 91 — so
-      // Uranus counted as fully molten at 76 K, its crust was discarded for the
-      // bulk mixture, and the methane that makes it blue went with it.
-      const melt = MATERIALS[dominantMaterial(this.crust)]
-        ? MATERIALS[dominantMaterial(this.crust)].melt
-        : (compositionProperty(this.crust, 'melt') || 1400);
+      // What holds the crust together is whatever *condenses* in it, not the
+      // gas carrying it. A mass-weighted mean melts a methane crust at 60 K
+      // because of a trace of hydrogen; taking the single dominant material
+      // instead fixed the methane giants and broke the hydrogen ones, because
+      // Jupiter's cloud deck is mostly hydrogen with a melting point of 14 K —
+      // so its ammonia and sulfur belts were discarded at 165 K and every
+      // hydrogen giant rendered as the same cream bullseye. Ask the condensates.
+      const melt = crustMeltingPoint(this.crust);
       const molten = melt > 0
         ? Math.max(0, Math.min(1, (this.temperature - melt * 0.9) / (melt * 0.25)))
         : 1;

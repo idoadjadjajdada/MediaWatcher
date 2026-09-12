@@ -164,7 +164,7 @@ export function resolveCollision(a, b, opts = {}) {
   // silicate — and had two of them bounce off each other at 0.17c, because the
   // bounce test only asked whether they were small and strong.
   if (isCompact(target) || isCompact(proj)) {
-    return accreteIntoCompact(target, proj, { comVx, comVy, Mtot, kImpact, vImp });
+    return accreteIntoCompact(target, proj, { comX, comY, comVx, comVy, Mtot, kImpact, vImp });
   }
 
   // --- Interacting mass -----------------------------------------------------
@@ -477,7 +477,12 @@ function doMerge(target, proj, ctx) {
     fracB: Mp / Mtot,
     angle: Math.atan2(ny, nx) - merged.rotation,
     // A fast impact stirs the two together; a slow one leaves a visible seam.
-    sharpness: clamp(1 - vImp / Math.max(1, 6 * Math.sqrt((2 * G * Mtot) / R)), 0.05, 1),
+    // Measured against the escape velocity *at contact*, which is the speed
+    // that decides the regime. Normalising against the merged body's surface
+    // escape velocity instead — six times it, at that — put every possible
+    // merge above 0.83, so the marbling this exists to produce could never
+    // happen from a merge at all.
+    sharpness: clamp(1.05 - vImp / Math.max(vEsc, 1), 0.05, 1),
     compB: proj.surfaceComposition,
   });
   if (merged.mixes.length > 6) merged.mixes.shift();
@@ -709,7 +714,10 @@ function doDisruption(target, proj, ctx) {
   largest.mixes.push({
     seedA: target.seed, seedB: proj.seed,
     fracB: proj.mass / Mtot,
-    angle: Math.atan2(ny, nx),
+    // In the body's own frame, as `addCrater` and the merge path both store it.
+    // Left in the world frame, the seam was drawn at a bearing unrelated to
+    // where the impact came from, while the craters beside it were correct.
+    angle: Math.atan2(ny, nx) - largest.rotation,
     sharpness: 0.1,
     compB: proj.surfaceComposition,
   });
@@ -869,7 +877,7 @@ function doDisruption(target, proj, ctx) {
  * reported.
  */
 function accreteIntoCompact(target, proj, ctx) {
-  const { vImp } = ctx;
+  const { vImp, comX, comY } = ctx;
   // Whichever is denser is the one doing the eating.
   const host = isCompact(target) && (!isCompact(proj) || target.mass >= proj.mass) ? target : proj;
   const other = host === target ? proj : target;
@@ -917,6 +925,13 @@ function accreteIntoCompact(target, proj, ctx) {
   host.mixes.length = 0;
   host.revision++;
   host.refresh();
+
+  // The remnant has to stand where the pair's centre of mass was. Leaving it
+  // where the host happened to be moved the barycentre by up to a contact
+  // radius — five million kilometres for a blue giant swallowing a white dwarf
+  // — which steps the system's potential energy for free. Every other branch
+  // does this; this one was missed.
+  recenterProducts([host], comX, comY);
 
   return {
     regime: kind === 'bh' ? 'accretion' : 'compact-merger',

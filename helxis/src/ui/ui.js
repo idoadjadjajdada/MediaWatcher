@@ -359,6 +359,10 @@ export class UI {
 
   updateInspector(body) {
     const panel = $('inspector');
+    // On a phone the inspector docks along the bottom, where the body list
+    // would otherwise be sitting; the stylesheet folds the list to its header
+    // while something is selected, and this is the flag it keys off.
+    document.body.classList.toggle('inspecting', !!body);
     if (!body) { panel.hidden = true; return; }
     panel.hidden = false;
 

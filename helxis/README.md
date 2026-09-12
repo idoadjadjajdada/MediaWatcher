@@ -18,12 +18,24 @@ Everything is SI internally — metres, kilograms, seconds — and converted onl
 the way to the screen.
 
 **Gravity** is a Barnes-Hut quadtree with an adjustable opening angle, stored in
-flat typed arrays. How accurate that is depends on what the scene looks like, so
-both numbers are worth quoting. Against a direct N² sum at θ = 0.5, a
-star-dominated system agrees to 5 × 10⁻¹⁰ rms; a cloud of eight hundred equal
-masses, where the forces largely cancel and per-body relative error is
-unforgiving, comes to 2.6 × 10⁻² rms per body with a 37% worst case. Setting θ
-to 0 makes it exact.
+flat typed arrays. How accurate that is depends on the scene and on how you
+normalise the error, so here are both, measured against a direct N² sum by
+`test/physics.test.mjs` so they cannot quietly rot:
+
+| scene | θ | per-body rms \|Δa\|/\|a\| | worst body | rms \|Δa\| / rms \|a\| |
+|---|---|---|---|---|
+| Solar System, 12 bodies | 0.5 | 5.5 × 10⁻⁶ | 0.0006% | 9.4 × 10⁻⁹ |
+| Solar System, 12 bodies | 1.0 | 2.8 × 10⁻³ | 0.6% | 3.9 × 10⁻⁶ |
+| 800 equal masses in a ball | 0.5 | 4.7 × 10⁻² | 114% | 1.8 × 10⁻⁴ |
+| 800 equal masses in a ball | 1.0 | 1.9 × 10⁻¹ | 312% | 1.2 × 10⁻³ |
+
+The two columns disagree by four orders of magnitude for the same tree, and
+neither is wrong. In a cloud the forces largely cancel, so a body whose true
+acceleration is near zero has an enormous *relative* error while contributing
+almost nothing to the dynamics; dividing by the scene's rms acceleration instead
+says how much the trajectory actually moves. Quote whichever you like, but not
+one scene's global figure against another scene's per-body figure. Setting θ to
+0 makes it exact.
 
 Three things the tree gets right that a naive one does not.
 
@@ -140,8 +152,13 @@ Load **Figure-eight choreography** for three equal masses on the
 Chenciner-Montgomery orbit. After a full period each returns to its start within
 7 × 10⁻⁵ AU.
 
-Load **Protoplanetary disc** and leave it: 400 planetesimals on a minimum-mass
-nebula profile, accreting.
+Load **Protoplanetary disc** and leave it: 160 planetesimals between 0.75 and
+1.7 AU, drawn so the count per unit semi-major axis falls as a⁻¹·⁴ — a surface
+density around a⁻²·⁴, steeper than the minimum-mass nebula's a⁻¹·⁵, because a
+flat disc that thin does not produce visible accretion inside a few minutes of
+watching. Left alone it collides in every regime the classifier has: mostly
+bounces and hit-and-runs, with roughly one merge per fifteen seconds of
+wall-clock and the occasional disruption.
 
 ---
 
@@ -275,9 +292,16 @@ Node — the tests do.
 ## Known limits
 
 - The step is shared by all bodies, so one tight pair slows the whole scene.
-- Barnes-Hut's per-body force error at a wide opening angle is percent-level in
-  a scene with no dominant mass. Momentum is projected back to exact; energy is
-  not.
+- Loading a preset builds every sprite it needs in one frame. Measured on the
+  161-body disc that costs one ~40 ms frame and nothing after it, so it is not
+  amortised; a preset an order of magnitude larger would visibly hitch on load.
+- The physics honours its 11 ms budget (measured: 12 ms on that disc, of which
+  contacts are 1.4 ms and the tree 9.9 ms) and reports **TIME LIMITED** when it
+  cannot keep up. The renderer has no such budget.
+- Barnes-Hut's per-body force error at a wide opening angle is tens of percent
+  in a scene with no dominant mass — see the table above, and note that the
+  same tree is four orders of magnitude better on the measure that matters for
+  the trajectory. Momentum is projected back to exact; energy is not.
 - Attract and repel are openly unphysical, and a pinned body exerts gravity
   without accepting any — both break momentum conservation while in use, by
   design.

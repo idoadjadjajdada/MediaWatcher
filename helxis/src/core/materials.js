@@ -232,7 +232,10 @@ export function surfaceColor(comp, temperature) {
  */
 export function incandescence(temperature) {
   if (temperature < 700) return null;
-  const t = Math.min(1, (temperature - 700) / 4300);
+  // Logarithmic, and running to 30 000 K. A linear ramp topping out at 5 000
+  // saturated: a freshly merged planet at 8 000 K and one at 20 000 K were the
+  // same colour, so nothing about an impact's violence showed in its glow.
+  const t = Math.min(1, Math.log(temperature / 700) / Math.log(30000 / 700));
   // Rough blackbody ramp: dull red -> orange -> yellow -> white -> blue-white.
   const stops = [
     [0.00, [90, 10, 4]],

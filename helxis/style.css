@@ -16,6 +16,20 @@
 }
 
 :root {
+  /* The bottom-right stack is dock, then radar or view pill above it, and the
+     panels on either side have to stop above whatever is under them. Every one
+     of those clearances used to be a hand-typed pixel count, and a breakpoint
+     that moved one without the others is how the picker ended up running
+     through the tool dock. They are all derived from these four now. */
+  --dock-inset: 22px;
+  --dock-h: 71px;
+  --radar-h: 209px;
+  --viewbar-h: 38px;
+  /* Top of the dock, and of the view pill that sits above it once the radar is
+     out of the way. */
+  --dock-top: calc(var(--dock-inset) + var(--dock-h));
+  --viewbar-top: calc(var(--dock-top) + 15px + var(--viewbar-h));
+
   --bg: #0b0812;
   --panel: rgba(20, 16, 33, 0.92);
   --panel-solid: #161127;
@@ -233,8 +247,11 @@ input[type=range]::-moz-range-thumb {
   gap: 5px;
   padding: 6px 10px;
   height: 44px;
-  /* Never run under the preset dropdown that sits at the centre of the bar. */
-  max-width: calc(50vw - 300px);
+  /* Never run under the preset dropdown that sits at the centre of the bar:
+     half the viewport, less this bar's own 286px offset, less half the 220px
+     dropdown, less a gap. The old figure assumed a narrower dropdown and let
+     the two overlap by ninety pixels at 1440. */
+  max-width: calc(50vw - 410px);
   overflow: hidden;
 }
 .transport .select.compact { min-width: 128px; }
@@ -256,7 +273,10 @@ input[type=range]::-moz-range-thumb {
   top: 22px;
   left: 50%;
   transform: translateX(-50%);
-  min-width: 210px;
+  /* Fixed rather than min-width: the transport's width is computed against it,
+     and a preset name long enough to grow the box used to grow it straight
+     through the transport. */
+  width: 220px;
   z-index: 2;
 }
 
@@ -271,9 +291,17 @@ input[type=range]::-moz-range-thumb {
 /* ── body picker ────────────────────────────────────────────────────── */
 
 .picker {
-  top: 72px; left: 14px;
+  /* The clearance below is whatever the left column has to stay clear of at
+     this width: the status line when the tool dock is centred out of the way,
+     the dock itself once it grows wide enough to reach under the picker, and
+     the view pill below that on a phone. Deriving the height from both offsets
+     is the point -- a breakpoint that moved `top` without moving the height
+     used to push the list straight through the dock. */
+  --picker-top: 72px;
+  --picker-bottom: 118px;   /* the status line, with the dock centred clear */
+  top: var(--picker-top); left: 14px;
   width: 268px;
-  max-height: calc(100vh - 190px);
+  max-height: calc(100vh - var(--picker-top) - var(--picker-bottom));
   display: flex;
   flex-direction: column;
 }
@@ -496,9 +524,13 @@ input[type=range]::-moz-range-thumb {
 /* ── inspector ──────────────────────────────────────────────────────── */
 
 .inspector {
-  top: 72px; right: 14px;
+  /* Same two-offset scheme as the picker: the right column stops above the
+     view pill, which stops above the radar, which stops above the dock. */
+  --insp-top: 72px;
+  --insp-bottom: calc(var(--dock-inset) + var(--radar-h) + 9px + var(--viewbar-h) + 10px);
+  top: var(--insp-top); right: 14px;
   width: 232px;
-  max-height: calc(100vh - 300px);
+  max-height: calc(100vh - var(--insp-top) - var(--insp-bottom));
   overflow-y: auto;
   padding-bottom: 12px;
   scrollbar-width: thin;
@@ -587,7 +619,7 @@ input[type=range]::-moz-range-thumb {
 /* ── tool dock ──────────────────────────────────────────────────────── */
 
 .dock {
-  bottom: 22px;
+  bottom: var(--dock-inset);
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -667,7 +699,8 @@ input[type=range]::-moz-range-thumb {
 
 .viewbar {
   right: 14px;
-  bottom: 222px;
+  /* Sits above the radar, which sits on the dock's inset. */
+  bottom: calc(var(--dock-inset) + var(--radar-h) + 9px);
   display: flex;
   align-items: center;
   gap: 2px;
@@ -693,7 +726,7 @@ input[type=range]::-moz-range-thumb {
 
 .radar {
   right: 14px;
-  bottom: 22px;
+  bottom: var(--dock-inset);
   width: 188px;
   padding: 11px 12px 12px;
 }
@@ -893,55 +926,94 @@ input[type=range]::-moz-range-thumb {
    tool dock rather than land on top of it. */
 @media (max-width: 1180px) {
   .radar { display: none; }
-  .viewbar { bottom: 108px; }
-  .inspector { max-height: calc(100vh - 210px); }
+  .viewbar { bottom: calc(var(--dock-top) + 15px); }
+  .inspector { --insp-bottom: calc(var(--viewbar-top) + 10px); }
 }
-@media (max-width: 1320px) {
-  /* Below this the centred preset control and the transport bar collide, so
-     move the preset out to the right-hand group. */
+/* A full-width transport reaches x=701, so a centred dropdown only clears it
+   from about 1660px up. Below that the preset moves out to the right-hand
+   column, and the panels under it drop a row. */
+@media (max-width: 1660px) {
   .preset-select {
     top: 70px;
     left: auto;
     right: 14px;
     transform: none;
-    min-width: 180px;
   }
   .transport { max-width: none; }
-  .inspector, .drawer { top: 116px; }
+  .inspector { --insp-top: 116px; }
+  .drawer { top: 116px; }
+}
+@media (max-width: 1320px) {
+  /* From here the dock is wide enough to reach the status line in the corner
+     and the picker above it, so lift the whole bottom stack clear of both. */
+  :root { --dock-inset: 40px; }
+  .picker { --picker-bottom: calc(var(--dock-top) + 14px); }
 }
 @media (max-width: 900px) {
-  .transport { left: 14px; top: 72px; max-width: calc(100vw - 210px); }
-  .picker { top: 130px; }
-  .inspector { top: 130px; }
+  /* Room for the 220px preset dropdown on the right of the same row. */
+  .transport { left: 14px; top: 72px; max-width: calc(100vw - 268px); }
+  /* The dock is wide enough here to run under the picker, so the list has to
+     stop above it, not above the status line. */
+  .picker { --picker-top: 130px; }
+  .inspector { --insp-top: 130px; }
   .drawer { top: 130px; }
-  .preset-select { top: 76px; left: auto; right: 14px; transform: none; min-width: 160px; }
+}
+@media (max-width: 680px) {
+  .drawer { top: 168px; }
+  .preset-select { top: 76px; left: auto; right: 14px; transform: none; }
   .tool { width: 54px; }
   .intensity input[type=range] { width: 70px; }
+  /* The transport has moved up to where the toasts were landing, and the
+     picker is directly below that, so there is no band left across the top.
+     Float them off the bottom stack instead, the way a phone snackbar does:
+     over the list, never over a control. */
+  .toasts {
+    top: auto;
+    bottom: calc(var(--viewbar-top) + 10px);
+    flex-direction: column-reverse;
+  }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(7px); } }
+  @keyframes toast-out { to { opacity: 0; transform: translateY(7px); } }
 }
 @media (max-width: 680px) {
   .brand { width: auto; }
   .brand-text { display: none; }
   .picker {
     width: calc(100vw - 28px);
+    /* Below the two header rows. */
     /* Room for the list to be usable: the old 46vh left a twenty-pixel sliver
        once the tabs, search, chips and placement footer had taken their share,
-       and nothing could be picked at all. */
-    top: 120px;
-    max-height: calc(100vh - 260px);
+       and nothing could be picked at all. Below the list sit the view pill
+       (108px inset, 38px tall) and then the dock. */
+    --picker-top: 168px;
+    /* Below the list: the view pill, and under that the dock. */
+    --picker-bottom: calc(var(--viewbar-top) + 10px);
   }
+  /* With a body selected there is no room for both, and the list is the one
+     that can be folded to its header and reopened with one tap. */
+  body.inspecting .picker:not(.collapsed) .tabs,
+  body.inspecting .picker:not(.collapsed) .picker-body,
+  body.inspecting .picker:not(.collapsed) .placement { display: none; }
   /* The inspector is the only route to a body's numbers, so it cannot simply be
      hidden on a phone. Dock it to the bottom above the tools instead. */
   .inspector {
     display: block;
     top: auto;
-    bottom: 132px;
+    bottom: calc(var(--viewbar-top) + 10px);
     right: 14px;
     left: 14px;
     width: auto;
-    max-height: 40vh;
+    /* Leaves the folded picker header (168px down, 62px tall) visible above
+       it, so the list is always one tap away. */
+    max-height: calc(100vh - var(--viewbar-top) - 250px);
   }
   .tool-hint { display: none; }
-  .viewbar { bottom: 108px; left: 14px; right: auto; }
+  /* Two rows: the transport cannot give up a third of its width to the preset
+     dropdown and still show a clock, so the dropdown gets a row of its own. */
+  .transport { left: 14px; right: 14px; top: 72px; max-width: none; }
+  .transport .select.compact { min-width: 104px; }
+  .preset-select { top: 124px; left: 14px; right: 14px; width: auto; }
+  .viewbar { bottom: calc(var(--dock-top) + 15px); left: 14px; right: auto; }
   .dock {
     left: 14px;
     right: 14px;

@@ -236,12 +236,15 @@ export class ToolController {
    */
   update(dtReal, dtSim) {
     if (!this.active) return;
-    // The field tools are measured against gravity, so they have to act over
-    // the same interval gravity does — otherwise, at a week of simulated time
-    // per real second, a second of holding attract competes with a week of the
-    // Sun and loses by five orders of magnitude. The floor keeps them usable
-    // while paused or at realtime.
-    const dtField = Math.max(dtSim, dtReal);
+    // The field tools are a hand reaching into the simulation, so they run on
+    // the wall clock: holding attract for a second does the same thing whatever
+    // the clock is set to. Two earlier versions got this wrong in opposite
+    // directions — one applied a fixed acceleration in m/s², imperceptible
+    // against an orbital speed; the next scaled it by each body's own gravity
+    // and integrated over simulated time, which made it inert at realtime and
+    // gave the Sun, which has the least acceleration of anything in a scene,
+    // 130 000 times less push than the Earth.
+    const dtField = dtReal;
     switch (this.tool) {
       case 'laser':
         if (!this._laserUndo) { this._laserUndo = true; this.app.pushUndo(); }
@@ -337,30 +340,39 @@ export class ToolController {
     const radiusPx = toolRadiusPixels(this.tool, this.intensity, camera);
     const R = radiusPx / camera.scale;
 
-    // Strength as a multiple of the gravity each body is already feeling.
-    //
-    // Neither of the obvious alternatives works across twenty orders of
-    // magnitude of zoom. A fixed acceleration in m/s² is imperceptible against
-    // an orbital speed of 30 km/s and overwhelming for a moon. A fixed number
-    // of screen pixels per second is worse: at a view four astronomical units
-    // wide, "move it 120 pixels" means 7 × 10¹¹ m in one second. Measuring the
-    // push against the local gravitational acceleration makes it mean the same
-    // thing everywhere — at 1.5 g_local you can lift a planet out of its orbit
-    // in a few seconds, whether the planet is Mercury or a moon of Jupiter.
-    const strength = sign * 0.15 * Math.pow(10, this.intensity);
-
+    // One reference speed for the whole field, taken from the fastest-moving
+    // scale inside it: sqrt(|a|·r) is the local circular speed. Every body in
+    // range then gets the same velocity change per second, which is what makes
+    // it behave like a hand rather than like extra gravity — and it means the
+    // Sun moves too, instead of being the one thing in the scene you cannot
+    // push. Expressing it as a speed rather than an acceleration is also what
+    // makes it meaningful at any zoom.
+    let vRef = 0;
+    const inRange = [];
     for (const b of world.bodies) {
       if (b.fixed) continue;
       const dx = this.world.x - b.x, dy = this.world.y - b.y;
       const d = Math.hypot(dx, dy);
       if (d > R || d < 1e-9) continue;
+      inRange.push([b, dx, dy, d]);
+      const a = Math.hypot(b.ax, b.ay);
+      const r = (b.nearest > 0 && isFinite(b.nearest)) ? b.nearest : R;
+      const v = Math.sqrt(Math.max(a * r, 0));
+      if (v > vRef) vRef = v;
+    }
+    if (!inRange.length) return;
+    if (!(vRef > 0)) vRef = R / 30;
+
+    // Velocity change per second of holding, as a fraction of that speed.
+    const perSecond = sign * 0.02 * Math.pow(10, this.intensity) * vRef;
+
+    for (const [b, dx, dy, d] of inRange) {
       // Falls off to nothing at the edge of the ring, so there is no visible
       // discontinuity when a body crosses it.
       const falloff = 1 - (d / R) * (d / R);
-      const local = Math.hypot(b.ax, b.ay);
-      const a = strength * falloff * Math.max(local, 1e-9);
-      b.vx += (dx / d) * a * dt;
-      b.vy += (dy / d) * a * dt;
+      const dv = perSecond * falloff * dt;
+      b.vx += (dx / d) * dv;
+      b.vy += (dy / d) * dv;
     }
     if (rng() < dt * 9) effects.pulse(this.world.x, this.world.y, R, sign);
     world._accelDirty = true;
@@ -383,6 +395,7 @@ export class ToolController {
     const yieldJ = 4.184e17 * Math.pow(10, this.intensity * 6);
 
     const affected = [];
+    let broke = false;
     for (const b of world.bodies) {
       const d = Math.hypot(b.x - pos.x, b.y - pos.y);
       if (d > R + b.radius) continue;
@@ -400,6 +413,7 @@ export class ToolController {
       const dx = (b.x - pos.x) / (d || 1), dy = (b.y - pos.y) / (d || 1);
 
       if (share > binding * 1.2 && b.mass > 0) {
+        broke = true;
         this.fragment(b, pos, share, binding);
       } else {
         // Impulse from the fraction of the yield that becomes momentum.
@@ -415,7 +429,22 @@ export class ToolController {
     effects.shatter(pos.x, pos.y, R * 0.35, yieldJ, R * 0.8);
     camera.addShake(clamp(0.3 + this.intensity * 0.5, 0, 1.2));
     world._accelDirty = true;
-    this.app.toast(`Detonation · ${formatYield(yieldJ)}`);
+
+    // Say why nothing came apart, rather than leaving the user to guess whether
+    // the tool worked. Above about 6e22 kg no yield this tool can produce beats
+    // a body's own gravitational binding energy, and that is the honest answer.
+    let toughest = null;
+    for (const { b } of affected) {
+      if (b.kind === 'bh') continue;
+      if (!toughest || b.bindingEnergy > toughest.bindingEnergy) toughest = b;
+    }
+    if (!broke && toughest && toughest.bindingEnergy > yieldJ) {
+      this.app.toast(
+        `${formatYield(yieldJ)} — under ${toughest.name}'s binding energy of ${formatYield(toughest.bindingEnergy)}`
+      );
+    } else {
+      this.app.toast(`Detonation · ${formatYield(yieldJ)}`);
+    }
   }
 
   /** Break a body apart, conserving mass and momentum exactly. */
@@ -520,8 +549,10 @@ export class ToolController {
         const dx = cx - o.x, dy = cy - o.y;
         const d = Math.hypot(dx, dy);
         if (d > R || d < 1e-9) continue;
-        // Against local gravity, as the attract field is.
-        const pull = 0.4 * Math.pow(10, this.intensity) * Math.max(Math.hypot(o.ax, o.ay), 1e-9);
+        // As a speed per second, like the attract field.
+        const a = Math.hypot(o.ax, o.ay);
+        const rr = (o.nearest > 0 && isFinite(o.nearest)) ? o.nearest : R;
+        const pull = 0.05 * Math.pow(10, this.intensity) * Math.sqrt(Math.max(a * rr, 1e-12));
         o.vx += (dx / d) * pull * dtField;
         o.vy += (dy / d) * pull * dtField;
         // Bleed off the orbital motion, or it just forms a disc and stays there.

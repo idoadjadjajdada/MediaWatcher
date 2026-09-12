@@ -116,11 +116,14 @@ function mixMask(u, v, mix, seed) {
  * The height field, factored out so the sea level can be taken from its own
  * distribution before any pixel is drawn.
  */
-function elevationAt(u, v, seed, rough, features) {
-  const wx = fbm(u * 2.3 + 4.2, v * 2.3 - 1.7, seed ^ 0x2545f491, 3) - 0.5;
-  const wy = fbm(u * 2.3 - 9.1, v * 2.3 + 6.3, seed ^ 0x27d4eb2d, 3) - 0.5;
-  const su = u + wx * 0.55 * rough;
-  const sv = v + wy * 0.55 * rough;
+function elevationAt(u, v, seed, rough, features, warpedU, warpedV) {
+  let su = warpedU, sv = warpedV;
+  if (su === undefined) {
+    const wx = fbm(u * 2.3 + 4.2, v * 2.3 - 1.7, seed ^ 0x2545f491, 3) - 0.5;
+    const wy = fbm(u * 2.3 - 9.1, v * 2.3 + 6.3, seed ^ 0x27d4eb2d, 3) - 0.5;
+    su = u + wx * 0.55 * rough;
+    sv = v + wy * 0.55 * rough;
+  }
   let h = fbm(su * 3.1, sv * 3.1, seed, 5, 2.05, 0.52);
   h = h * 0.72 + ridged(su * 5.4, sv * 5.4, seed ^ 0x165667b1, 4) * 0.28 * rough;
   for (const f of features) {
@@ -148,7 +151,26 @@ function renderTerrestrial(body, size, data) {
   // Water and ice coverage. Oceans only exist between freezing and boiling.
   const waterFrac = (surf.water || 0) + (surf.ice || 0);
   const liquid = body.temperature > 268 && body.temperature < 400 ? clamp(waterFrac * 2.2, 0, 0.82) : 0;
-  const frozen = body.temperature <= 268 ? clamp(waterFrac * 2.0, 0, 0.9) : 0;
+
+  // Frost: whichever volatile actually condenses at this temperature, not only
+  // water. Coverage tracks the fraction present instead of saturating — a gain
+  // of two against a ceiling of 0.9 meant anything past 45% ice was painted
+  // uniformly white, and Europa, Enceladus, Ganymede, Callisto, Charon, Triton
+  // and the ice world all rendered as the same pale ball, erasing Charon's
+  // tholins and Callisto's carbon along with a threefold albedo difference.
+  let frostFrac = 0, frostR = 0, frostG = 0, frostB = 0;
+  for (const k in surf) {
+    const mat = MATERIALS[k];
+    if (!mat || !(surf[k] > 0)) continue;
+    if (body.temperature >= mat.melt) continue;       // not frozen out here
+    if (mat.melt > 400) continue;                     // rock is not frost
+    frostFrac += surf[k];
+    frostR += mat.cold[0] * surf[k];
+    frostG += mat.cold[1] * surf[k];
+    frostB += mat.cold[2] * surf[k];
+  }
+  const frozen = frostFrac > 0 && body.temperature <= 400 ? clamp(frostFrac, 0, 1) : 0;
+  if (frostFrac > 0) { frostR /= frostFrac; frostG /= frostFrac; frostB /= frostFrac; }
 
   // Terrain roughness: a big, hot, differentiated body is smoother than a cold
   // rubble pile that never relaxed.
@@ -199,17 +221,24 @@ function renderTerrestrial(body, size, data) {
       const wy = fbm(u * 2.3 - 9.1, v * 2.3 + 6.3, seed ^ 0x27d4eb2d, 3) - 0.5;
       const su = u + wx * 0.55 * rough;
       const sv = v + wy * 0.55 * rough;
-      const h = elevationAt(u, v, seed, rough, features);
+      // `elevationAt` recomputes exactly these two warps internally, so pass
+      // them in: six octaves of value noise per pixel were being evaluated and
+      // thrown away, about a fifth of the terrestrial render cost.
+      const h = elevationAt(u, v, seed, rough, features, su, sv);
 
       // --- base colour ----------------------------------------------------
       let cr = base[0], cg = base[1], cb = base[2];
 
       // Mixed-in material from every merge this body remembers, oldest first,
-      // so a recent impact paints over an older seam.
+      // so a recent impact paints over an older seam. The running weight is
+      // carried down to the melt block, so the record survives even a surface
+      // that is entirely molten.
+      let mixWeight = 0;
       for (let mi = 0; mi < body.mixes.length; mi++) {
         const mix = body.mixes[mi];
         const m = mixMask(u, v, mix, seed ^ (mi * 0x9e3779b1));
         if (m <= 0.002) continue;
+        mixWeight = mixWeight * (1 - m) + m;
         const other = surfaceColor(mix.compB || surf, body.temperature);
         cr = lerp(cr, other[0], m);
         cg = lerp(cg, other[1], m);
@@ -234,28 +263,40 @@ function renderTerrestrial(body, size, data) {
         }
       }
       if (frozen > 0) {
-        // Frost settles on the high ground and in the basins, patchily.
+        // Frost settles on the high ground and in the basins, patchily, and
+        // never quite everywhere — bare ground shows through, which is what
+        // keeps a dirty ice moon distinguishable from a clean one.
         const patch = fbm(su * 4.6 - 21, sv * 4.6 + 13, seed ^ 0x85ebca6b, 3);
-        const cover = clamp((frozen * 1.3 - 0.25) + (h - 0.5) * 0.7 + (patch - 0.5) * 0.55, 0, 1);
-        const ic = MATERIALS.ice.cold;
-        cr = lerp(cr, ic[0], cover * 0.9);
-        cg = lerp(cg, ic[1], cover * 0.9);
-        cb = lerp(cb, ic[2], cover * 0.9);
+        const cover = clamp(frozen - 0.12 + (h - 0.5) * 0.55 + (patch - 0.5) * 0.5, 0, 0.94);
+        cr = lerp(cr, frostR, cover);
+        cg = lerp(cg, frostG, cover);
+        cb = lerp(cb, frostB, cover);
       }
 
       // --- melt ------------------------------------------------------------
+      // Molten rock does not erase where it came from. Letting incandescence
+      // take the whole surface — which it did the moment `pool` saturated, and
+      // it saturates for any merge at escape velocity — turned every merged
+      // planet into a featureless glowing ball and painted out the mix record
+      // the textures exist to show. The impactor's material also arrives hotter
+      // than the target's, so the seam survives as a temperature difference
+      // even when the whole surface is molten.
       if (molten > 0 && glow) {
         // Fissures open along the ridges of a second noise field; the hotter it
         // gets, the more of the surface is incandescent rather than cracked.
         const crack = ridged(su * 7.2 + 31, sv * 7.2 - 17, seed ^ 0xc2b2ae35, 4);
         const open = clamp((crack - (1 - molten * 0.92) * 0.86) * 6, 0, 1);
         const pool = clamp((molten - 0.55) * 2.2, 0, 1);
-        const lava = Math.max(open * (0.35 + molten * 0.65), pool);
+        // Never the whole surface: a floor of composition colour always shows.
+        const lava = clamp(Math.max(open * (0.35 + molten * 0.65), pool), 0, 0.86);
         if (lava > 0) {
+          // Impact-heated material glows hotter than the body it landed on.
+          const hot = body.temperature * (1 + 0.22 * (mixWeight - 0.5));
+          const g2 = incandescence(hot) || glow;
           const flick = 0.82 + valueNoise2(su * 9 + 100, sv * 9, seed ^ 0x1b56) * 0.36;
-          cr = lerp(cr, glow[0] * flick, lava);
-          cg = lerp(cg, glow[1] * flick, lava);
-          cb = lerp(cb, glow[2] * flick, lava);
+          cr = lerp(cr, g2[0] * flick, lava);
+          cg = lerp(cg, g2[1] * flick, lava);
+          cb = lerp(cb, g2[2] * flick, lava);
         }
       }
 
@@ -267,6 +308,10 @@ function renderTerrestrial(body, size, data) {
         const cx = Math.cos(c.a) * (1 - c.size * 0.55);
         const cy = Math.sin(c.a) * (1 - c.size * 0.55);
         const cr2 = c.size * 0.9;
+        // Below a texel there is nothing to draw. Skipping it here rather than
+        // refusing to record it keeps the physics — and the impact history —
+        // intact at every sprite size.
+        if (cr2 * n < 1) continue;
         const d = Math.hypot(u - cx, v - cy);
         if (d > cr2 * 1.45) continue;
 
@@ -512,10 +557,11 @@ function renderCompact(body, size, data) {
   const n = size;
   const half = n / 2;
   const seed = body.seed >>> 0;
-  // A white dwarf is hot and white; a neutron star is hotter still and shows
-  // magnetic structure rather than granulation.
-  const T = body.kind === 'ns' ? 6e5 : 2.5e4;
-  const col = blackbodyColor(Math.min(T, 40000));
+  // Its actual temperature, not a constant per kind. A white dwarf cools from
+  // a hundred thousand kelvin to a few thousand over its life and ends up
+  // visibly red; hard-coding 25 000 K made every white dwarf identical, and
+  // made a pulsar and a magnetar byte-identical to a neutron star.
+  const col = blackbodyColor(clamp(body.temperature || 2.5e4, 1500, 40000));
 
   let p = 0;
   for (let py = 0; py < n; py++) {

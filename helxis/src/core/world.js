@@ -57,7 +57,9 @@ export class World {
     this._accel = [0, 0, Infinity];
     this._neighbors = [];
     this._energyRef = null;
+    this._energyRefStep = 0;
     this.energyDrift = 0;
+    this.energySteps = 0;
     this.listeners = {};
     this._frame = 0;
     this._dt = 0;      // the held integration step, see chooseDt
@@ -67,6 +69,10 @@ export class World {
   emit(evt, payload) { for (const fn of this.listeners[evt] || []) fn(payload); }
 
   clear() {
+    // Mark them dead first: anything still holding a reference — the grab tool,
+    // the camera's follow target — otherwise sees a live-looking orphan that is
+    // no longer in the world.
+    for (const b of this.bodies) b.alive = false;
     this.bodies.length = 0;
     this.time = 0;
     this.steps = 0;
@@ -75,7 +81,9 @@ export class World {
     this.collisionCount = 0;
     this.mergeCount = 0;
     this._energyRef = null;
+    this._energyRefStep = 0;
     this.energyDrift = 0;
+    this.energySteps = 0;
     resetIds(1);
   }
 
@@ -256,7 +264,10 @@ export class World {
     const scale = (b.nearest != null && isFinite(b.nearest) && b.nearest > 0)
       ? b.nearest
       : Math.max(b.radius, 1);
-    return this.settings.eta * Math.sqrt(scale / a);
+    const eta = this.settings.relativity
+      ? Math.min(this.settings.eta, 0.012)
+      : this.settings.eta;
+    return eta * Math.sqrt(scale / a);
   }
 
   /**
@@ -284,6 +295,13 @@ export class World {
    * a shared step is both more accurate and, measured, no slower.
    */
   chooseDt(limit) {
+    // Resolving a 43-arcsecond-per-century signal needs a numerical floor well
+    // below it, and at the shipped accuracy setting second-order truncation
+    // alone produces 872 arcseconds of spurious advance. Turning relativity on
+    // is a request for a measurement, so tighten the step to match rather than
+    // report a number that is 95% error.
+    const etaCap = this.settings.relativity ? 0.012 : Infinity;
+    const eta = Math.min(this.settings.eta, etaCap);
     let dt = Infinity;
     for (const b of this.bodies) {
       if (b.fixed) continue;
@@ -406,6 +424,13 @@ export class World {
     // steps too large to be right; capping by time keeps the frame rate and
     // slows the clock instead, which the status line then says out loud.
     const started = now();
+    // One deadline for the whole frame, shared with the contact solver, which
+    // used to take its own now() + 1.5x budget on every substep. On the discs
+    // measured here contacts cost 1.4 ms a frame and never came near either
+    // figure, so this bought nothing today; it bounds the pathological case,
+    // where a pile-up late in a frame could otherwise spend the whole budget
+    // again after the integrator had already spent it.
+    this._frameDeadline = started + budgetMs * 1.35;
     while (remaining > 1e-9 && taken < cap) {
       // A collision at the end of the previous step added and removed bodies,
       // which leaves every acceleration stale — and a body a merge just created
@@ -413,10 +438,6 @@ export class World {
       // take the entire remaining interval as one ballistic drift. That turned
       // a 49-second step into a sixteen-thousand-year one and threw the
       // giant-impact disc a light-year clear of the planet.
-      // A collision at the end of the previous step added and removed bodies,
-      // which leaves every acceleration stale — and a body a merge just created
-      // has a = 0, so the step chooser would see no acceleration at all and
-      // take the entire remaining interval as one ballistic drift.
       if (this._accelDirty) this.computeAccelerations();
       const dt = Math.min(remaining, this.chooseDt(remaining));
       this.step(dt);
@@ -467,7 +488,11 @@ export class World {
     // fragments into more fragments faster than the pass counter notices: one
     // step produced four thousand bodies and never returned, which no substep
     // limit outside this loop could have caught.
-    const deadline = now() + Math.max(4, (this.settings.frameBudgetMs || 11) * 1.5);
+    // The frame's deadline, not a fresh one per substep -- but never less than
+    // 4 ms from here, so a contact pass that starts late still makes some
+    // progress rather than bouncing straight off an expired clock.
+    const deadline = Math.max(now() + 4, this._frameDeadline
+      || now() + (this.settings.frameBudgetMs || 11) * 1.35);
 
     while (passes++ < budget) {
       if (passes > 4 && now() > deadline) break;
@@ -620,8 +645,16 @@ export class World {
     for (const b of this.bodies) {
       if (!b.trail) b.trail = [];
       const t = b.trail;
-      const lastX = t.length >= 2 ? t[t.length - 2] : NaN;
-      const lastY = t.length >= 2 ? t[t.length - 1] : NaN;
+      if (t.length < 2) {
+        // The first point has nothing to compare against. Comparing anyway gave
+        // NaN, every comparison against NaN is false, the negated guard was
+        // therefore always true, and the trail never got its first point — so
+        // it never got a second one either. Trails have never drawn a pixel.
+        t.push(b.x, b.y);
+        continue;
+      }
+      const lastX = t[t.length - 2];
+      const lastY = t[t.length - 1];
       // Only record when the body has actually moved somewhere new, so a
       // paused or slow body does not fill its trail with duplicate points.
       if (!(Math.abs(b.x - lastX) + Math.abs(b.y - lastY) > b.radius * 0.25)) continue;
@@ -722,6 +755,9 @@ export class World {
    * drift of zero over a million.
    */
   measureEnergy() {
+    // An exact O(N²) pairwise sum: 21 ms at nine hundred bodies. Worth paying
+    // when someone is reading the number, not otherwise.
+    if (!this.settings.wantDiagnostics) return;
     if (this._frame % 4 !== 0) return;
     const e = this.totalEnergy();
     if (e === null) {
