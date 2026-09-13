@@ -411,6 +411,9 @@ export class World {
     // A body added or removed since the last step leaves every acceleration
     // stale, and the first drift of the next step would use it.
     if (this.steps === 0 || this._accelDirty) this.computeAccelerations();
+    // Before anything else: a body handed to us non-finite (a tool, a restored
+    // snapshot, a hand-edited value) must not reach the tree.
+    if (this.cullNonFinite()) this.computeAccelerations();
 
     this._frame++;
     let remaining = seconds;
@@ -439,6 +442,10 @@ export class World {
       // a 49-second step into a sixteen-thousand-year one and threw the
       // giant-impact disc a light-year clear of the planet.
       if (this._accelDirty) this.computeAccelerations();
+      // Between the tree and the step: a body that arrived non-finite, or that
+      // an acceleration pass has just made non-finite, is removed before it can
+      // be integrated and smear across the scene.
+      if (this.cullNonFinite()) this.computeAccelerations();
       const dt = Math.min(remaining, this.chooseDt(remaining));
       this.step(dt);
       remaining -= dt;
@@ -684,9 +691,16 @@ export class World {
    * Remove any body that has gone non-finite, and report it.
    *
    * Nothing in the engine should produce one — but a NaN that does appear
-   * spreads through the tree into every force in the scene within one step, so
-   * it is worth one linear scan to contain it at the source instead of
-   * debugging its shadow somewhere else.
+   * spreads through the tree into every force in the scene within one step:
+   * the root bounding box goes NaN, and with it every acceleration.
+   *
+   * This used to run only at the end of advance(), which is one step too late
+   * to contain anything. Injecting a NaN velocity into one body of the twelve
+   * in the Solar System preset and calling advance() once left *zero* bodies,
+   * with all twelve reported culled — the comment here claimed containment and
+   * the code delivered a total loss. It now runs before the substep loop and
+   * again after every acceleration pass, so the infected body is the only one
+   * that goes.
    */
   cullNonFinite() {
     let removed = 0;

@@ -1,6 +1,7 @@
 import { fbm, ridged, valueNoise2, makeRng } from '../core/rng.js';
 import {
   MATERIALS, surfaceColor, incandescence, compositionProperty, dominantMaterial,
+  volatileFraction,
 } from '../core/materials.js';
 import { clamp, lerp, smoothstep, TAU, T_SUN } from '../core/const.js';
 
@@ -187,23 +188,96 @@ function renderTerrestrial(body, size, data) {
     });
   }
 
+  // --- what each merge did to the ground ------------------------------------
+  //
+  // A merge used to be a colour lerp applied before the elevation shading, the
+  // ocean and the frost, all of which then ran over it. Measured against the
+  // same body with the `mixes` array emptied, a 50/50 iron-onto-silicate merge
+  // moved the sprite by 4.1/255 per channel — while merely re-rolling the seed
+  // moved it by 7.0. The record the whole feature exists to show was below the
+  // noise floor of the noise.
+  //
+  // So the impactor's material now brings its own terrain: its own height field
+  // at its own roughness, its own frost, its own sea, and a basin where a clean
+  // seam survived. The colour lerp stays, and is reapplied after shading.
+  const mixTerrain = [];
+  for (const mix of body.mixes) {
+    const cb2 = mix.compB || surf;
+    const vol = clamp(volatileFraction(cb2), 0, 1);
+    // Ice and volatiles relax; rock and metal keep their relief.
+    const roughB = clamp(rough * (1.32 - 0.85 * vol), 0.2, 1.5);
+    // The impactor's own frost, so ice landing on rock frosts one hemisphere.
+    let ff = 0, fr = 0, fg = 0, fb = 0;
+    for (const k in cb2) {
+      const mat = MATERIALS[k];
+      if (!mat || !(cb2[k] > 0) || body.temperature >= mat.melt || mat.melt > 400) continue;
+      ff += cb2[k]; fr += mat.cold[0] * cb2[k]; fg += mat.cold[1] * cb2[k]; fb += mat.cold[2] * cb2[k];
+    }
+    if (ff > 0) { fr /= ff; fg /= ff; fb /= ff; }
+    mixTerrain.push({
+      mix,
+      rough: roughB,
+      seed: (mix.seedB >>> 0) || (seed ^ 0x7f4a7c15),
+      // A clean seam leaves the impactor's material as a distinct low terrane —
+      // the hemispheric dichotomy a big slow impact actually produces. A
+      // stirred one has nothing left to sit lower than anything else.
+      lift: -0.30 * mix.sharpness,
+      // Volatile-poor material keeps sharper relief than ice, which relaxes.
+      relief: clamp(0.55 + (1 - vol) * 1.15, 0.4, 1.8),
+      frozen: body.temperature <= 400 ? clamp(ff, 0, 1) : 0,
+      frostR: ff > 0 ? fr : frostR, frostG: ff > 0 ? fg : frostG, frostB: ff > 0 ? fb : frostB,
+      liquid: clamp(vol * 0.9, 0, 1),
+      color: surfaceColor(cb2, body.temperature),
+    });
+  }
+
+  // The height at a point, including whatever the merges did to it, plus how
+  // much of the point is impactor material. Everything downstream — the sea
+  // level probe, the shading, the ocean, the frost — goes through this, so the
+  // coastline and the snow line follow the seam instead of ignoring it.
+  const surfaceAt = (u, v, su, sv) => {
+    const hA = elevationAt(u, v, seed, rough, features, su, sv);
+    if (!mixTerrain.length) return { h: hA, amt: 0, t: null };
+    let h = hA, amt = 0, t = null, seam = 0;
+    for (let mi = 0; mi < mixTerrain.length; mi++) {
+      const mt = mixTerrain[mi];
+      const m = mixMask(u, v, mt.mix, seed ^ (mi * 0x9e3779b1));
+      if (m <= 0.002) continue;
+      // The impactor's terrane has its own relief as well as its own mean
+      // height: a metal-rich province is craggier than an icy one, and lerping
+      // two height fields of identical amplitude only ever moves the average.
+      const hB = clamp(0.5 + (elevationAt(u, v, mt.seed, mt.rough, features, su, sv) - 0.5)
+        * mt.relief + mt.lift, 0, 1);
+      h = lerp(h, hB, m);
+      amt = amt * (1 - m) + m;
+      // Peaks at the boundary between the two materials and vanishes inside
+      // either: the scarp along a dichotomy, and the one part of the record
+      // that a same-coloured pair of materials can still show.
+      seam = Math.max(seam, 4 * m * (1 - m) * mt.mix.sharpness);
+      t = mt;
+    }
+    return { h: clamp(h, 0, 1), amt, t, seam };
+  };
+
   // Where the sea sits, taken from the height field's own distribution rather
   // than from `1 - liquid`. fBm is bell-shaped, not uniform, so treating the
   // coverage fraction as a height put 18% of the surface under water on a
   // planet asked for 66%.
   let seaLevel = 0;
-  if (liquid > 0) {
+  if (liquid > 0 || mixTerrain.some((m) => m.liquid > 0)) {
     const probe = [];
     for (let i = 0; i < 24; i++) {
       for (let j = 0; j < 24; j++) {
         const u = ((i + 0.5) / 12) - 1, v = ((j + 0.5) / 12) - 1;
         if (Math.hypot(u, v) > 1) continue;
-        probe.push(elevationAt(u, v, seed, rough, features));
+        const wx = fbm(u * 2.3 + 4.2, v * 2.3 - 1.7, seed ^ 0x2545f491, 3) - 0.5;
+        const wy = fbm(u * 2.3 - 9.1, v * 2.3 + 6.3, seed ^ 0x27d4eb2d, 3) - 0.5;
+        probe.push(surfaceAt(u, v, u + wx * 0.55 * rough, v + wy * 0.55 * rough).h);
       }
     }
     probe.sort((a, b) => a - b);
     seaLevel = probe.length
-      ? probe[Math.min(probe.length - 1, Math.floor(liquid * probe.length))]
+      ? probe[Math.min(probe.length - 1, Math.floor(clamp(liquid, 0, 1) * probe.length))]
       : 0.5;
   }
 
@@ -224,33 +298,39 @@ function renderTerrestrial(body, size, data) {
       // `elevationAt` recomputes exactly these two warps internally, so pass
       // them in: six octaves of value noise per pixel were being evaluated and
       // thrown away, about a fifth of the terrestrial render cost.
-      const h = elevationAt(u, v, seed, rough, features, su, sv);
+      const surfPt = surfaceAt(u, v, su, sv);
+      const h = surfPt.h;
+      const seam = surfPt.seam || 0;
+      // How much of this pixel is impactor material, and which merge won it.
+      const mixWeight = surfPt.amt;
+      const mixT = surfPt.t;
 
       // --- base colour ----------------------------------------------------
       let cr = base[0], cg = base[1], cb = base[2];
-
-      // Mixed-in material from every merge this body remembers, oldest first,
-      // so a recent impact paints over an older seam. The running weight is
-      // carried down to the melt block, so the record survives even a surface
-      // that is entirely molten.
-      let mixWeight = 0;
-      for (let mi = 0; mi < body.mixes.length; mi++) {
-        const mix = body.mixes[mi];
-        const m = mixMask(u, v, mix, seed ^ (mi * 0x9e3779b1));
-        if (m <= 0.002) continue;
-        mixWeight = mixWeight * (1 - m) + m;
-        const other = surfaceColor(mix.compB || surf, body.temperature);
-        cr = lerp(cr, other[0], m);
-        cg = lerp(cg, other[1], m);
-        cb = lerp(cb, other[2], m);
+      if (mixWeight > 0.002 && mixT) {
+        cr = lerp(cr, mixT.color[0], mixWeight);
+        cg = lerp(cg, mixT.color[1], mixWeight);
+        cb = lerp(cb, mixT.color[2], mixWeight);
       }
 
       // Elevation shading. Highlands catch light, basins hold shadow.
       const shade = 0.74 + h * 0.52;
       cr *= shade; cg *= shade; cb *= shade;
 
+      // The scarp itself, drawn as a shadowed break in the ground. Iron and
+      // silicate are within fifteen units of each other in every channel, so
+      // for a metal impactor on a rocky world this line is most of what there
+      // is to see — and it is the honest thing to draw, because the boundary is
+      // what the merge record actually records.
+      if (seam > 0.01) {
+        const grit = 0.72 + valueNoise2(su * 11 - 4, sv * 11 + 9, seed ^ 0x51ed270b) * 0.56;
+        const dark = 1 - seam * 0.42 * grit;
+        cr *= dark; cg *= dark; cb *= dark;
+      }
+
       // --- water and ice ---------------------------------------------------
-      if (liquid > 0) {
+      const liquidHere = mixT ? lerp(liquid, mixT.liquid, mixWeight) : liquid;
+      if (liquidHere > 0) {
         if (h < seaLevel) {
           const depth = clamp((seaLevel - h) / Math.max(seaLevel, 0.001), 0, 1);
           const w = MATERIALS.water.cold;
@@ -262,15 +342,18 @@ function renderTerrestrial(body, size, data) {
           cr = lerp(cr, 208, 0.5); cg = lerp(cg, 224, 0.5); cb = lerp(cb, 228, 0.5);
         }
       }
-      if (frozen > 0) {
+      // Frost, likewise per side of the seam: an icy impactor frosts the
+      // ground it landed on and nowhere else.
+      const frozenHere = mixT ? lerp(frozen, mixT.frozen, mixWeight) : frozen;
+      if (frozenHere > 0) {
         // Frost settles on the high ground and in the basins, patchily, and
         // never quite everywhere — bare ground shows through, which is what
         // keeps a dirty ice moon distinguishable from a clean one.
         const patch = fbm(su * 4.6 - 21, sv * 4.6 + 13, seed ^ 0x85ebca6b, 3);
-        const cover = clamp(frozen - 0.12 + (h - 0.5) * 0.55 + (patch - 0.5) * 0.5, 0, 0.94);
-        cr = lerp(cr, frostR, cover);
-        cg = lerp(cg, frostG, cover);
-        cb = lerp(cb, frostB, cover);
+        const cover = clamp(frozenHere - 0.12 + (h - 0.5) * 0.55 + (patch - 0.5) * 0.5, 0, 0.94);
+        cr = lerp(cr, mixT ? lerp(frostR, mixT.frostR, mixWeight) : frostR, cover);
+        cg = lerp(cg, mixT ? lerp(frostG, mixT.frostG, mixWeight) : frostG, cover);
+        cb = lerp(cb, mixT ? lerp(frostB, mixT.frostB, mixWeight) : frostB, cover);
       }
 
       // --- melt ------------------------------------------------------------
@@ -298,6 +381,17 @@ function renderTerrestrial(body, size, data) {
           cg = lerp(cg, g2[1] * flick, lava);
           cb = lerp(cb, g2[2] * flick, lava);
         }
+      }
+
+      // The impactor's material reasserted after shading. Multiplying a tint by
+      // the elevation shade and then running an ocean and a frost pass over it
+      // left almost nothing of the material difference; a second, lighter pass
+      // here keeps the province readable without flattening the terrain.
+      if (mixWeight > 0.002 && mixT) {
+        const w = mixWeight * 0.34;
+        cr = lerp(cr, mixT.color[0] * (0.72 + h * 0.5), w);
+        cg = lerp(cg, mixT.color[1] * (0.72 + h * 0.5), w);
+        cb = lerp(cb, mixT.color[2] * (0.72 + h * 0.5), w);
       }
 
       // --- craters ---------------------------------------------------------
@@ -618,6 +712,24 @@ function renderHorizon(body, size, data) {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * A body's sprite as raw RGBA, with no canvas anywhere in the call.
+ *
+ * Factored out so the tests can measure what a merge actually does to the
+ * pixels from Node — the claim that a body's texture reflects how it mixed is
+ * the one the whole app rests on, and asserting it needs the bytes, not a
+ * canvas. Everything above this line is pure arithmetic already.
+ */
+export function texturePixels(body, size) {
+  const data = new Uint8ClampedArray(size * size * 4);
+  if (body.kind === 'bh') renderHorizon(body, size, data);
+  else if (body.kind === 'star') renderStar(body, size, data);
+  else if (body.kind === 'ns' || body.kind === 'wd') renderCompact(body, size, data);
+  else if (body.kind === 'gasgiant') renderGiant(body, size, data);
+  else renderTerrestrial(body, size, data);
+  return data;
+}
+
 /** The sprite for a body at a given size, generated on first use and cached. */
 export function bodyTexture(body, size) {
   const key = `${body.textureKey}@${size}`;
@@ -627,14 +739,7 @@ export function bodyTexture(body, size) {
   const c = makeCanvas(size, size);
   const ctx = c.getContext('2d', { willReadFrequently: false });
   const img = ctx.createImageData(size, size);
-  const data = img.data;
-
-  if (body.kind === 'bh') renderHorizon(body, size, data);
-  else if (body.kind === 'star') renderStar(body, size, data);
-  else if (body.kind === 'ns' || body.kind === 'wd') renderCompact(body, size, data);
-  else if (body.kind === 'gasgiant') renderGiant(body, size, data);
-  else renderTerrestrial(body, size, data);
-
+  img.data.set(texturePixels(body, size));
   ctx.putImageData(img, 0, 0);
   return cacheSet(key, c);
 }

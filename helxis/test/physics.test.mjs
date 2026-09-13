@@ -21,6 +21,7 @@ import {
 import { loadPreset, PRESETS } from '../src/ui/presets.js';
 import { CATALOG, instantiate } from '../src/ui/catalog.js';
 import { radiusFromMass, bulkDensity, compressionFactor } from '../src/core/materials.js';
+import { texturePixels } from '../src/render/texture.js';
 import { ToolController } from '../src/ui/tools.js';
 import { applyToWorld, defaultSettings } from '../src/ui/settings.js';
 
@@ -433,17 +434,19 @@ section('Regressions found in review');
     return resolveCollision(t, p, { allowBounce: true }).regime;
   };
   let bad = null;
-  for (const gamma of [1, 0.7, 0.4, 0.2, 0.11]) {
+  for (const gamma of [1, 0.7, 0.4, 0.2, 0.11, 0.05, 0.01, 0.0011]) {
     for (const v of [1.05, 1.2, 1.5, 2, 3, 5, 10, 30]) {
       for (const bp of [0, 0.2, 0.4, 0.6, 0.8]) {
         if (regimeFor(gamma, v, bp) === 'cratering') bad = `gamma=${gamma} v=${v} b=${bp}`;
       }
     }
   }
-  assert('nothing above a tenth of the target mass is called cratering',
-    bad === null, bad || 'none in 200 combinations');
+  assert('nothing above a thousandth of the target mass is called cratering',
+    bad === null, bad || 'none in 320 combinations');
   assert('a small fast projectile still craters',
-    regimeFor(0.001, 5, 0) === 'cratering', regimeFor(0.001, 5, 0));
+    regimeFor(1e-6, 5, 0) === 'cratering', regimeFor(1e-6, 5, 0));
+  assert('and a small slow one does too',
+    regimeFor(1e-6, 0.5, 0) === 'cratering', regimeFor(1e-6, 0.5, 0));
 }
 {
   // The step must not depend on how large a body is, only on where it is.
@@ -919,6 +922,104 @@ section('The whole catalogue instantiates');
     }
   }
   assert(`all ${CATALOG.length} catalogue entries produce a usable body`, bad === 0);
+}
+
+section('A merge is visible in the sprite it produces');
+{
+  // The claim the whole app rests on: a body's texture reflects how it mixed.
+  // Pass 5 measured that it did not — the merge record was a colour lerp
+  // applied before the elevation shading, the ocean and the frost, all of
+  // which then ran over it, and the entire merge history moved the sprite less
+  // than re-rolling the random seed did. So the seed is the yardstick here: a
+  // merge that changes the picture by less than a different seed does has not
+  // changed the picture.
+  const mixOf = (compB, fracB, sharpness) => [{
+    seedA: 1, seedB: 987654321, fracB, angle: 0.7, sharpness, compB,
+  }];
+  const sprite = (mixes, seed) => {
+    const b = new Body({
+      name: 'X', mass: M_EARTH, composition: { iron: 0.32, silicate: 0.68 },
+      temperature: 288, seed,
+    });
+    b.mixes = mixes;
+    b.refresh();
+    return texturePixels(b, 96);
+  };
+  // Two numbers per comparison: the mean over the whole disc, and the mean over
+  // the most-changed sixth of it. A projectile worth a tenth of the mass should
+  // not repaint the planet, so the local figure is the one that has to clear
+  // the bar for a partial-coverage merge.
+  const diff = (a, b) => {
+    const d = [];
+    for (let i = 0; i < a.length; i += 4) {
+      if (a[i + 3] < 128 && b[i + 3] < 128) continue;
+      d.push((Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1])
+        + Math.abs(a[i + 2] - b[i + 2])) / 3);
+    }
+    d.sort((x, y) => y - x);
+    const top = d.slice(0, Math.max(1, Math.round(d.length * 0.15)));
+    return {
+      mean: d.reduce((s, v) => s + v, 0) / d.length,
+      local: top.reduce((s, v) => s + v, 0) / top.length,
+    };
+  };
+
+  const plain = sprite([], 12345);
+  const floor = diff(plain, sprite([], 999));
+  assert('a different seed is a real change, so it is a fair yardstick',
+    floor.mean > 3, `${floor.mean.toFixed(2)}/255 per channel`);
+
+  const iron = diff(plain, sprite(mixOf({ iron: 1 }, 0.5, 0.6), 12345));
+  assert('an iron half-merge outweighs a change of seed',
+    iron.mean > floor.mean && iron.local > floor.local,
+    `merge ${iron.mean.toFixed(2)}/${iron.local.toFixed(2)} vs seed ${floor.mean.toFixed(2)}/${floor.local.toFixed(2)}`);
+
+  // Iron and silicate are within fifteen units of each other in every channel,
+  // so this one cannot be carried by colour: it is the terrain and the scarp.
+  const ice = diff(plain, sprite(mixOf({ water: 1 }, 0.5, 0.6), 12345));
+  assert('and an icy one is larger still, because the material differs more',
+    ice.mean > iron.mean, `ice ${ice.mean.toFixed(2)} vs iron ${iron.mean.toFixed(2)}`);
+
+  // A tenth of the mass covers a tenth of the face: the disc-wide mean should
+  // stay small while the region it touched is unmistakable.
+  const small = diff(plain, sprite(mixOf({ silicate: 0.7, iron: 0.05, carbon: 0.25 }, 0.115, 0.5), 12345));
+  assert('a small impactor marks its own region without repainting the world',
+    small.local > floor.local && small.mean < iron.mean,
+    `local ${small.local.toFixed(2)} vs seed ${floor.local.toFixed(2)}, disc mean ${small.mean.toFixed(2)}`);
+
+  // Sharpness is the record of how fast the two came together. The renderer
+  // draws a scarp for a clean seam and a marble for a stirred one; if those
+  // two look the same, the velocity is not in the picture.
+  const seamVsStir = diff(
+    sprite(mixOf({ iron: 1 }, 0.5, 0.9), 12345),
+    sprite(mixOf({ iron: 1 }, 0.5, 0.05), 12345),
+  );
+  assert('a clean seam and a stirred marble are different pictures',
+    seamVsStir.mean > floor.mean && seamVsStir.local > floor.local,
+    `${seamVsStir.mean.toFixed(2)}/${seamVsStir.local.toFixed(2)} vs seed ${floor.mean.toFixed(2)}/${floor.local.toFixed(2)}`);
+
+  // And that record has to be reachable: a pair falling together from rest at
+  // infinity arrives at exactly the mutual escape velocity, and the old ramp
+  // bottomed the sharpness out at its stirred floor for anything at or above
+  // that, so the seam the renderer can draw never occurred in play.
+  const sharpnessAt = (vOverEsc) => {
+    const comp = { iron: 0.32, silicate: 0.68 };
+    const t = new Body({ name: 'T', mass: M_EARTH, composition: comp });
+    const probe = new Body({ mass: M_EARTH * 0.3, composition: comp });
+    const rs = t.radius + probe.radius;
+    const vEsc = Math.sqrt((2 * G * M_EARTH * 1.3) / rs);
+    const p = new Body({
+      name: 'P', mass: M_EARTH * 0.3, composition: comp,
+      x: rs * 0.999, vx: -vOverEsc * vEsc,
+    });
+    const merged = (resolveCollision(t, p, {}).added || [])[0];
+    return merged && merged.mixes.length ? merged.mixes[0].sharpness : null;
+  };
+  const slow = sharpnessAt(0.2), atEsc = sharpnessAt(1.0);
+  assert('a body falling from rest at infinity still leaves a seam',
+    atEsc > 0.3, `sharpness at v_esc = ${atEsc}`);
+  assert('and a slower one leaves a cleaner seam than a faster one',
+    slow > atEsc, `${slow} at 0.2 v_esc vs ${atEsc} at 1.0`);
 }
 
 section('Save and load are exact');

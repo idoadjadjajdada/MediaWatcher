@@ -301,31 +301,40 @@ export function resolveCollision(a, b, opts = {}) {
     ? vEsc * 8
     : Math.min(vEsc * 8, vEsc * Math.sqrt(reduced / (reduced - muInteract)));
 
+  // The largest remnant, from LS12's universal law (eq. 5). Every boundary
+  // below is a statement about it rather than a hand-picked number on `ratio`.
+  //
+  //   M_lr > M_t   the target grew: partial accretion (LS12 call cratering the
+  //                small-projectile limit of this, not a regime of its own)
+  //   M_lr < M_t   the target shrank: erosion
+  //   ratio >= 1   at or past catastrophic disruption, M_lr <= 0.5 M_tot
+  //   lr < 0.1     supercatastrophic
+  //
+  // The previous version split on `ratio < 0.1` and `ratio < 1`, numbers that
+  // appear in no LS12 figure, and the middle band was mislabelled by one step:
+  // an equal-mass pair at 1.1 escape velocities came out "erosion", was routed
+  // through doDisruption, named a remnant and given thirty fragments and a
+  // shatter effect, while the target had in fact grown by 89%.
+  const lrFrac = clamp(-0.5 * (ratio - 1) + 0.5, 0, 1);
+  const accretes = lrFrac * Mtot > Mt;
+  // Cratering is how a small projectile's partial accretion is presented: an
+  // excavated bowl and some ejecta rather than a rebuilt body. It is not a
+  // separate physical outcome, so it only ever refines the accreting case.
+  // A tenth of the target's mass is not a cratering impactor -- that is a
+  // planetary embryo, and Schmidt-Housen's scaling assumes the bowl is small
+  // against the target. A thousandth still covers a 500 km asteroid hitting
+  // the Earth; anything larger is an accretion event, not an excavation.
+  const cratersRatherThanMerges = ratio < 0.1 && Mp < 1e-3 * Mt;
+
   let regime;
-  if (vImp < vEsc * 1.02) {
+  if (grazing && vImp >= vGrazeMerge && Minteract < 0.5 * Mp && ratio < 1) {
+    // The projectile keeps enough of itself, and enough speed, to leave.
+    regime = 'hitrun';
+  } else if (vImp < vEsc * 1.02 && !cratersRatherThanMerges) {
+    // Below mutual escape velocity nothing gets away, whatever the geometry.
     regime = 'merge';
-  } else if (grazing) {
-    // A grazing impact well below threshold is the same physical event as a
-    // head-on one well below threshold — the target survives and absorbs the
-    // projectile. Calling one "merge" and the other "cratering" made the
-    // outcome map non-monotonic in impact parameter across that boundary.
-    if (vImp < vGrazeMerge && ratio < 1) {
-      regime = (ratio < 0.1 && Mp < 0.1 * Mt) ? 'cratering' : 'merge';
-    }
-    else if (ratio < 1 && Minteract < 0.5 * Mp) regime = 'hitrun';
-    else if (ratio < SUPERCAT) regime = 'disruption';
-    else regime = 'supercatastrophic';
-  } else if (ratio < 0.1 && Mp < 0.1 * Mt) {
-    regime = 'cratering';
-  } else if (ratio < 0.1) {
-    // Well below the disruption threshold and not a small projectile: the two
-    // bodies keep essentially all of their mass and end up as one. The grazing
-    // branch above already had this guard; this one did not, so a head-on pair
-    // of equal Earths at 1.05 escape velocities was classified as *cratering* —
-    // an equal-mass impactor cannot excavate a crater — and doCratering then
-    // spawned ejecta inside the surviving target, which re-collided, and one
-    // two-body encounter became 644 bodies and fifteen thousand events.
-    regime = 'merge';
+  } else if (accretes) {
+    regime = cratersRatherThanMerges ? 'cratering' : 'merge';
   } else if (ratio < 1) {
     regime = 'erosion';
   } else if (ratio < SUPERCAT) {
@@ -334,10 +343,37 @@ export function resolveCollision(a, b, opts = {}) {
     regime = 'supercatastrophic';
   }
 
-  // A strength-dominated pair below its own escape velocity may simply bounce.
+  // LS12 evaluate the impact twice: once with the target as the target, and
+  // once with the roles swapped, because a grazing pass can shatter the smaller
+  // body while leaving the larger untouched. Without the reverse calculation an
+  // equal-mass pair grazing at fifty escape velocities -- 560 km/s -- came out
+  // as a hit-and-run with both bodies intact.
+  if (regime === 'hitrun') {
+    const RcP = Math.cbrt((3 * Mtot) / (4 * Math.PI * RHO1));
+    const qStarP = C_STAR * (4 / 5) * Math.PI * RHO1 * G * RcP * RcP
+      * Math.pow(Math.pow(1 + 1 / gamma, 2) / (4 / gamma), 2 / (3 * MU_BAR) - 1);
+    // The interacting cap of the target is what the projectile runs into.
+    const MintT = Math.min(Mt, Minteract / Math.max(gamma, 1e-12));
+    const reducedP = (Mp * MintT) / (Mp + MintT);
+    const qStarPEff = Math.max(
+      qStarP * Math.pow(reduced / Math.max(reducedP, 1e-30), 2 - 3 * MU_BAR / 2),
+      compositionProperty(proj.composition, 'strength') / Math.max(proj.density, 1),
+    );
+    const ratioP = (0.5 * reducedP * vImp * vImp) / Mp / Math.max(qStarPEff, 1e-30);
+    if (ratioP >= SUPERCAT) regime = 'supercatastrophic';
+    else if (ratioP >= 1) regime = 'disruption';
+  }
+
+  // A strength-dominated PAIR below its own escape velocity may simply bounce:
+  // two boulders, not a boulder and a planet. `Math.min` asked whether *either*
+  // body was small, which is true of every ordinary impact — a 360 km rock,
+  // larger than Vesta, rebounded off the Earth at 1.1 km/s and left, and since
+  // a body falling from rest at infinity arrives at exactly the mutual escape
+  // velocity, that is the commonest impact in the sandbox. Nothing collided,
+  // melted or mixed, which is the whole point of the app.
   if (
     regime === 'merge' && opts.allowBounce !== false &&
-    vImp > 0.2 * vEsc && Math.min(target.radius, proj.radius) < 5e5 &&
+    vImp > 0.2 * vEsc && Math.max(target.radius, proj.radius) < 5e5 &&
     compositionProperty(target.composition, 'strength') > 1e6
   ) {
     regime = 'bounce';
@@ -345,7 +381,7 @@ export function resolveCollision(a, b, opts = {}) {
 
   switch (regime) {
     case 'bounce': return doBounce(target, proj, nx, ny, vImp, kImpact, opts);
-    case 'merge': return doMerge(target, proj, { comX, comY, comVx, comVy, kImpact, vImp, nx, ny, bImp, bCrit, vEsc, rng, opts });
+    case 'merge': return doMerge(target, proj, { comX, comY, comVx, comVy, kImpact, vImp, nx, ny, bImp, bCrit, vEsc, lrFrac, rng, opts });
     case 'hitrun': return doHitAndRun(target, proj, { nx, ny, vImp, alpha, kImpact, bImp, rng, opts });
     case 'cratering': return doCratering(target, proj, { nx, ny, vImp, kImpact, Minteract, bImp, rng, opts });
     default: return doDisruption(target, proj, {
@@ -454,9 +490,16 @@ function doMerge(target, proj, ctx) {
   // from whole bodies, it is depleted in iron — exactly the lunar composition
   // problem that the giant-impact hypothesis was invented to solve.
   const discBodies = [];
-  const { bCrit = 0.5, vEsc = 0 } = ctx;
-  if (vEsc > 0 && bImp > bCrit * 0.5 && vImp > vEsc * 0.75 && Mp > 0.02 * Mt) {
-    const discFrac = clamp(0.16 * bImp * bImp * (vImp / vEsc) * (Mp / Mtot) * 2.2, 0, 0.055);
+  const { bCrit = 0.5, vEsc = 0, lrFrac = 1 } = ctx;
+  // LS12's universal law says how much of the pair the largest remnant keeps.
+  // Anything above that has to leave, whatever the geometry: at the top of the
+  // partial-accretion band half the mass escapes, and merging it all into one
+  // body -- which is what the geometric disc alone did, capped at 5.5% -- turns
+  // a grazing 30 km/s encounter between two Earths into a tidy 2-Earth planet.
+  const shed = clamp(1 - lrFrac, 0, 0.6);
+  if (vEsc > 0 && ((bImp > bCrit * 0.5 && vImp > vEsc * 0.75 && Mp > 0.02 * Mt) || shed > 0.01)) {
+    const geometric = clamp(0.16 * bImp * bImp * (vImp / vEsc) * (Mp / Mtot) * 2.2, 0, 0.055);
+    const discFrac = Math.max(geometric, shed);
     const discMass = discFrac * Mtot;
     if (discMass > 1e17) {
       // Mantle material: mostly the impactor's, since it is the one that was
@@ -564,7 +607,13 @@ function doMerge(target, proj, ctx) {
     // escape velocity instead — six times it, at that — put every possible
     // merge above 0.83, so the marbling this exists to produce could never
     // happen from a merge at all.
-    sharpness: clamp(1.05 - vImp / Math.max(vEsc, 1), 0.05, 1),
+    // How cleanly the two materials stayed apart. Merges now happen from a
+    // standing start up to about three escape velocities, so the ramp has to
+    // span that: the old `1.05 - v/vEsc` bottomed out at 0.05 for anything at
+    // or above vEsc, and since a body falling from rest at infinity arrives at
+    // exactly vEsc, every realistic merge came out fully stirred and the clean
+    // seam the renderer can draw was unreachable.
+    sharpness: clamp(1.15 - 0.55 * (vImp / Math.max(vEsc, 1)), 0.05, 1),
     compB: proj.surfaceComposition,
   });
   if (merged.mixes.length > 6) merged.mixes.shift();
