@@ -209,7 +209,11 @@ export class GrainSystem {
     for (let pass = 0; pass < passes; pass++) this.contacts(dt / passes, opts);
 
     // --- thermal ------------------------------------------------------------
+    // Before viscosity, because viscosity needs the neighbour counts it takes.
     this.thermal(dt, opts);
+
+    // --- viscosity ----------------------------------------------------------
+    this.viscosity(opts);
   }
 
   /** Accelerations from the parcels' own gravity. */
@@ -479,7 +483,9 @@ export class GrainSystem {
       const tvx = rvx - vn * nx, tvy = rvy - vn * ny;
       const ts = Math.hypot(tvx, tvy);
       if (ts > 0) {
-        const mu = soft > 0.4 ? 0.02 : 0.35;
+        // Liquid has essentially no friction against itself; rubble has a lot,
+        // which is what lets a heap hold a slope instead of spreading flat.
+        const mu = 0.35 * (1 - soft) * (1 - soft);
         const jt = Math.min(mu * Math.abs(jimp), ts / (1 / mi + 1 / mj));
         const ux = tvx / ts, uy = tvy / ts;
         this.vx[i] += (jt * ux) / mi; this.vy[i] += (jt * uy) / mi;
@@ -506,6 +512,82 @@ export class GrainSystem {
         this.vx[i] += (applied * nx) / mi; this.vy[i] += (applied * ny) / mi;
         this.vx[j] -= (applied * nx) / mj; this.vy[j] -= (applied * ny) / mj;
       }
+    }
+  }
+
+  /**
+   * What makes melt behave like a liquid rather than a bag of marbles.
+   *
+   * Contact alone gives you hard spheres: they bounce off each other, they jam,
+   * and a molten body ends up looking like gravel that happens to glow. Real
+   * liquid drags its neighbours along — that is what viscosity is — so each
+   * molten parcel is pulled toward the average velocity of the ones around it,
+   * in proportion to how melted both are. Solid parcels are untouched, which is
+   * what keeps a rock a rock.
+   *
+   * This is the XSPH correction, and it is applied to velocity directly rather
+   * than as a force because it is a smoothing, not an interaction: it conserves
+   * momentum exactly by construction, since every exchange is symmetric.
+   */
+  viscosity(opts) {
+    const n = this.n;
+    const g = this._grid;
+    if (!g || n === 0) return;
+    const strength = opts.viscosity != null ? opts.viscosity : 0.35;
+    if (strength <= 0) return;
+    const packed = this._nbCount;
+
+    if (!this._vax || this._vax.length < this.cap) {
+      this._vax = new Float64Array(this.cap);
+      this._vay = new Float64Array(this.cap);
+    }
+    const ax = this._vax, ay = this._vay;
+    ax.fill(0, 0, n); ay.fill(0, 0, n);
+
+    const { minX, minY, cols, rows, size } = g;
+    for (let i = 0; i < n; i++) {
+      if (this.melt[i] < 0.15) continue;
+      const ci = clamp(Math.floor((this.x[i] - minX) / size), 0, cols - 1);
+      const cj = clamp(Math.floor((this.y[i] - minY) / size), 0, rows - 1);
+      for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          const nx = ci + ox, ny = cj + oy;
+          if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+          for (let j = this._heads[ny * cols + nx]; j !== -1; j = this._next[j]) {
+            if (j <= i || this.melt[j] < 0.15) continue;
+            const dx = this.x[j] - this.x[i], dy = this.y[j] - this.y[i];
+            const rr = (this.r[i] + this.r[j]) * 1.3;
+            const d2 = dx * dx + dy * dy;
+            if (d2 > rr * rr) continue;
+            // Falls off to nothing at the edge of the neighbourhood, so a
+            // parcel drifting out of range does not snap.
+            const w = 1 - Math.sqrt(d2) / rr;
+            const soft = Math.min(this.melt[i], this.melt[j]);
+            // Viscosity is a bulk property. Two droplets passing each other in
+            // vacuum do not drag on one another, and treating them as if they
+            // did quietly ate the debris disc: a grazing giant impact left 0.48
+            // lunar masses in orbit with this applied everywhere and 0.71
+            // without it. Scaling by how surrounded each parcel is keeps the
+            // melt inside a body behaving like liquid while letting anything
+            // thrown clear of it leave.
+            const dens = packed
+              ? Math.min(1, (Math.min(packed[i], packed[j]) || 0) / 5)
+              : 1;
+            if (dens <= 0) continue;
+            const k = strength * w * soft * dens;
+            const mi = this.mass[i], mj = this.mass[j];
+            const dvx = this.vx[j] - this.vx[i], dvy = this.vy[j] - this.vy[i];
+            // Symmetric and mass-weighted: momentum in equals momentum out.
+            const share = k / (mi + mj);
+            ax[i] += dvx * mj * share; ay[i] += dvy * mj * share;
+            ax[j] -= dvx * mi * share; ay[j] -= dvy * mi * share;
+          }
+        }
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      if (ax[i] === 0 && ay[i] === 0) continue;
+      this.vx[i] += ax[i]; this.vy[i] += ay[i];
     }
   }
 
