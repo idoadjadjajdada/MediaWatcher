@@ -200,7 +200,23 @@ export class UI {
 
     $('picker-collapse').addEventListener('click', () => {
       $('picker').classList.toggle('collapsed');
+      // Once someone has opened or closed it themselves, stop second-guessing
+      // them on resize.
+      $('picker').dataset.userSet = '1';
     });
+
+    // On a phone the picker is as wide as the screen and as tall as the space
+    // above the dock, so leaving it open on load means the simulation is not
+    // visible at all -- panels covered 75% of a 390x844 viewport and there was
+    // nothing to look at. Start it folded to its header there, and follow the
+    // viewport until the user expresses a preference.
+    const narrow = window.matchMedia('(max-width: 680px)');
+    const fold = () => {
+      if ($('picker').dataset.userSet) return;
+      $('picker').classList.toggle('collapsed', narrow.matches);
+    };
+    fold();
+    narrow.addEventListener('change', fold);
 
     for (const tab of document.querySelectorAll('.tab')) {
       tab.addEventListener('click', () => this.setTab(tab.dataset.tab));

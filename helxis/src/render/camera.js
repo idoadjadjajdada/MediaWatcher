@@ -62,6 +62,17 @@ export class Camera {
   }
 
   update(dt) {
+    // Both scales are public fields, and the app writes them directly in a few
+    // places (framing a preset, restoring a snapshot). A scale of 1e10 makes
+    // every body millions of buffer pixels across and wedges the renderer hard
+    // enough that a screenshot times out, so the clamp that setZoom and zoomBy
+    // apply is re-asserted here, once a frame, where nothing can route around
+    // it. Non-finite too: a NaN scale paints nothing and never recovers.
+    if (!isFinite(this.targetScale) || this.targetScale <= 0) this.targetScale = this.scale;
+    this.targetScale = clamp(this.targetScale, this.minScale, this.maxScale);
+    if (!isFinite(this.scale) || this.scale <= 0) this.scale = this.targetScale;
+    this.scale = clamp(this.scale, this.minScale, this.maxScale);
+
     // Exponential approach, framerate-independent.
     const k = 1 - Math.exp(-dt * 14);
     if (this._smooth) {

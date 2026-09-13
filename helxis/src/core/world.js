@@ -94,9 +94,10 @@ export class World {
       // refusing the new body loses its mass with no record of it.
       let worstDebris = -1, worstDebrisMass = Infinity;
       let worstAny = -1, worstAnyMass = Infinity;
+      // The incoming body is not in the array yet, so it cannot be evicted and
+      // does not need excluding here.
       for (let i = 0; i < this.bodies.length; i++) {
         const b = this.bodies[i];
-        if (b === body) continue;
         if (b.kind === 'debris' && b.mass < worstDebrisMass) { worstDebrisMass = b.mass; worstDebris = i; }
         if (b.mass < worstAnyMass) { worstAnyMass = b.mass; worstAny = i; }
       }
@@ -244,11 +245,6 @@ export class World {
   // --- Time integration -----------------------------------------------------
 
   /**
-   * Timestep from the standard velocity-change criterion, dt = eta |v|/|a|.
-   * For a circular orbit that is eta·P/2π, so eta = 0.018 puts roughly 350
-   * steps in an orbit — comfortably inside velocity Verlet's accurate range.
-   */
-  /**
    * The step a body needs, from the local dynamical time.
    *
    * `sqrt(r/|a|)` is P/2π on a circular orbit, and depends only on
@@ -295,13 +291,9 @@ export class World {
    * a shared step is both more accurate and, measured, no slower.
    */
   chooseDt(limit) {
-    // Resolving a 43-arcsecond-per-century signal needs a numerical floor well
-    // below it, and at the shipped accuracy setting second-order truncation
-    // alone produces 872 arcseconds of spurious advance. Turning relativity on
-    // is a request for a measurement, so tighten the step to match rather than
-    // report a number that is 95% error.
-    const etaCap = this.settings.relativity ? 0.012 : Infinity;
-    const eta = Math.min(this.settings.eta, etaCap);
+    // The relativity cap on eta lives in bodyStep, which is the only place the
+    // step is actually computed; it was duplicated here into two variables that
+    // nothing read.
     let dt = Infinity;
     for (const b of this.bodies) {
       if (b.fixed) continue;
@@ -328,8 +320,9 @@ export class World {
   }
 
   /**
-   * One drift-kick-drift Verlet step. Accelerations must be current on entry,
-   * and are current again on exit.
+   * One kick-drift-kick velocity Verlet step: a half kick folded into the
+   * position update, the force evaluation, then the second half kick.
+   * Accelerations must be current on entry, and are current again on exit.
    */
   verletStep(dt) {
     const bodies = this.bodies;
@@ -753,7 +746,20 @@ export class World {
       for (let j = i + 1; j < n; j++) {
         const b = this.bodies[j];
         const d = Math.hypot(b.x - a.x, b.y - a.y);
-        if (d > 0) pe -= (G * a.mass * b.mass) / d;
+        if (!(d > 0)) continue;
+        // The potential has to match the force the tree actually applies, or
+        // the drift figure measures the disagreement between the two models
+        // rather than the integrator -- and it does so precisely in the scenes
+        // where someone would be watching it, since overlapping pairs are what
+        // a collision is. Inside contact the force falls linearly to zero
+        // (shell theorem, quadtree.js), whose potential is
+        // -Gm1m2(3R^2 - d^2)/(2R^3), continuous with -Gm1m2/d at d = R.
+        const reach = a.radius + b.radius;
+        if (d < reach && reach > 0) {
+          pe -= (G * a.mass * b.mass * (3 * reach * reach - d * d)) / (2 * reach * reach * reach);
+        } else {
+          pe -= (G * a.mass * b.mass) / d;
+        }
       }
     }
     return ke + pe;

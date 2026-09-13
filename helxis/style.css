@@ -1009,22 +1009,42 @@ input[type=range]::-moz-range-thumb {
   }
   .tool-hint { display: none; }
   /* Two rows: the transport cannot give up a third of its width to the preset
-     dropdown and still show a clock, so the dropdown gets a row of its own. */
-  .transport { left: 14px; right: 14px; top: 72px; max-width: none; }
-  .transport .select.compact { min-width: 104px; }
+     dropdown and still show a clock, so the dropdown gets a row of its own.
+     Even then a 360px phone is about seventy pixels short of prev/play/next/
+     scale/step/clock/reset, and a clock cut off mid-digit is worse than one
+     fewer button -- so single-step goes, which is a desktop affordance anyway,
+     and the rest tightens up. */
+  .transport {
+    left: 14px; right: 14px; top: 72px; max-width: none;
+    gap: 3px; padding: 6px 6px;
+  }
+  .transport .select.compact { min-width: 88px; }
+  #time-step { display: none; }
+  .clock { padding: 0 3px; }
+  /* The wrapped dock is twice as tall as the single-row one, and the view pill
+     and the picker both measure their clearance from this. */
+  :root { --dock-h: 149px; }
   .preset-select { top: 124px; left: 14px; right: 14px; width: auto; }
   .viewbar { bottom: calc(var(--dock-top) + 15px); left: 14px; right: auto; }
+  /* Eight tools and an intensity slider do not fit on one phone-width row.
+     Scrolling them sideways put DELETE off-screen with nothing to say so, and
+     the slider with it, so wrap instead: two rows of four, slider underneath,
+     everything reachable without discovering a hidden scroll. */
   .dock {
     left: 14px;
     right: 14px;
     transform: none;
     width: auto;
-    overflow-x: auto;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 8px;
   }
-  .tool { width: 48px; flex: none; }
-  .intensity { flex: none; }
-  .intensity input[type=range] { width: 60px; }
+  .tool-row { flex-wrap: wrap; justify-content: center; gap: 3px; }
+  .tool { width: 21.5%; min-width: 66px; flex: 0 0 auto; }
+  .dock-sep { display: none; }
+  .intensity { flex: 1 1 100%; justify-content: center; }
+  .intensity input[type=range] { width: 44%; }
   .status { font-size: 8.5px; gap: 6px; }
 }
 

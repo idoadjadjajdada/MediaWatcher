@@ -24,7 +24,7 @@ normalise the error, so here are both, measured against a direct N² sum by
 
 | scene | θ | per-body rms \|Δa\|/\|a\| | worst body | rms \|Δa\| / rms \|a\| |
 |---|---|---|---|---|
-| Solar System, 12 bodies | 0.5 | 5.5 × 10⁻⁶ | 0.0006% | 9.4 × 10⁻⁹ |
+| Solar System, 12 bodies | 0.5 | 5.5 × 10⁻⁶ | 0.0013% | 9.4 × 10⁻⁹ |
 | Solar System, 12 bodies | 1.0 | 2.8 × 10⁻³ | 0.6% | 3.9 × 10⁻⁶ |
 | 800 equal masses in a ball | 0.5 | 4.7 × 10⁻² | 114% | 1.8 × 10⁻⁴ |
 | 800 equal masses in a ball | 1.0 | 1.9 × 10⁻¹ | 312% | 1.2 × 10⁻³ |
@@ -133,8 +133,11 @@ the 42.98″ general relativity predicts, with a numerical floor of 0.06″.
 **Thermal evolution** runs on absorbed starlight against Stefan-Boltzmann
 cooling, with latent heat spent on melting before the temperature moves again.
 Bodies settle at their equilibrium temperature without that number being written
-down anywhere. Melting drives density differentiation, which changes what the
-surface is made of, which changes what it looks like.
+down anywhere — an Earth-mass rock at 1 AU reaches 267 K, which is what its own
+composition's albedo of 0.153 gives, not the 255 K you get by assuming 0.3.
+Sunlight relaxes through a thermal skin and cooling drains the bulk; see Known
+limits for why those differ. Melting drives density differentiation, which
+changes what the surface is made of, which changes what it looks like.
 
 **Tides** shred a body that spends long enough inside its primary's Roche limit,
 which is how you get a ring.
@@ -153,12 +156,22 @@ Chenciner-Montgomery orbit. After a full period each returns to its start within
 7 × 10⁻⁵ AU.
 
 Load **Protoplanetary disc** and leave it: 160 planetesimals between 0.75 and
-1.7 AU, drawn so the count per unit semi-major axis falls as a⁻¹·⁴ — a surface
-density around a⁻²·⁴, steeper than the minimum-mass nebula's a⁻¹·⁵, because a
-flat disc that thin does not produce visible accretion inside a few minutes of
-watching. Left alone it collides in every regime the classifier has: mostly
-bounces and hit-and-runs, with roughly one merge per fifteen seconds of
-wall-clock and the occasional disruption.
+1.7 AU, drawn so the count per unit semi-major axis falls as exactly a⁻¹·⁵ — a
+surface density of a⁻²·⁵, steeper than the minimum-mass nebula's a⁻¹·⁵, because
+a flat disc that thin does not produce visible accretion inside a few minutes
+of watching. (That exponent is analytic, not fitted: the sampler draws a⁻¹ᐟ²
+uniformly. The test checks it with a Kolmogorov-Smirnov statistic against the
+exact CDF, because a six-bin histogram of 160 samples has a 1σ of ±0.33 and
+would accept almost anything.)
+
+Left alone it does collide in every regime the classifier has, but how fast
+depends entirely on how much integration it gets. Driven flat out from Node —
+`w.advance(1e9)` with `maxSubsteps: 200` and no frame budget — 110 seconds of
+wall clock buys 6.3 simulated years and 3231 collisions: 1728 bounces, 1327
+hit-and-runs, 54 merges, 41 cratering impacts, 62 disruptive events of various
+severities, 17 tidal disruptions. In the browser, where the frame budget holds
+the physics to 11 ms and the renderer takes the rest, it is far slower than
+that — the status line reads **TIME LIMITED** and means it.
 
 ---
 
@@ -179,11 +192,19 @@ top-down 2D world that is a real constraint, not a random placement — and are
 sized by gravity-regime π-group scaling, with the simple-to-complex transition
 that makes a large crater collapse outward into a much wider rim. That tracks
 both Meteor Crater and Chicxulub to within about half a factor across eight
-orders of magnitude in impact energy. A crater deep enough exposes core
-material, so a body stripped down to its iron looks like it.
+orders of magnitude in impact energy — 1.18 km for Meteor Crater's impactor
+against an actual 1.2. Every crater is recorded at its true size, however
+small; the renderer skips the ones under a texel at the sprite size it is
+drawing, which is the only place that decision belongs. A gate on the *record*
+used to throw away everything under about 25 km across on an Earth, Meteor
+Crater included, while this paragraph claimed otherwise. A crater deep enough
+exposes core material, so a body stripped down to its iron looks like it.
 
 Merges record what mixed with what, in what proportion, along which axis, and
-how violently. A gentle merge leaves a visible seam. A fast one warps the
+how violently — and the impactor's material then brings its own ground: its own
+height field at its own roughness, its own frost, its own sea level, a basin
+where a clean seam survived, and a scarp along the boundary. A gentle merge
+leaves a visible seam. A fast one warps the
 boundary with noise and twists it with a radial swirl, so the two parents end up
 marbled together. That record survives into the next merge, so a body that has
 been hit repeatedly carries all of it.
@@ -289,9 +310,47 @@ src/ui/        catalogue, presets, tools, settings, DOM
 `core/` has no idea the renderer exists. You can run the whole simulation under
 Node — the tests do.
 
+## Tests
+
+```
+node helxis/test/physics.test.mjs     # 219 assertions, no dependencies
+node helxis/serve.js &                # the browser suite needs a server
+node helxis/test/browser.test.mjs     # 15 more, needs playwright
+```
+
+`physics.test.mjs` checks the simulation against quantities measured or derived
+somewhere else — Mercury's perihelion advance, the lunar iron deficit, LS12's
+regime boundaries, the Barnes-Hut error figures this README quotes, the
+conservation laws across a 624-collision sweep of mass ratio, impact parameter
+and speed. It imports `core/` and the texture renderer directly and needs
+nothing installed.
+
+`browser.test.mjs` drives the real page, for the things that are only true at
+the seam between the UI and the core: that every tool reaches the world, that
+the field tools are paced by wall-clock time and not by the simulation's speed
+setting, that a merged planet's sprite differs from an unmerged one by more
+than a change of random seed, that the canvas is actually visible on a phone.
+It skips itself if playwright is not installed.
+
 ## Known limits
 
 - The step is shared by all bodies, so one tight pair slows the whole scene.
+- The adaptive step is `η·√(r/|a|)`, which has no term for time-to-perihelion,
+  so it under-resolves the perihelion passage of a very eccentric orbit. At the
+  shipped η = 0.06, a two-body orbit with a = 5 AU and e = 0.98 drifts by
+  5.4 × 10⁻⁴ over 20 years and 9.1 × 10⁻³ over 200 — against 1.2 × 10⁻⁵ for the
+  Solar System over the same 200 years. Convergence is clean (measured order
+  4.25, so this is truncation and not a bug) and halving η fixes it, but
+  nothing warns you.
+- A body has one temperature, and it has to stand for both a hot interior and
+  a cold surface, which are not the same thing. Sunlight is therefore relaxed
+  through a 10 m thermal skin — `√(κP/π)` for rock over a yearly cycle — while
+  cooling drains the whole bulk. Without the split an Earth pinned at 1 AU from
+  100 K read 100.09 K after a hundred simulated years, because it was warming
+  5 × 10²⁷ J/K of interior through a 1.5 × 10¹⁷ W tap; with the skin on both
+  sides a magma ocean at 2200 K flashed cold in ninety seconds. Split, it
+  reaches its 267 K equilibrium in about a year and stays molten when it is
+  molten. Neither is a substitute for tracking the two separately.
 - Loading a preset builds every sprite it needs in one frame. Measured on the
   161-body disc that costs one ~40 ms frame and nothing after it, so it is not
   amortised; a preset an order of magnitude larger would visibly hitch on load.

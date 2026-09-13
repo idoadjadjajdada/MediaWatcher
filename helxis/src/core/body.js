@@ -8,6 +8,15 @@ import {
 } from './materials.js';
 import { hashSeed } from './rng.js';
 
+/**
+ * Depth of the layer that sunlight actually heats, in metres.
+ *
+ * sqrt(kappa*P/pi) is about 3 m for rock over a yearly cycle and about 10 m for
+ * the conductivity a few metres down. It only sets how fast a body warms toward
+ * its insolation equilibrium; see thermalStep.
+ */
+const THERMAL_SKIN_M = 10;
+
 /** `opts.x ?? fallback`, but rejecting NaN as well as undefined. */
 function num(v, fallback) {
   return (v != null && isFinite(v)) ? v : fallback;
@@ -345,7 +354,22 @@ export class Body {
     // millions of years, so steps *are* large, and a forward Euler that jumped
     // a rock from 200 K to 334 K past a 268 K equilibrium is exactly what this
     // replaced.
-    const rate = net / heatCapacity;              // K/s, exact at this instant
+    // Which mass has to change temperature is not the same in both directions,
+    // and using the bulk for both is why an Earth started at 100 K and pinned
+    // at 1 AU read 100.09 K after a hundred simulated years. Sunlight heats a
+    // surface: it soaks into a thermal skin a few metres deep — sqrt(kappa*P/pi)
+    // is about 3 m for rock over a year, 10 m for the conductivity at depth —
+    // and the interior follows over geological time, which is not what anyone
+    // watching a sandbox is waiting for. Cooling is the other way round: a body
+    // that is hot because something hit it is hot all the way through, and all
+    // of that has to radiate away, which is exactly what keeps a magma ocean
+    // molten instead of flashing cold in ninety seconds.
+    //
+    // One temperature per body cannot represent both a hot interior and a cold
+    // surface, so this is the compromise, and the README says so.
+    const skinMass = Math.min(this.mass, this.density * area * THERMAL_SKIN_M);
+    const relaxMass = (gap > 0 ? skinMass : this.mass) * cp;
+    const rate = net / relaxMass;                 // K/s, exact at this instant
     if (rate === 0) return;
     const tau = gap / rate;
     // A negative tau would mean the flux points away from equilibrium, which
@@ -360,6 +384,10 @@ export class Body {
     // interior, and — because the sprite cache is keyed on what refresh()
     // computes — never stopped looking cold.
     if (target > before) {
+      // The skin set the *rate*; converting back to joules still uses the bulk,
+      // because the one temperature this body has stands for all of it, and
+      // addHeat is what spends that energy on latent heat and on re-sorting the
+      // interior.
       this.addHeat((target - before) * heatCapacity);
     } else {
       this.temperature = target;
@@ -410,12 +438,18 @@ export class Body {
       d = L * 10;
     }
     const size = d / this.radius;
-    // One texel of the largest sprite the renderer uses is 1/256 of the disc.
-    // Anything smaller genuinely cannot be drawn; the previous threshold of a
-    // full percent threw away everything under 76 km across on an Earth, so a
-    // world under constant ordinary bombardment stayed unmarked.
-    if (!(size > 0.004)) return;
-    const clamped = clamp(size, 0.004, 1.4);
+    // Record it whatever its size; the renderer already skips any crater under
+    // a texel at the sprite size it is drawing (`if (cr2 * n < 1) continue`),
+    // which is the only place that decision belongs. Gating the *record* at
+    // 1/256 of the disc threw away every crater under about 25 km across on an
+    // Earth — including Meteor Crater, which this scaling gets right at 1.18 km
+    // against an actual 1.2 and which the README claims the code tracks. The
+    // list is capped and evicts its smallest, so keeping them costs nothing.
+    if (!(size > 0)) return;
+    // Keep the true fraction. Clamping every small crater up to 1/256 of the
+    // disc made Meteor Crater and a 25 km basin the same entry, and the
+    // renderer could no longer tell which it could draw.
+    const clamped = clamp(size, 0, 1.4);
     this.craters.push({
       a: angle,
       // Where on the visible disc: impacts near the limb are foreshortened.
@@ -425,7 +459,15 @@ export class Body {
       // Deep enough to expose the interior?
       exposesCore: clamped > 0.45,
     });
-    if (this.craters.length > 48) this.craters.shift();
+    // Evict the smallest, not the oldest. Now that sub-texel craters are
+    // recorded, a stream of gravel would otherwise push a basin off the list.
+    if (this.craters.length > 48) {
+      let worst = 0;
+      for (let i = 1; i < this.craters.length; i++) {
+        if (this.craters[i].size < this.craters[worst].size) worst = i;
+      }
+      this.craters.splice(worst, 1);
+    }
     this.revision++;
     this.refresh();
   }

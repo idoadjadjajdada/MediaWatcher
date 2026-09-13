@@ -1022,6 +1022,166 @@ section('A merge is visible in the sprite it produces');
     slow > atEsc, `${slow} at 0.2 v_esc vs ${atEsc} at 1.0`);
 }
 
+section('Regressions found in the fifth review');
+{
+  // One NaN used to delete the entire scene: cullNonFinite ran only at the end
+  // of advance(), a full step after the tree had smeared it through every
+  // acceleration. Twelve bodies in, zero out, all twelve reported culled.
+  for (const field of ['x', 'y', 'vx', 'vy', 'mass', 'radius']) {
+    const w = new World({ frameBudgetMs: 1e9 });
+    loadPreset(w, 'solar-system');
+    const n0 = w.bodies.length;
+    w.bodies[3][field] = NaN;
+    w.advance(DAY);
+    assert(`a NaN ${field} takes one body, not the scene`,
+      w.bodies.length === n0 - 1
+        && w.bodies.every((b) => [b.x, b.y, b.vx, b.vy].every(isFinite)),
+      `${w.bodies.length} of ${n0} survived`);
+  }
+}
+{
+  // A strength-dominated *pair* of boulders may bounce. A boulder and a planet
+  // may not: `Math.min(target.radius, proj.radius) < 5e5` asked whether either
+  // body was small, which is true of every impact onto a planet, and since a
+  // body falling from rest at infinity arrives at exactly the mutual escape
+  // velocity, everything below that was classified merge and then converted to
+  // bounce. A 360 km rock rebounded off the Earth and left.
+  const comp = { iron: 0.32, silicate: 0.68 };
+  const onEarth = (mp, v) => {
+    const t = new Body({ name: 'T', mass: M_EARTH, composition: comp });
+    const probe = new Body({ mass: mp, composition: comp });
+    const rs = t.radius + probe.radius;
+    const p = new Body({ name: 'P', mass: mp, composition: comp, x: rs * 0.999, vx: -v });
+    return resolveCollision(t, p, { allowBounce: true }).regime;
+  };
+  let bounced = null;
+  for (const mp of [1.3e13, 1.3e17, 1.3e19, 8e20, 1.3e22]) {
+    for (const v of [3e3, 8e3, 11e3, 20e3]) {
+      if (onEarth(mp, v) === 'bounce') bounced = `${mp.toExponential(1)} kg at ${v / 1000} km/s`;
+    }
+  }
+  assert('nothing bounces off a planet', bounced === null, bounced || 'none of 20');
+  // But two boulders still do.
+  const a = new Body({ name: 'a', mass: 1e12, composition: { silicate: 1 } });
+  const probe2 = new Body({ mass: 1e12, composition: { silicate: 1 } });
+  const rs2 = a.radius + probe2.radius;
+  const b2 = new Body({ name: 'b', mass: 1e12, composition: { silicate: 1 }, x: rs2 * 0.999, vx: -3 });
+  assert('two boulders still bounce off each other',
+    resolveCollision(a, b2, { allowBounce: true }).regime === 'bounce');
+}
+{
+  // Two Earths grazing at b = 0.99 and fifty escape velocities -- 562 km/s --
+  // used to produce literally nothing: same regime, same two masses, zero
+  // debris. Only about a thousandth of each body is inside the other at that
+  // impact parameter, which is why it stays a hit-and-run rather than becoming
+  // a disruption; but that thousandth cannot survive half a million metres per
+  // second, and it was surviving because the LS12 interacting-mass correction
+  // diverges as the interacting fraction goes to zero, sending Q*_RD to
+  // infinity and the stripped mass with it.
+  const comp = { iron: 0.32, silicate: 0.68 };
+  const graze = (bp, vOverEsc) => {
+    const t = new Body({ name: 'T', mass: M_EARTH, composition: comp });
+    const probe = new Body({ mass: M_EARTH, composition: comp });
+    const rs = t.radius + probe.radius;
+    const vEsc = Math.sqrt((2 * G * M_EARTH * 2) / rs);
+    const p = new Body({
+      name: 'P', mass: M_EARTH, composition: comp,
+      x: Math.sqrt(1 - bp * bp) * rs * 0.999, y: bp * rs * 0.999, vx: -vOverEsc * vEsc,
+    });
+    const r = resolveCollision(t, p, { allowBounce: true });
+    return {
+      regime: r.regime,
+      debris: (r.added || []).reduce((s, x) => s + x.mass, 0),
+      pieces: (r.added || []).length,
+      lost: (M_EARTH - p.mass) / M_EARTH,
+    };
+  };
+  const fast = graze(0.99, 50);
+  assert('a hypervelocity graze destroys the material that touched',
+    fast.debris > 0 && fast.pieces > 0,
+    `${fast.regime}, ${fast.pieces} pieces, projectile lost ${(fast.lost * 100).toFixed(3)}%`);
+  // Faster has to take more, at the same geometry.
+  const slow = graze(0.99, 2);
+  assert('and takes more of it than a slow one does',
+    fast.lost > slow.lost, `${fast.lost.toExponential(2)} vs ${slow.lost.toExponential(2)}`);
+  // Deeper has to take more, at the same speed: a nearly head-on pass at this
+  // speed is not survivable at all.
+  const deep = graze(0.3, 50);
+  assert('and a deeper pass at the same speed destroys both bodies',
+    deep.regime === 'supercatastrophic' || deep.regime === 'disruption',
+    `${deep.regime}`);
+}
+{
+  // The energy diagnostic has to use the same force law the tree does, or the
+  // drift figure measures the disagreement between two models rather than the
+  // integrator -- precisely in the scenes where someone is watching it, since
+  // overlapping bodies are what a collision is.
+  const w = new World({ frameBudgetMs: 1e9, collisions: false });
+  const a = new Body({ name: 'A', mass: M_EARTH, radius: R_EARTH, x: -R_EARTH * 0.4 });
+  const b = new Body({ name: 'B', mass: M_EARTH, radius: R_EARTH, x: R_EARTH * 0.4 });
+  w.add(a); w.add(b);
+  w.settings.wantDiagnostics = true;
+  const e0 = w.totalEnergy();
+  for (let i = 0; i < 4000; i++) w.advance(0.5);
+  const drift = Math.abs((w.totalEnergy() - e0) / e0);
+  assert('energy is conserved while two bodies pass through each other',
+    drift < 1e-4, `${drift.toExponential(2)} over ${w.steps} steps`);
+  // And the interior potential is continuous with the exterior one at contact.
+  const at = (d) => {
+    const w2 = new World();
+    w2.add(new Body({ name: 'A', mass: M_EARTH, radius: R_EARTH }));
+    w2.add(new Body({ name: 'B', mass: M_EARTH, radius: R_EARTH, x: d }));
+    return w2.totalEnergy();
+  };
+  const R = 2 * R_EARTH;
+  check('the potential is continuous at contact',
+    at(R * 0.9999), at(R * 1.0001), 1e-3);
+}
+{
+  // Every crater is recorded at its true size; the renderer decides what it can
+  // draw. A gate at 1/256 of the disc threw away Meteor Crater, which this
+  // scaling otherwise gets to within 2%.
+  const rng = () => 0.5;
+  const earth = () => new Body({
+    name: 'E', mass: M_EARTH, radius: R_EARTH, composition: { iron: 0.32, silicate: 0.68 },
+  });
+  const e = earth();
+  e.addCrater(1, 0, 3e8, 25, 12800, rng);
+  assert('Meteor Crater is recorded at all', e.craters.length === 1);
+  check('and at the right size', e.craters[0].size * R_EARTH / 1000, 1.2, 0.25, ' km');
+  // A stream of gravel must not push a basin off the capped list.
+  const big = earth();
+  big.addCrater(1, 0, 1e15, 5000, 20000, rng);
+  const basin = big.craters[0].size;
+  for (let i = 0; i < 120; i++) big.addCrater(Math.cos(i), Math.sin(i), 3e8, 25, 12800, rng);
+  assert('and gravel does not evict a basin',
+    big.craters.some((c) => c.size === basin), `${big.craters.length} held`);
+}
+{
+  // Sunlight has to warm a planet on a timescale someone can watch, and an
+  // impact has to leave one molten. Relaxing both through the bulk gave 100.09 K
+  // after a hundred years; relaxing both through the skin cooled a magma ocean
+  // in ninety seconds.
+  const at1AU = (mass, t0, years) => {
+    const w = new World({ frameBudgetMs: 1e9, maxSubsteps: 4000, collisions: false });
+    w.add(new Body({
+      name: 'Sun', kind: 'star', mass: M_SUN, radius: 6.957e8, temperature: 5772, fixed: true,
+    }));
+    const b = new Body({
+      name: 'B', mass, composition: { iron: 0.32, silicate: 0.68 }, temperature: t0,
+      x: AU, fixed: true,
+    });
+    w.add(b);
+    while (w.time < years * YEAR) w.advance(YEAR / 40);
+    return b.temperature;
+  };
+  check('an Earth-mass rock at 1 AU reaches equilibrium within a few years',
+    at1AU(M_EARTH, 100, 5), 267, 0.03, ' K');
+  const molten = at1AU(M_EARTH, 2200, 5);
+  assert('and a molten one is still molten five years later',
+    molten > 1800, `${molten.toFixed(0)} K`);
+}
+
 section('Save and load are exact');
 {
   const w = new World({ frameBudgetMs: 1e9 });
@@ -1103,19 +1263,37 @@ section('The numbers the README quotes');
   check('inner edge', a[0], 0.75, 0.08, ' AU');
   check('outer edge', a[a.length - 1], 1.7, 0.08, ' AU');
   {
-    const lo = Math.log(a[0]), hi = Math.log(a[a.length - 1]), B = 6;
-    const count = new Array(B).fill(0);
-    for (const v of a) count[Math.min(B - 1, Math.floor((Math.log(v) - lo) / (hi - lo) * B))]++;
-    const pts = [];
-    for (let i = 0; i < B; i++) {
-      const e0 = Math.exp(lo + (hi - lo) * i / B), e1 = Math.exp(lo + (hi - lo) * (i + 1) / B);
-      pts.push([Math.log((e0 + e1) / 2), Math.log(count[i] / (e1 - e0))]);
+    // The sampler draws a^(-1/2) uniformly, so dN/da is exactly a^-1.5 and the
+    // surface density a^-2.5 — analytic, not measured. A six-bin histogram fit
+    // of 160 samples gave -1.38, which is what the README used to quote and
+    // what this used to assert to 25%; with a 1-sigma of +/-0.33 on that fit it
+    // would have passed for any sampler between -1.03 and -1.73. It locked in
+    // one realisation of the binning noise and constrained nothing.
+    //
+    // Kolmogorov-Smirnov against the exact CDF instead. F(a) is linear in
+    // a^(-1/2) between the edges, and D > 1.36/sqrt(n) rejects at p = 0.05 —
+    // 0.108 for 160 planetesimals. This does discriminate: a uniform-in-a
+    // sampler over the same range gives D = 0.16 and fails.
+    const inner = a[0], outer = a[a.length - 1];
+    const lo = Math.pow(inner, -0.5), hi = Math.pow(outer, -0.5);
+    let D = 0;
+    for (let i = 0; i < a.length; i++) {
+      const F = (Math.pow(a[i], -0.5) - lo) / (hi - lo);
+      D = Math.max(D, Math.abs(F - i / a.length), Math.abs((i + 1) / a.length - F));
     }
-    const mx = pts.reduce((t, q) => t + q[0], 0) / B;
-    const my = pts.reduce((t, q) => t + q[1], 0) / B;
-    const slope = pts.reduce((t, q) => t + (q[0] - mx) * (q[1] - my), 0)
-      / pts.reduce((t, q) => t + (q[0] - mx) ** 2, 0);
-    check('dN/da power law', slope, -1.38, 0.25);
+    assert('the disc follows dN/da = a^-1.5 exactly, not approximately',
+      D < 1.36 / Math.sqrt(a.length),
+      `KS D = ${D.toFixed(4)}, reject above ${(1.36 / Math.sqrt(a.length)).toFixed(4)}`);
+    // And the same statistic on a distribution the sampler is not, so a test
+    // that would pass for anything is visibly not what this is.
+    let Dflat = 0;
+    for (let i = 0; i < a.length; i++) {
+      const F = (a[i] - inner) / (outer - inner);
+      Dflat = Math.max(Dflat, Math.abs(F - i / a.length));
+    }
+    assert('and the test can tell that from a flat one',
+      Dflat > 1.36 / Math.sqrt(a.length),
+      `uniform-in-a would give D = ${Dflat.toFixed(4)}`);
   }
 }
 
@@ -1152,14 +1330,24 @@ section('Fields and settings reach the simulation');
     `light ${dv[0].toExponential(2)} m/s, heavy ${dv[1].toExponential(2)} m/s`);
   assert('and the kick is not zero', dv[0] > 0);
 
-  // Twice the wall-clock, twice the impulse -- and the simulation's own time
-  // scale must not enter into it.
-  const kick = (dtReal, timeScale) => {
+  // Twice the time held, twice the impulse.
+  //
+  // An earlier version of this also claimed to prove the kick was independent
+  // of the simulation's speed setting, by writing `w2.timeScale` -- a property
+  // World does not have and nothing reads. The two calls it compared ran
+  // identical code with identical arguments and could only return bit-identical
+  // values, which is why the assertion needed a 1e-9 tolerance and printed the
+  // same number twice. It asserted nothing at all.
+  //
+  // The coupling that actually matters is at the call site: App.update passes
+  // the wall-clock delta, not the simulated one. That is a browser-side fact,
+  // so it is checked in test/browser.test.mjs, where it can be observed rather
+  // than assumed. What is testable here is the shape of the field itself.
+  const kick = (dtReal, targetMass) => {
     const w2 = new World({ frameBudgetMs: 1e9 });
     w2.add(new Body({ name: 'S', mass: M_SUN, radius: 7e8, fixed: true }));
-    const t = new Body({ name: 'T', mass: 1e20, radius: 1e5, x: AU, vy: 29780 });
+    const t = new Body({ name: 'T', mass: targetMass, radius: 1e5, x: AU, vy: 29780 });
     w2.add(t);
-    w2.timeScale = timeScale;
     w2.computeAccelerations();
     const t2 = new ToolController(fakeApp(w2));
     t2.tool = 'attract';
@@ -1168,11 +1356,26 @@ section('Fields and settings reach the simulation');
     t2.applyField(dtReal, +1);
     return Math.hypot(t.vx, t.vy - 29780);
   };
-  const k1 = kick(0.1, 1), k2 = kick(0.2, 1), k3 = kick(0.1, 1e7);
-  check('the field impulse is linear in wall-clock time', k2 / k1, 2, 0.02);
-  assert('and independent of the simulation speed',
-    Math.abs(k3 - k1) / k1 < 1e-9,
-    `${k1.toExponential(3)} vs ${k3.toExponential(3)} m/s`);
+  const k1 = kick(0.1, 1e20), k2 = kick(0.2, 1e20), k3 = kick(0.1, 1e26);
+  check('the field impulse is linear in the time held', k2 / k1, 2, 0.02);
+  assert('and a million times the mass takes the same kick',
+    Math.abs(k3 - k1) / k1 < 0.02,
+    `${k1.toExponential(3)} vs ${k3.toExponential(3)} m/s at 1e20 and 1e26 kg`);
+  // Repel is attract with the sign flipped, and nothing checked that either.
+  const away = (() => {
+    const w3 = new World({ frameBudgetMs: 1e9 });
+    w3.add(new Body({ name: 'S', mass: M_SUN, radius: 7e8, fixed: true }));
+    const t = new Body({ name: 'T', mass: 1e20, radius: 1e5, x: AU, vy: 29780 });
+    w3.add(t);
+    w3.computeAccelerations();
+    const t3 = new ToolController(fakeApp(w3));
+    t3.tool = 'repel';
+    t3.intensity = 1;
+    t3.world = { x: AU + 2e8, y: 0 };
+    t3.applyField(0.1, -1);
+    return t.vx;
+  })();
+  assert('repel pushes away from the cursor', away < 0, `${away.toExponential(2)} m/s`);
 
   // Energy bookkeeping costs an O(N^2) pass, so the world skips it unless the
   // diagnostics readout is on -- and the settings layer has to actually say so.

@@ -263,7 +263,14 @@ export function resolveCollision(a, b, opts = {}) {
   const massRatioFactor = Math.pow(Math.pow(1 + gamma, 2) / (4 * gamma), 2 / (3 * MU_BAR) - 1);
   // Reduced interacting mass raises the threshold the same way.
   const reducedInteract = (Mt * Minteract) / (Mt + Minteract);
-  const alphaFactor = Math.pow(reduced / Math.max(reducedInteract, 1e-30), 2 - 3 * MU_BAR / 2);
+  // LS12 calibrate this correction for interacting fractions of order a tenth
+  // to one. As alpha goes to zero it diverges, and an unbounded Q*_RD means no
+  // impact can ever disrupt anything at high impact parameter however fast it
+  // is going: two Earths grazing at b = 0.99 and 562 km/s came out with both
+  // bodies untouched and not one gram of debris. Bounded at a thousand, which
+  // is already far outside the range the paper fits.
+  const alphaFactor = Math.min(1e3,
+    Math.pow(reduced / Math.max(reducedInteract, 1e-30), 2 - 3 * MU_BAR / 2));
   const qStar = qStarEqual * massRatioFactor * alphaFactor;
 
   // Strength matters below roughly a kilometre; take whichever binding is
@@ -724,7 +731,22 @@ function doHitAndRun(target, proj, ctx) {
 
   // Only the interacting cap is stripped from the projectile; the rest of it
   // carries on, decelerated by the momentum it gave up.
-  const stripped = alpha * Mp * clamp(0.35 + rng() * 0.4, 0.1, 0.9);
+  //
+  // How much of the cap survives depends on what was delivered to it. A slow
+  // graze shears off part of it; once the specific energy in the cap is past
+  // the material's own binding, nothing in it stays attached — which is the
+  // difference between a scrape and two planets passing through each other at
+  // half a million metres per second and, as this used to have it, exchanging
+  // nothing at all.
+  const capMass = Math.max(alpha * Mp, 1e-30);
+  const capBinding = Math.max(
+    (3 * G * capMass) / (5 * Math.max(proj.radius * Math.cbrt(alpha), 1)),
+    compositionProperty(proj.composition, 'strength') / Math.max(proj.density, 1),
+  );
+  const capSpecific = (0.5 * vImp * vImp);
+  const shear = clamp(0.35 + rng() * 0.4, 0.1, 0.9);
+  const strippedFrac = clamp(Math.max(shear, capSpecific / (capSpecific + capBinding)), 0.1, 1);
+  const stripped = Math.min(capMass * strippedFrac, Mp * 0.9);
   const survivorMp = Mp - stripped;
 
   const pX = Mt * target.vx + Mp * proj.vx;
@@ -775,6 +797,8 @@ function doHitAndRun(target, proj, ctx) {
   if (!(survivorMp > 0)) {
     throw new Error(`hit-and-run stripped the whole projectile: ${survivorMp} of ${Mp}`);
   }
+  // A hit-and-run removes nothing: both bodies survive by definition, and the
+  // assertion above guarantees the projectile keeps some mass.
   const removed = [];
   const added = fragments.slice();
   proj.mass = survivorMp;
