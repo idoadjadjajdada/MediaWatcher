@@ -224,11 +224,17 @@ export class Quadtree {
     // simulation to a halt.
     let bestPull = 0;
     let bestDist = Infinity;
+    // Separately: the nearest *surface*, and whose it is. The step chooser
+    // needs this to keep a step from carrying a body straight through the one
+    // it is about to hit — a different question from which mass is pulling
+    // hardest, and answered by a different body almost every time.
+    let nearGap = Infinity;
+    let nearIdx = -1;
     const eps2 = softening * softening;
     const theta2 = theta * theta;
     let stack = this._stack || (this._stack = new Int32Array(4096));
     let sp = 0;
-    out[0] = 0; out[1] = 0; out[2] = Infinity;
+    out[0] = 0; out[1] = 0; out[2] = Infinity; out[3] = Infinity; out[4] = -1;
     if (this.root === -1) return out;
     stack[sp++] = this.root;
 
@@ -264,6 +270,10 @@ export class Quadtree {
         if (d > 0) {
           const pull = (G * mm) / (d * d);
           if (pull > bestPull) { bestPull = pull; bestDist = d; }
+          if (other && other !== b) {
+            const gap = d - brad - other.radius;
+            if (gap < nearGap) { nearGap = gap; nearIdx = j; }
+          }
         }
 
         // Interior gravity. Newton's shell theorem says the field inside a
@@ -330,6 +340,7 @@ export class Quadtree {
       }
     }
     out[0] = ax; out[1] = ay; out[2] = bestDist;
+    out[3] = nearGap; out[4] = nearIdx;
     return out;
   }
 

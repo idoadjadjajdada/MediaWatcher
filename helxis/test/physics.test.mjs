@@ -1537,6 +1537,81 @@ section('Planets are made of something now');
   }
 }
 
+section('A giant impact makes a moon, at any time scale');
+{
+  // The whole point, end to end: something Mars-sized hits a proto-Earth off
+  // centre, the planet melts, and what it throws off ends up in orbit as a
+  // moon. And the answer must not depend on how fast the clock was running.
+  //
+  // It used to. The step chooser knew only about the local gravitational field,
+  // which says nothing about contact, so at a large time scale the held step
+  // grew until a body could cross a neighbour in one go. The swept test still
+  // found the contact, but everything downstream saw an interpenetration
+  // instead of a touch, and a debris disc that settled into a moon when stepped
+  // finely came apart into 282 fragments when stepped coarsely.
+  const comp = { iron: 0.32, silicate: 0.68 };
+  const run = (chunkDays) => {
+    const w = new World({ frameBudgetMs: 1e9, maxSubsteps: 400 });
+    const t = new Body({
+      name: 'Proto-Earth', mass: M_EARTH * 0.9, composition: comp,
+      differentiation: 1, temperature: 900, seed: 7,
+    });
+    t.ensureField();
+    const pm = M_EARTH * 0.13;
+    const probe = new Body({ mass: pm, composition: { iron: 0.25, silicate: 0.75 } });
+    const rs = t.radius + probe.radius;
+    const vEsc = Math.sqrt((2 * G * (t.mass + pm)) / rs);
+    const b = 0.72;
+    w.add(t);
+    w.add(new Body({
+      name: 'Theia', mass: pm, composition: { iron: 0.25, silicate: 0.75 },
+      temperature: 900, seed: 8,
+      x: Math.sqrt(1 - b * b) * rs * 1.02, y: b * rs * 1.02,
+      vx: -1.08 * vEsc * Math.sqrt(1 - b * b), vy: -1.08 * vEsc * b,
+    }));
+    let shattered = 0;
+    w.on('collision', (e) => {
+      if (e.regime === 'supercatastrophic' || e.regime === 'disruption') shattered++;
+    });
+    while (w.time < 3000 * DAY) w.advance(DAY * chunkDays);
+    const planet = w.bodies.slice().sort((x, y) => y.mass - x.mass)[0];
+    const rest = w.bodies.filter((x) => x !== planet);
+    const moon = rest.sort((x, y) => y.mass - x.mass)[0] || null;
+    let bound = false;
+    if (moon) {
+      const d = Math.hypot(moon.x - planet.x, moon.y - planet.y);
+      const v = Math.hypot(moon.vx - planet.vx, moon.vy - planet.vy);
+      bound = v < Math.sqrt((2 * G * planet.mass) / d);
+    }
+    return {
+      bodies: w.bodies.length, planet: planet.mass / M_EARTH,
+      moon: moon ? moon.mass / M_MOON : 0, bound, shattered,
+      molten: planet.field ? planet.field.moltenFraction : 0,
+    };
+  };
+
+  const fine = run(5);
+  assert('the impact melts the planet', fine.molten > 0.5,
+    `${(fine.molten * 100).toFixed(0)}% molten`);
+  check('and leaves an Earth', fine.planet, 1.017, 0.02, ' M_E');
+  assert('and a moon of about a lunar mass', fine.moon > 0.4 && fine.moon < 2.5,
+    `${fine.moon.toFixed(2)} lunar masses`);
+  assert('in orbit rather than leaving', fine.bound, `${fine.bound}`);
+  assert('and nothing was shattered getting there', fine.shattered === 0,
+    `${fine.shattered} disruptive events`);
+
+  const coarse = run(200);
+  assert('a forty-times coarser clock gives the same planet',
+    Math.abs(coarse.planet - fine.planet) / fine.planet < 0.02,
+    `${fine.planet.toFixed(3)} vs ${coarse.planet.toFixed(3)} M_E`);
+  assert('and the same moon',
+    coarse.moon > 0.4 && coarse.moon < 2.5
+      && Math.abs(coarse.moon - fine.moon) / fine.moon < 0.35,
+    `${fine.moon.toFixed(2)} vs ${coarse.moon.toFixed(2)} lunar masses`);
+  assert('and does not shatter the debris either', coarse.shattered === 0,
+    `${coarse.shattered} disruptive events at 200-day chunks`);
+}
+
 section('Save and load are exact');
 {
   const w = new World({ frameBudgetMs: 1e9 });

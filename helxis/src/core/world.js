@@ -182,6 +182,31 @@ export class World {
       b.ax = out[0];
       b.ay = out[1];
       b.nearest = out[2];
+
+      // How long until this body reaches the surface of its nearest neighbour,
+      // if both keep going. The step chooser caps on it so that a contact is
+      // always resolved from a touch rather than from an overlap.
+      // Only for a neighbour it is actually closing on, and only while there
+      // is still a gap. Using the full relative speed instead of the radial
+      // part capped the step for every body merely *near* another one, which in
+      // a debris disc is all of them all the time, and the simulation slowed by
+      // a factor of three thousand. Two bodies passing each other at speed are
+      // not on their way to a contact.
+      b.closeTime = Infinity;
+      const j = out[4];
+      const gap = out[3];
+      if (this.settings.collisions !== false && j >= 0 && j < n && gap > 0 && isFinite(gap)) {
+        const o = this.bodies[j];
+        if (o) {
+          const dx = o.x - b.x, dy = o.y - b.y;
+          const d = Math.hypot(dx, dy);
+          if (d > 0) {
+            // Positive when the separation is shrinking.
+            const closing = ((b.vx - o.vx) * dx + (b.vy - o.vy) * dy) / d;
+            if (closing > 0) b.closeTime = gap / closing;
+          }
+        }
+      }
     }
     this._accelDirty = false;
 
@@ -263,7 +288,28 @@ export class World {
     const eta = this.settings.relativity
       ? Math.min(this.settings.eta, 0.012)
       : this.settings.eta;
-    return eta * Math.sqrt(scale / a);
+    const dyn = eta * Math.sqrt(scale / a);
+
+    // And never long enough to pass through the thing it is approaching.
+    //
+    // The dynamical criterion knows nothing about contact: it is a statement
+    // about the local gravitational field, and two bodies closing at 5 km/s
+    // across a gap of a hundred kilometres are in no hurry by that measure. So
+    // at large time scales, where the requested chunk lets the held step grow,
+    // a step could carry a body deep inside another before anything looked. The
+    // swept test still finds the contact, but everything downstream then sees
+    // an interpenetration rather than a touch — which is why a gentle encounter
+    // could come out looking like a violent one, and why a debris disc that
+    // settles into a moon at one time scale came apart into 282 fragments at
+    // another.
+    const close = b.closeTime;
+    if (close != null && isFinite(close) && close > 0) {
+      // Floored against the dynamical step: an approach can be arbitrarily slow
+      // across an arbitrarily small gap, and letting that drive the step to
+      // zero trades one failure for a worse one.
+      return Math.max(Math.min(dyn, close * 0.35), dyn / 48);
+    }
+    return dyn;
   }
 
   /**
