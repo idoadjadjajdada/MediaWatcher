@@ -23,6 +23,79 @@ function fragmentFloor(opts, fallback) {
   return floor > 0 ? Math.max(floor, fallback) : fallback;
 }
 
+/**
+ * Lift freshly spawned pieces clear of the bodies that survived the collision.
+ *
+ * The ring layouts space the new pieces against each other, but nothing spaced
+ * them against the body they came off. Cratering ejecta was laid out on a ring
+ * whose near side cut through the target's own surface, and hit-and-run debris
+ * was cleared against the projectile while the target sat in contact with it.
+ * In a sweep of 624 collisions across mass ratio, impact parameter and speed,
+ * 391 produced a product interpenetrating a survivor — and the contact solver
+ * then resolved each one as a fresh collision, so a single cratering impact
+ * logged eleven of them, with eleven craters and eleven doses of impact heat.
+ *
+ * The test that was supposed to catch this only compared new pieces against
+ * each other, so it passed throughout.
+ *
+ * Pushing radially outward preserves the direction the piece was launched in;
+ * the caller restores the centre of mass afterwards.
+ */
+function liftClear(pieces, obstacles) {
+  // Survivors are fixed and pieces move around them, but the pieces also have
+  // to stay clear of each other: lifting ejecta off the target's surface packs
+  // it together, and a first version of this traded 391 piece-on-survivor
+  // overlaps for 163 piece-on-piece ones. So relax the whole set together.
+  const all = obstacles.concat(pieces);
+  const relax = () => {
+    for (let pass = 0; pass < 16; pass++) {
+      let moved = false;
+      for (const f of pieces) {
+        for (const o of all) {
+          if (o === f || !(o.mass > 0)) continue;
+          let dx = f.x - o.x, dy = f.y - o.y;
+          let d = Math.hypot(dx, dy);
+          const need = (o.radius + f.radius) * 1.02;
+          if (d >= need) continue;
+          // Coincident centres have no direction to push along; take the
+          // piece's own velocity, which is the way it was leaving anyway.
+          if (d < 1e-9) {
+            const vs = Math.hypot(f.vx - o.vx, f.vy - o.vy);
+            if (vs > 0) { dx = (f.vx - o.vx) / vs; dy = (f.vy - o.vy) / vs; }
+            else { dx = 1; dy = 0; }
+            d = 1;
+          }
+          f.x = o.x + (dx / d) * need;
+          f.y = o.y + (dy / d) * need;
+          moved = true;
+        }
+      }
+      if (!moved) return true;
+    }
+    return false;
+  };
+
+  // Relaxing alone cannot always succeed: a hit-and-run leaves the target and
+  // the projectile in contact, and a dozen debris pieces do not fit in the gap
+  // whatever order you push them in. Nine of 624 collisions jammed like that
+  // and stayed jammed at 32 passes, so it is geometry, not slow convergence.
+  // When it happens, grow the whole cloud away from the survivors until there
+  // is room. The caller puts the centre of mass back afterwards, so the only
+  // physical consequence is a slightly wider debris ring.
+  if (relax() || !pieces.length) return;
+  let px = 0, py = 0, pm = 0;
+  for (const o of obstacles) { px += o.mass * o.x; py += o.mass * o.y; pm += o.mass; }
+  if (!(pm > 0)) return;
+  px /= pm; py /= pm;
+  for (let grow = 0; grow < 24; grow++) {
+    for (const f of pieces) {
+      f.x = px + (f.x - px) * 1.15;
+      f.y = py + (f.y - py) * 1.15;
+    }
+    if (relax()) return;
+  }
+}
+
 // Leinhardt & Stewart (2012) parameters.
 const RHO1 = 1000;        // kg/m^3, the reference density their scaling uses
 const C_STAR = 5.0;       // dissipation constant; ~5 for hydrodynamic bodies
@@ -242,8 +315,17 @@ export function resolveCollision(a, b, opts = {}) {
     else if (ratio < 1 && Minteract < 0.5 * Mp) regime = 'hitrun';
     else if (ratio < SUPERCAT) regime = 'disruption';
     else regime = 'supercatastrophic';
-  } else if (ratio < 0.1) {
+  } else if (ratio < 0.1 && Mp < 0.1 * Mt) {
     regime = 'cratering';
+  } else if (ratio < 0.1) {
+    // Well below the disruption threshold and not a small projectile: the two
+    // bodies keep essentially all of their mass and end up as one. The grazing
+    // branch above already had this guard; this one did not, so a head-on pair
+    // of equal Earths at 1.05 escape velocities was classified as *cratering* —
+    // an equal-mass impactor cannot excavate a crater — and doCratering then
+    // spawned ejecta inside the surviving target, which re-collided, and one
+    // two-body encounter became 644 bodies and fifteen thousand events.
+    regime = 'merge';
   } else if (ratio < 1) {
     regime = 'erosion';
   } else if (ratio < SUPERCAT) {
@@ -563,7 +645,6 @@ function doCratering(target, proj, ctx) {
   const comX = (target.x * Mt + proj.x * Mp) / Mtot;
   const comY = (target.y * Mt + proj.y * Mp) / Mtot;
   target.mass = survivorMass;
-  recenterProducts([target].concat(fragments), comX, comY);
   target.composition = mixCompositions(target.composition, Mt, proj.composition, Math.max(0, Mp - sumM));
   target.vx = (pX - sumPx) / survivorMass;
   target.vy = (pY - sumPy) / survivorMass;
@@ -572,7 +653,11 @@ function doCratering(target, proj, ctx) {
   target.spin += clamp(
     (ctx.bImp || 0) * vImp * (Mp / Mtot) / Math.max(target.radius, 1) * 0.5, -1e-3, 1e-3
   );
+  // Refresh first: the survivor's radius is what the ejecta has to clear, and
+  // it has just changed. Then lift, then put the centre of mass back.
   target.refresh();
+  liftClear(fragments, [target]);
+  recenterProducts([target].concat(fragments), comX, comY);
 
   return {
     regime: 'cratering', removed: [proj], added: fragments,
@@ -654,17 +739,19 @@ function doHitAndRun(target, proj, ctx) {
   target.mass = Mt + Mp - sumM;
   target.vx = (pX - sumPx) / target.mass;
   target.vy = (pY - sumPy) / target.mass;
+  // The target's mass changed, so its radius did too, and both the separation
+  // below and the debris clearance are measured against it.
+  target.refresh();
 
-  // The debris was spawned on a ring around the projectile; move the target to
-  // answer for it, so the trio's centre of mass does not jump.
-  if (added.length) {
-    const comX = (target.x * Mt + proj.x * Mp) / (Mt + Mp);
-    const comY = (target.y * Mt + proj.y * Mp) / (Mt + Mp);
-    recenterProducts([target, proj].concat(added), comX, comY);
-  }
-
-  // Push them apart so the pair is not re-detected while still overlapping.
+  const comX = (target.x * Mt + proj.x * Mp) / (Mt + Mp);
+  const comY = (target.y * Mt + proj.y * Mp) / (Mt + Mp);
+  // Push the pair apart first so the debris is lifted clear of where the two
+  // bodies actually end up, not where they were while interpenetrating.
   separate(target, proj);
+  liftClear(added, [target, proj]);
+  // The debris was spawned on a ring around the projectile; move everything to
+  // answer for it, so the trio's centre of mass does not jump.
+  recenterProducts([target, proj].concat(added), comX, comY);
 
   return {
     regime: 'hitrun', removed, added,

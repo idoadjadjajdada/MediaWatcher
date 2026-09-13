@@ -335,20 +335,115 @@ section('Regressions found in review');
       x: Math.sqrt(Math.max(0, 1 - bp * bp)) * rs * 0.999, y: bp * rs * 0.999,
       vx: -(50 * Math.pow(10, (k % 9) * 0.45)),
     });
-    const made = resolveCollision(t, p, {}).added || [];
+    const out = resolveCollision(t, p, {});
+    const made = out.added || [];
     if (made.length < 2) continue;
     events++;
+    // Against each other AND against whatever survived. Comparing only the new
+    // pieces to each other is how this test passed while 391 of 624 collisions
+    // in a wider sweep were spawning ejecta inside the body it came off: the
+    // ring layouts spaced the pieces but nothing spaced them from the target.
+    const removed = new Set(out.removed || []);
+    const all = [t, p].filter((b) => !removed.has(b)).concat(made);
     let ov = 0;
-    for (let i = 0; i < made.length; i++) {
-      for (let j = i + 1; j < made.length; j++) {
-        const a = made[i], b = made[j];
+    for (let i = 0; i < all.length; i++) {
+      for (let j = i + 1; j < all.length; j++) {
+        const a = all[i], b = all[j];
+        // Two bodies that both survived intact are the collision pair itself,
+        // still in contact; the world's contact solver owns separating those.
+        if (!made.includes(a) && !made.includes(b)) continue;
         if (Math.hypot(a.x - b.x, a.y - b.y) < (a.radius + b.radius) * 0.98) ov++;
       }
     }
     if (ov > worst) worst = ov;
   }
-  assert('no collision product is born inside another', worst === 0,
-    `${events} multi-body outcomes, worst ${worst} overlapping pairs`);
+  assert('no collision product is born inside another, or inside a survivor',
+    worst === 0, `${events} multi-body outcomes, worst ${worst} overlapping pairs`);
+}
+{
+  // A wider sweep of the same thing: mass ratio, impact parameter and speed
+  // together, checking every conserved quantity at once. This is the grid that
+  // found the ejecta overlaps, so it stays.
+  const comp = { iron: 0.32, silicate: 0.68 };
+  let worstM = 0, worstP = 0, worstC = 0, overlaps = 0, nonFinite = 0, n = 0;
+  for (const gamma of [1, 0.3, 0.1, 0.03, 0.01, 0.003]) {
+    for (const bp of [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 0.98]) {
+      for (const v of [0.3, 0.6, 0.9, 1.05, 1.2, 1.5, 2, 3, 5, 8, 15, 30, 60]) {
+        const t = new Body({ name: 'T', mass: M_EARTH, composition: comp });
+        const probe = new Body({ mass: M_EARTH * gamma, composition: comp });
+        const rs = t.radius + probe.radius;
+        const vEsc = Math.sqrt((2 * G * M_EARTH * (1 + gamma)) / rs);
+        const p = new Body({
+          name: 'P', mass: M_EARTH * gamma, composition: comp,
+          x: Math.sqrt(Math.max(0, 1 - bp * bp)) * rs * 0.999,
+          y: bp * rs * 0.999, vx: -v * vEsc,
+        });
+        const m0 = t.mass + p.mass;
+        const p0 = [t.mass * t.vx + p.mass * p.vx, t.mass * t.vy + p.mass * p.vy];
+        const c0 = [(t.mass * t.x + p.mass * p.x) / m0, (t.mass * t.y + p.mass * p.y) / m0];
+        const out = resolveCollision(t, p, { allowBounce: true });
+        n++;
+        const removed = new Set(out.removed || []);
+        const live = [t, p].filter((b) => !removed.has(b)).concat(out.added || []);
+        const m1 = live.reduce((a, b) => a + b.mass, 0);
+        const p1 = [live.reduce((a, b) => a + b.mass * b.vx, 0),
+          live.reduce((a, b) => a + b.mass * b.vy, 0)];
+        const c1 = [live.reduce((a, b) => a + b.mass * b.x, 0) / m1,
+          live.reduce((a, b) => a + b.mass * b.y, 0) / m1];
+        if (live.some((b) => ![b.x, b.y, b.vx, b.vy, b.mass, b.radius].every(isFinite))) nonFinite++;
+        worstM = Math.max(worstM, Math.abs(m1 - m0) / m0);
+        worstP = Math.max(worstP, Math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+          / (Math.abs(M_EARTH * gamma * v * vEsc) || 1));
+        worstC = Math.max(worstC, Math.hypot(c1[0] - c0[0], c1[1] - c0[1]) / rs);
+        const made = out.added || [];
+        for (let i = 0; i < live.length; i++) {
+          for (let j = i + 1; j < live.length; j++) {
+            const a = live[i], b = live[j];
+            if (!made.includes(a) && !made.includes(b)) continue;
+            if (Math.hypot(a.x - b.x, a.y - b.y) < (a.radius + b.radius) * 0.98) overlaps++;
+          }
+        }
+      }
+    }
+  }
+  assert(`mass survives all ${n} collisions`, worstM < 1e-12, worstM.toExponential(2));
+  assert('so does momentum', worstP < 1e-12, worstP.toExponential(2));
+  assert('and the centre of mass does not jump', worstC < 1e-12,
+    `${worstC.toExponential(2)} contact radii`);
+  assert('nothing comes out non-finite', nonFinite === 0, `${nonFinite} cases`);
+  assert('and nothing is born interpenetrating', overlaps === 0, `${overlaps} pairs`);
+}
+{
+  // Cratering means a small projectile excavating a large target. An equal-mass
+  // impactor cannot crater anything, and calling it that sent the pair through
+  // doCratering, which deletes the projectile and sprays ejecta from a surface
+  // that is half of what just hit it. The grazing branch of the classifier had
+  // a mass-ratio guard; the head-on branch did not.
+  const comp = { iron: 0.32, silicate: 0.68 };
+  const regimeFor = (gamma, v, bp) => {
+    const t = new Body({ name: 'T', mass: M_EARTH, composition: comp });
+    const probe = new Body({ mass: M_EARTH * gamma, composition: comp });
+    const rs = t.radius + probe.radius;
+    const vEsc = Math.sqrt((2 * G * M_EARTH * (1 + gamma)) / rs);
+    const p = new Body({
+      name: 'P', mass: M_EARTH * gamma, composition: comp,
+      x: Math.sqrt(Math.max(0, 1 - bp * bp)) * rs * 0.999,
+      y: bp * rs * 0.999, vx: -v * vEsc,
+    });
+    return resolveCollision(t, p, { allowBounce: true }).regime;
+  };
+  let bad = null;
+  for (const gamma of [1, 0.7, 0.4, 0.2, 0.11]) {
+    for (const v of [1.05, 1.2, 1.5, 2, 3, 5, 10, 30]) {
+      for (const bp of [0, 0.2, 0.4, 0.6, 0.8]) {
+        if (regimeFor(gamma, v, bp) === 'cratering') bad = `gamma=${gamma} v=${v} b=${bp}`;
+      }
+    }
+  }
+  assert('nothing above a tenth of the target mass is called cratering',
+    bad === null, bad || 'none in 200 combinations');
+  assert('a small fast projectile still craters',
+    regimeFor(0.001, 5, 0) === 'cratering', regimeFor(0.001, 5, 0));
 }
 {
   // The step must not depend on how large a body is, only on where it is.
