@@ -441,6 +441,52 @@ section('Regressions found in review');
       }
     }
   }
+  // LS12 separate partial accretion from erosion by whether the largest remnant
+  // is heavier than the target was. Checking the label against the products is
+  // the only way to catch the boundary moving: with the old `ratio < 1` split,
+  // an equal-mass pair at 1.1 escape velocities was called erosion while the
+  // target had grown 89%, and no test noticed because they all read the label.
+  const outcome = (gamma, v, bp) => {
+    const t = new Body({ name: 'T', mass: M_EARTH, composition: comp });
+    const probe = new Body({ mass: M_EARTH * gamma, composition: comp });
+    const rs = t.radius + probe.radius;
+    const vEsc = Math.sqrt((2 * G * M_EARTH * (1 + gamma)) / rs);
+    const p = new Body({
+      name: 'P', mass: M_EARTH * gamma, composition: comp,
+      x: Math.sqrt(Math.max(0, 1 - bp * bp)) * rs * 0.999,
+      y: bp * rs * 0.999, vx: -v * vEsc,
+    });
+    const r = resolveCollision(t, p, { allowBounce: true });
+    const removed = new Set(r.removed || []);
+    const live = [t, p].filter((b) => !removed.has(b)).concat(r.added || []);
+    const lr = live.reduce((m, b) => Math.max(m, b.mass), 0);
+    return { regime: r.regime, lr };
+  };
+  let mislabelled = null, sawAccretion = 0, sawErosion = 0;
+  for (const gamma of [1, 0.5, 0.2, 0.05]) {
+    for (const v of [1.2, 2, 3, 4, 5, 6, 8]) {
+      for (const bp of [0, 0.3, 0.6]) {
+        const o = outcome(gamma, v, bp);
+        if (o.regime === 'merge' || o.regime === 'graze-and-merge' || o.regime === 'cratering') {
+          sawAccretion++;
+          // Accretion means the largest remnant is at least the target it hit.
+          if (o.lr < M_EARTH * 0.999) {
+            mislabelled = `${o.regime} at gamma=${gamma} v=${v} b=${bp} left ${(o.lr / M_EARTH).toFixed(3)} Me`;
+          }
+        } else if (o.regime === 'erosion') {
+          sawErosion++;
+          if (o.lr > M_EARTH * 1.001) {
+            mislabelled = `erosion at gamma=${gamma} v=${v} b=${bp} GREW the target to ${(o.lr / M_EARTH).toFixed(3)} Me`;
+          }
+        }
+      }
+    }
+  }
+  assert('accretion accretes and erosion erodes, by the products not the label',
+    mislabelled === null, mislabelled || `${sawAccretion} accreting, ${sawErosion} eroding, all consistent`);
+  assert('and the sweep actually reached both sides of the boundary',
+    sawAccretion > 4 && sawErosion > 0, `${sawAccretion} accreting, ${sawErosion} eroding`);
+
   assert('nothing above a thousandth of the target mass is called cratering',
     bad === null, bad || 'none in 320 combinations');
   assert('a small fast projectile still craters',
@@ -579,7 +625,17 @@ section('Regressions found in the third review');
       vx: -4000,
     });
     const r = resolveCollision(planet, imp, {});
-    planet = r.added[0];
+    // The merged body, not whatever happens to be first: a classifier change
+    // that turns this into cratering puts ejecta at index 0, and reading
+    // `.mixes` off that threw a TypeError that took the whole suite down
+    // instead of failing one assertion.
+    const merged = (r.added || []).find((b) => b.mass > planet.mass * 0.5);
+    if (!merged) {
+      assert('each impact merges rather than doing something else',
+        false, `regime ${r.regime}, ${(r.added || []).length} products`);
+      break;
+    }
+    planet = merged;
     counts.push(planet.mixes.length);
   }
   assert('every merge is remembered, not just the last',
@@ -987,6 +1043,19 @@ section('A merge is visible in the sprite it produces');
     small.local > floor.local && small.mean < iron.mean,
     `local ${small.local.toFixed(2)} vs seed ${floor.local.toFixed(2)}, disc mean ${small.mean.toFixed(2)}`);
 
+  // Two merges identical in every way except the impactor's terrain seed. The
+  // mask, and so the scarp, is driven by angle/fracB/sharpness and the body's
+  // own seed, and the colour comes from compB -- all identical here. Any
+  // difference at all is the impactor's own height field, which is the part of
+  // "the impactor brings its own ground" that the colour lerp and the scarp
+  // would otherwise cover for.
+  const terrainOnly = diff(
+    sprite([{ seedA: 1, seedB: 111111, fracB: 0.5, angle: 0.7, sharpness: 0.6, compB: { iron: 1 } }], 12345),
+    sprite([{ seedA: 1, seedB: 999999, fracB: 0.5, angle: 0.7, sharpness: 0.6, compB: { iron: 1 } }], 12345),
+  );
+  assert('the impactor brings its own terrain, not just its own colour',
+    terrainOnly.local > 8, `${terrainOnly.mean.toFixed(2)}/${terrainOnly.local.toFixed(2)} from the terrain seed alone`);
+
   // Sharpness is the record of how fast the two came together. The renderer
   // draws a scarp for a clean seam and a marble for a stirred one; if those
   // two look the same, the velocity is not in the picture.
@@ -1061,6 +1130,25 @@ section('Regressions found in the fifth review');
     }
   }
   assert('nothing bounces off a planet', bounced === null, bounced || 'none of 20');
+
+  // The case above no longer discriminates on its own: the classifier sends a
+  // small projectile to `cratering`, which never reaches the bounce branch at
+  // all, so `Math.min` and `Math.max` both pass it. The guard is only load-
+  // bearing where the outcome *is* a merge and exactly one body is under the
+  // 500 km threshold -- a 143 km rock onto an 828 km dwarf, which merges.
+  const mixedPair = (v) => {
+    const Mt = 1e22, Mp = 5e19;
+    const t = new Body({ name: 'T', mass: Mt, composition: comp });
+    const probe = new Body({ mass: Mp, composition: comp });
+    const rs = t.radius + probe.radius;
+    const vEsc = Math.sqrt((2 * G * (Mt + Mp)) / rs);
+    const p = new Body({ name: 'P', mass: Mp, composition: comp, x: rs * 0.999, vx: -v * vEsc });
+    return { regime: resolveCollision(t, p, { allowBounce: true }).regime, small: probe.radius, big: t.radius };
+  };
+  const pair = mixedPair(0.7);
+  assert('the guard measures the larger body, not the smaller',
+    pair.small < 5e5 && pair.big > 5e5 && pair.regime === 'merge',
+    `${(pair.small / 1e3).toFixed(0)} km onto ${(pair.big / 1e3).toFixed(0)} km -> ${pair.regime}`);
   // But two boulders still do.
   const a = new Body({ name: 'a', mass: 1e12, composition: { silicate: 1 } });
   const probe2 = new Body({ mass: 1e12, composition: { silicate: 1 } });
@@ -1110,6 +1198,32 @@ section('Regressions found in the fifth review');
   assert('and a deeper pass at the same speed destroys both bodies',
     deep.regime === 'supercatastrophic' || deep.regime === 'disruption',
     `${deep.regime}`);
+
+  // The reverse calculation itself. Where the projectile is much lighter, the
+  // forward test says the target is fine -- which it is -- and only the
+  // role-swapped one notices that the projectile is not. These cases come out
+  // `hitrun` without it, with both bodies walking away.
+  const uneven = (gamma, bp, v) => {
+    const t = new Body({ name: 'T', mass: M_EARTH, composition: comp });
+    const probe = new Body({ mass: M_EARTH * gamma, composition: comp });
+    const rs = t.radius + probe.radius;
+    const vEsc = Math.sqrt((2 * G * M_EARTH * (1 + gamma)) / rs);
+    const p = new Body({
+      name: 'P', mass: M_EARTH * gamma, composition: comp,
+      x: Math.sqrt(1 - bp * bp) * rs * 0.999, y: bp * rs * 0.999, vx: -v * vEsc,
+    });
+    return resolveCollision(t, p, { allowBounce: true }).regime;
+  };
+  const wrecked = [
+    ['gamma=0.10 b=0.8 v=4', uneven(0.10, 0.8, 4)],
+    ['gamma=0.05 b=0.8 v=6', uneven(0.05, 0.8, 6)],
+    ['gamma=0.02 b=0.9 v=6', uneven(0.02, 0.9, 6)],
+  ];
+  const survived = wrecked.filter(([, r]) => r !== 'disruption' && r !== 'supercatastrophic');
+  assert('a light projectile grazing fast is destroyed even though the target is not',
+    survived.length === 0,
+    survived.length ? survived.map(([k, r]) => `${k} -> ${r}`).join(', ')
+      : wrecked.map(([k, r]) => `${k} -> ${r}`).join(', '));
 }
 {
   // The energy diagnostic has to use the same force law the tree does, or the
@@ -1147,8 +1261,12 @@ section('Regressions found in the fifth review');
   });
   const e = earth();
   e.addCrater(1, 0, 3e8, 25, 12800, rng);
-  assert('Meteor Crater is recorded at all', e.craters.length === 1);
-  check('and at the right size', e.craters[0].size * R_EARTH / 1000, 1.2, 0.25, ' km');
+  assert('Meteor Crater is recorded at all', e.craters.length === 1,
+    `${e.craters.length} craters`);
+  // Guarded: when the record is dropped this has to fail, not throw and take
+  // every assertion after it down with it.
+  check('and at the right size',
+    e.craters.length ? e.craters[0].size * R_EARTH / 1000 : 0, 1.2, 0.25, ' km');
   // A stream of gravel must not push a basin off the capped list.
   const big = earth();
   big.addCrater(1, 0, 1e15, 5000, 20000, rng);

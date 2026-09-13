@@ -2,8 +2,9 @@
 // A static server for Helxis.
 //
 // ES modules will not load over file://, so the sandbox needs a server even
-// though it has no backend. This one serves the repository root, which is what
-// lets the interface reuse the fonts already in public/.
+// though it has no backend. This one serves the repository root so that
+// http://localhost:4173/helxis/ matches where the app sits in the tree; the
+// app itself is self-contained, and nothing in helxis/ reaches outside it.
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';

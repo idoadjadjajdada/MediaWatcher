@@ -2,15 +2,20 @@
    A dark violet console around a pixel viewport. Everything floats over the
    canvas; nothing reflows it, so the simulation keeps the whole window. */
 
+/* Relative, not root-relative. Helxis is meant to be a folder you can drop
+   anywhere and open — no build step, no server config — and `/public/fonts/...`
+   quietly tied it to being served from this repository's root. Anywhere else it
+   404s and falls back to system faces without saying so, which is exactly what
+   happened the first time it was published on its own. */
 @font-face {
   font-family: 'Helxis Sans';
-  src: url('/public/fonts/hanken.woff2') format('woff2');
+  src: url('./fonts/hanken.woff2') format('woff2');
   font-weight: 100 900;
   font-display: swap;
 }
 @font-face {
   font-family: 'Helxis Mono';
-  src: url('/public/fonts/jetbrains.woff2') format('woff2');
+  src: url('./fonts/jetbrains.woff2') format('woff2');
   font-weight: 100 800;
   font-display: swap;
 }

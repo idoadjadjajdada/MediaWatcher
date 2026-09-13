@@ -8,7 +8,9 @@ npm run helxis     # then open http://localhost:4173/helxis/
 ```
 
 No build step. It is vanilla ES modules and one canvas; the server exists only
-because modules will not load over `file://`.
+because modules will not load over `file://`. Nothing in `helxis/` reaches
+outside it — copy the folder anywhere and serve it and you have the whole
+sandbox, fonts included.
 
 ---
 
