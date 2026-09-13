@@ -406,7 +406,7 @@ export class World {
     if (this.steps === 0 || this._accelDirty) this.computeAccelerations();
     // Before anything else: a body handed to us non-finite (a tool, a restored
     // snapshot, a hand-edited value) must not reach the tree.
-    // disabled cull
+    if (this.cullNonFinite()) this.computeAccelerations();
 
     this._frame++;
     let remaining = seconds;
@@ -438,7 +438,7 @@ export class World {
       // Between the tree and the step: a body that arrived non-finite, or that
       // an acceleration pass has just made non-finite, is removed before it can
       // be integrated and smear across the scene.
-      // disabled cull
+      if (this.cullNonFinite()) this.computeAccelerations();
       const dt = Math.min(remaining, this.chooseDt(remaining));
       this.step(dt);
       remaining -= dt;
