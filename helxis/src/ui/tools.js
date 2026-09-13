@@ -26,7 +26,9 @@ export const TOOLS = [
   { id: 'explode', label: 'Explode', key: '5', hint: 'Click to detonate · enough energy shatters a body' },
   { id: 'collapse', label: 'Collapse', key: '6', hint: 'Hold on a body to crush it past degeneracy' },
   { id: 'grab', label: 'Grab', key: '7', hint: 'Drag a body · release to throw it' },
-  { id: 'delete', label: 'Delete', key: '8', hint: 'Click to remove · drag to sweep' },
+  { id: 'heat', label: 'Heat', key: '8', hint: 'Hold to pour heat in · melts, then boils' },
+  { id: 'cool', label: 'Cool', key: '9', hint: 'Hold to draw heat out · freezes a magma ocean solid' },
+  { id: 'delete', label: 'Delete', key: '0', hint: 'Click to remove · drag to sweep' },
 ];
 
 export const TOOL_IDS = TOOLS.map((t) => t.id);
@@ -35,6 +37,7 @@ export const TOOL_IDS = TOOLS.map((t) => t.id);
 export function toolRadiusPixels(tool, intensity, camera) {
   switch (tool) {
     case 'attract': case 'repel': return 26 + intensity * 70;
+    case 'heat': case 'cool': return 22 + intensity * 54;
     case 'explode': return 16 + intensity * 46;
     case 'collapse': return 20 + intensity * 40;
     case 'delete': return 14 + intensity * 26;
@@ -47,6 +50,8 @@ const RING_COLORS = {
   repel: 'rgba(255,150,110,0.55)',
   explode: 'rgba(255,120,90,0.7)',
   collapse: 'rgba(190,140,255,0.65)',
+  heat: 'rgba(255,146,64,0.6)',
+  cool: 'rgba(120,196,255,0.6)',
   delete: 'rgba(255,90,110,0.6)',
 };
 
@@ -252,6 +257,8 @@ export class ToolController {
         break;
       case 'attract': this.applyField(dtField, 1); break;
       case 'repel': this.applyField(dtField, -1); break;
+      case 'heat': this.applyThermal(dtReal, 1); break;
+      case 'cool': this.applyThermal(dtReal, -1); break;
       case 'collapse': this.applyCollapse(dtReal, dtField); break;
       default: break;
     }
@@ -272,9 +279,18 @@ export class ToolController {
     const target = this.world;
 
     // The beam arrives from off-screen, so it reads as a strike rather than a
-    // cursor effect. Direction is fixed in screen space.
+    // cursor effect — but you aim it. Press and drag: the beam comes in along
+    // the line from where you pressed to where the pointer is now, so it can be
+    // swung around a target instead of always arriving over the same shoulder.
+    // Without a drag to read, it falls back to the old fixed bearing.
     const reach = (Math.max(camera.width, camera.height) * 1.4) / camera.scale;
-    const ang = -0.7 - camera.rotation;
+    const aimX = target.x - this.downWorld.x;
+    const aimY = target.y - this.downWorld.y;
+    const aimLen = Math.hypot(aimX, aimY);
+    // Three screen pixels of drag is enough to mean it.
+    const ang = aimLen * camera.scale > 3
+      ? Math.atan2(aimY, aimX)
+      : -0.7 - camera.rotation;
     const ox = target.x - Math.cos(ang) * reach;
     const oy = target.y - Math.sin(ang) * reach;
 
@@ -326,6 +342,70 @@ export class ToolController {
       b.addCrater(hit.x - b.x, hit.y - b.y, Math.max(1, energy / 1e12), b.radius * 0.02, 1e4, rng);
     }
     this.app.markDirty(b);
+  }
+
+  // --- heat / cool ----------------------------------------------------------
+
+  /**
+   * Pour heat into everything under the cursor, or take it out.
+   *
+   * The same energy a collision would deliver, without the collision: it goes
+   * through addHeat, so it is spent on latent heat and on melting exactly as
+   * impact energy is, and a body warmed this way differentiates and changes
+   * what its surface is made of. Cooling is the reverse, floored at the
+   * background temperature, because there is nowhere colder than the sky.
+   */
+  applyThermal(dt, sign) {
+    const { world, camera, effects } = this.app;
+    const R = toolRadiusPixels(this.tool, this.intensity, camera) / camera.scale;
+    // Per second of holding, per kilogram, as a multiple of what it costs to
+    // melt rock. At intensity 1 a few seconds turns an Earth into a lava world.
+    const rate = Math.pow(10, this.intensity * 2.2) * 4e5;
+    let touched = 0;
+
+    for (const b of world.bodies) {
+      if (b.kind === 'bh') continue;
+      const dx = this.world.x - b.x, dy = this.world.y - b.y;
+      const d = Math.hypot(dx, dy);
+      if (d > R + b.radius) continue;
+      touched++;
+      const falloff = d > b.radius ? 1 - (d - b.radius) / Math.max(R, 1e-9) : 1;
+      const joules = sign * rate * clamp(falloff, 0, 1) * dt * b.mass;
+      if (sign > 0) {
+        b.addHeat(joules);
+      } else {
+        const cp = b.specificHeat || 1000;
+        const drop = Math.abs(joules) / Math.max(b.mass * cp, 1);
+        b.temperature = Math.max(2.725, b.temperature - drop);
+        b.revision++;
+        b.refresh();
+      }
+
+      // And the interior, where there is one. Heating a planet from outside has
+      // to leave a molten shell over a cold middle, not a uniformly hot number:
+      // the whole point of the field is that where the heat went is visible.
+      const f = b.field;
+      if (f && b.radius > 0) {
+        const n = f.n;
+        for (let jj = 0; jj < n; jj++) {
+          for (let ii = 0; ii < n; ii++) {
+            const k = f.idx(ii, jj);
+            if (f.mat[k] === 255) continue;
+            const cx = b.x + f.u(ii) * b.radius, cy = b.y + f.u(jj) * b.radius;
+            const cd = Math.hypot(this.world.x - cx, this.world.y - cy);
+            if (cd > R) continue;
+            const w = 1 - (cd / R) * (cd / R);
+            f.temp[k] = Math.max(2.725, f.temp[k] + (sign * rate * w * dt) / 900);
+          }
+        }
+        f.syncMelt();
+        b.revision++;
+      }
+      this.app.markDirty(b);
+    }
+
+    if (touched && effects.pulse) effects.pulse(this.world.x, this.world.y, R, sign);
+    world._accelDirty = true;
   }
 
   // --- attract / repel ------------------------------------------------------

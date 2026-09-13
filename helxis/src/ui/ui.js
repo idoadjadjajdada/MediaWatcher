@@ -14,6 +14,8 @@ const TOOL_ICONS = {
   explode: '<path d="M8 1l1.7 4.2L14 4l-2.3 3.6L15 10l-4.3.4L10 15l-2-3.4L5.4 15 5 10.4 1 10l3.3-2.4L2 4l4.3 1.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>',
   collapse: '<path d="M8 2a6 6 0 1 1-4.2 10.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square"/><path d="M8 5a3 3 0 1 0 2.1 5.1" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/>',
   grab: '<path d="M5.5 9V4.2a1.1 1.1 0 0 1 2.2 0V8m0-.5V3.3a1.1 1.1 0 0 1 2.2 0V8m0-.6V4.6a1.1 1.1 0 0 1 2.1 0v5.6c0 2.4-1.7 4.3-4 4.3s-4.1-1.3-4.6-3.5L3 9.4a1.1 1.1 0 0 1 1.9-1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>',
+  heat: '<path d="M8 1.5c2.4 2.6 3.6 4.6 3.6 6.2 0 1.6-1.1 2.6-2.2 2.6-1 0-1.7-.6-1.7-1.6 0-1.4 1.3-2 1.3-3.4M8 14.5a4 4 0 0 1-4-4c0-1.4.7-2.6 1.6-3.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>',
+  cool: '<path d="M8 1.5v13M2.4 4.7l11.2 6.6M13.6 4.7 2.4 11.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="square"/><path d="M6.3 3.1 8 4.8l1.7-1.7M6.3 12.9 8 11.2l1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.1"/>',
   delete: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 9h5.6l.7-9M6.8 7v4M9.2 7v4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="square"/>',
 };
 

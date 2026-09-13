@@ -5,7 +5,7 @@ import { Camera } from './render/camera.js';
 import { Renderer } from './render/renderer.js';
 import { Effects } from './render/effects.js';
 import { clearTextureCache } from './render/texture.js';
-import { ToolController, toolRadiusPixels, toolRingColor, pickBody } from './ui/tools.js';
+import { ToolController, toolRadiusPixels, toolRingColor, pickBody, TOOLS } from './ui/tools.js';
 import { UI, TIME_SCALES } from './ui/ui.js';
 import { instantiate } from './ui/catalog.js';
 import { loadPreset } from './ui/presets.js';
@@ -299,9 +299,11 @@ class App {
     const p = this.placing;
     p.body.x = p.origin.x;
     p.body.y = p.origin.y;
-    // Drag away from the target to set a launch velocity, catapult-style.
-    const dx = p.origin.x - worldPos.x;
-    const dy = p.origin.y - worldPos.y;
+    // Drag toward where you want it to go. It used to be a catapult — drag
+    // back, release, and it flies the other way — which reads fine on a
+    // slingshot and badly on an aiming arrow.
+    const dx = worldPos.x - p.origin.x;
+    const dy = worldPos.y - p.origin.y;
     const vx = dx / p.launchTime;
     const vy = dy / p.launchTime;
     const s = Math.hypot(vx, vy);
@@ -471,8 +473,10 @@ class App {
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
-    const tool = ['select', 'laser', 'attract', 'repel', 'explode', 'collapse', 'grab', 'delete'][Number(e.key) - 1];
-    if (tool) { this.tools.setTool(tool); return; }
+    // Keys read off the tool table rather than a second copy of it, so adding
+    // a tool cannot leave the shortcut pointing at the wrong one.
+    const byKey = TOOLS.find((t) => t.key === e.key);
+    if (byKey) { this.tools.setTool(byKey.id); return; }
 
     switch (e.key) {
       case ' ': e.preventDefault(); this.togglePause(); break;
