@@ -428,7 +428,10 @@ export function searchCatalog(query, category) {
 export function instantiate(entry, opts = {}) {
   const massScale = opts.massScale != null ? opts.massScale : 1;
   const mass = entry.mass * massScale;
-  const seed = opts.seed != null ? opts.seed : hashSeed(entry.id, Date.now(), Math.random());
+  // No Date.now(), no Math.random(): placing the same object twice in the same
+  // order has to produce the same two bodies. Left undefined, Body derives one
+  // from its name and its id, which is unique within a world.
+  const seed = opts.seed != null ? opts.seed : undefined;
 
   let radius;
   if (entry.kind === 'bh' || entry.kind === 'ns' || entry.kind === 'wd') {

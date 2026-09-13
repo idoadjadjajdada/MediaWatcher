@@ -3,6 +3,7 @@ import {
   MATERIALS, surfaceColor, incandescence, compositionProperty, dominantMaterial,
   volatileFraction,
 } from '../core/materials.js';
+import { EMPTY, matKey } from '../core/cells.js';
 import { clamp, lerp, smoothstep, TAU, T_SUN } from '../core/const.js';
 
 // Bodies are drawn from pre-rendered square sprites at power-of-two sizes. A
@@ -100,22 +101,38 @@ function mixMask(u, v, mix, seed) {
 
   // Place the cut so the impactor covers roughly its mass fraction of the face.
   const cut = 1 - 2 * mix.fracB;
-  // A stirred mix has a broad transition; a clean one is nearly a step.
-  const width = 0.04 + stir * 0.55;
 
-  // Seven octaves of noise per pixel per merge is the single most expensive
-  // thing in a merged sprite, and most pixels are nowhere near the boundary.
-  // Both warp terms are bounded, so whether the result is going to clamp to 0
-  // or 1 can be decided before evaluating either — exactly, not approximately.
-  const amp = (0.5 * 1.5 + 0.5 * 0.55) * (0.12 + stir * 1.25);
+  // The transition stays narrow however violent the impact was. Widening it
+  // with the stirring was the intuitive thing to do and it was wrong: at full
+  // stir the band was wider than the disc, so the mask never reached 0 or 1
+  // anywhere and the whole face came out a flat average of the two materials —
+  // measurably *less* different from an unmerged body than a change of random
+  // seed. Stirring does not homogenise a planet on any timescale that matters;
+  // it draws the two materials out into filaments. So the violence goes into
+  // the frequency of the warp instead of the softness of the edge, and a fast
+  // merge marbles, which is what the label always claimed it did.
+  const width = 0.04 + stir * 0.08;
+
+  // Three octave stacks per pixel per merge is the most expensive thing in a
+  // merged sprite, and most pixels are nowhere near the boundary. Every warp
+  // term is bounded, so whether the result will clamp to 0 or 1 can be decided
+  // before evaluating any of them — exactly, not approximately.
+  const lobeAmp = 0.12 + stir * 0.95;
+  const filament = stir * stir * 0.85;
+  const amp = (0.5 * 1.5 + 0.5 * 0.55) * lobeAmp + 0.5 * filament;
   const gap = axis - cut;
   if (gap + amp <= -width) return 0;
   if (gap - amp >= width) return 1;
 
-  // Warp the boundary. Low frequency for the big lobes, higher for the fringe.
+  // Warp the boundary. Low frequency for the big lobes, higher for the fringe,
+  // and a fine term that only shows up once the impact was violent enough to
+  // shear the two into each other.
   const w1 = fbm(u * 2.1 + 11, v * 2.1 - 7, seed ^ 0x5bf03635, 4) - 0.5;
   const w2 = fbm(u * 6.5 - 3, v * 6.5 + 5, seed ^ 0x1b873593, 3) - 0.5;
-  axis += (w1 * 1.5 + w2 * 0.55) * (0.12 + stir * 1.25);
+  axis += (w1 * 1.5 + w2 * 0.55) * lobeAmp;
+  if (filament > 0.01) {
+    axis += (fbm(u * 15.0 + 2, v * 15.0 - 9, seed ^ 0x2f6b1a3d, 3) - 0.5) * filament;
+  }
 
   return smoothstep(clamp((axis - cut) / width * 0.5 + 0.5, 0, 1));
 }
@@ -737,6 +754,93 @@ function renderHorizon(body, size, data) {
   }
 }
 
+/**
+ * A body that has been hit, drawn from what it is actually made of.
+ *
+ * Everything else in this file paints a plausible planet from a seed. This one
+ * paints the cells: the material in each one, how hot it is, whether it is
+ * still liquid, and how far the ground there sits above or below where it
+ * started. There is no noise field deciding where the iron is — if iron shows
+ * at the surface it is because an impact dug down to it, or because the body
+ * has not finished sorting itself out yet.
+ *
+ * The cells are left as cells. A 72-cell planet in a 256-pixel sprite is about
+ * three and a half pixels per cell, which is the resolution the simulation
+ * actually has, and pretending otherwise would be drawing detail that is not
+ * there.
+ */
+function renderCellular(body, size, data) {
+  const f = body.field;
+  const n = f.n;
+  const half = size / 2;
+  const surf = body.surfaceComposition || body.composition || {};
+  const liquid = clamp(volatileFraction(surf), 0, 1);
+  const seed = body.seed >>> 0;
+
+  // Sub-cell grain, so a cell reads as ground rather than as a swatch. It is
+  // texture within the cell, never a claim about what is in the next one.
+  const grain = (u, v) => valueNoise2(u * 26 + 3, v * 26 - 7, seed ^ 0x3ab1) - 0.5;
+
+  let p = 0;
+  for (let py = 0; py < size; py++) {
+    const v = (py + 0.5) / half - 1;
+    for (let px = 0; px < size; px++, p += 4) {
+      const u = (px + 0.5) / half - 1;
+      if (Math.hypot(u, v) > 1) { data[p + 3] = 0; continue; }
+
+      const i = clamp(Math.floor(((u + 1) / 2) * n), 0, n - 1);
+      const j = clamp(Math.floor(((v + 1) / 2) * n), 0, n - 1);
+      const k = f.idx(i, j);
+      const m = f.mat[k];
+
+      if (m === EMPTY) {
+        // A hole the impact left and nothing has filled. Dark, because you are
+        // looking into a crater floor, not through the planet.
+        data[p] = 14; data[p + 1] = 11; data[p + 2] = 16; data[p + 3] = 255;
+        continue;
+      }
+
+      const mat = MATERIALS[matKey(m)] || MATERIALS.silicate;
+      let cr = mat.cold[0], cg = mat.cold[1], cb = mat.cold[2];
+
+      // Melt: the material's own hot colour first, then true incandescence
+      // once it is radiating rather than merely soft.
+      const melt = f.melt[k];
+      if (melt > 0.02) {
+        cr = lerp(cr, mat.hot[0], melt * 0.75);
+        cg = lerp(cg, mat.hot[1], melt * 0.75);
+        cb = lerp(cb, mat.hot[2], melt * 0.75);
+      }
+      const glow = incandescence(f.temp[k]);
+      if (glow) {
+        const w = clamp((f.temp[k] - 900) / 1500, 0, 1) * clamp(melt * 1.4, 0.15, 1);
+        cr = lerp(cr, glow[0], w); cg = lerp(cg, glow[1], w); cb = lerp(cb, glow[2], w);
+      }
+
+      // Relief shading, and the grain inside the cell.
+      let shade = clamp(1 + f.relief[k] * 0.42 + grain(u, v) * 0.16, 0.42, 1.45);
+      // A 2D world's planets are discs, and this is a disc's cross-section, so
+      // depth is real: the middle of it is the deep interior and gets no light.
+      // Without the gradient the core read as a flat cut-out pasted on top.
+      const r = Math.hypot(u, v);
+      shade *= 0.62 + 0.38 * r * r;
+      // The outermost cells are the surface itself, and catch the light.
+      if (r > 0.9) shade *= 1 + (r - 0.9) * 1.7;
+      cr *= shade; cg *= shade; cb *= shade;
+
+      // Standing liquid collects in the low ground of a cold, wet world.
+      if (liquid > 0.08 && melt < 0.05 && f.relief[k] < -0.12 && f.temp[k] < 340) {
+        const d = clamp(-f.relief[k], 0, 1);
+        cr = lerp(cr, 40, 0.55 * d); cg = lerp(cg, 96, 0.55 * d); cb = lerp(cb, 132, 0.6 * d);
+      }
+
+      data[p] = cr; data[p + 1] = cg; data[p + 2] = cb; data[p + 3] = 255;
+    }
+  }
+  // Terminator shading is a separate mask applied when the sprite is drawn,
+  // not something baked into the pixels here.
+}
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -753,6 +857,7 @@ export function texturePixels(body, size) {
   else if (body.kind === 'star') renderStar(body, size, data);
   else if (body.kind === 'ns' || body.kind === 'wd') renderCompact(body, size, data);
   else if (body.kind === 'gasgiant') renderGiant(body, size, data);
+  else if (body.field && body.field.filled > 0) renderCellular(body, size, data);
   else renderTerrestrial(body, size, data);
   return data;
 }

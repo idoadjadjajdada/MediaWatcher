@@ -296,6 +296,53 @@ await step('the simulation is visible at phone width', async () => {
   return `panels cover ${(r.frac * 100).toFixed(0)}%, last tool reachable=${r.lastToolVisible}`;
 });
 
+// The state the phone check used to skip. With a body selected on a small
+// screen the inspector showed 146px of 525px of content, with no scrollbar and
+// no other cue: a reader saw the mass and nothing else, and had no way to know
+// there was a radius, a temperature or a composition below it.
+await step('a selected body is readable on a small phone', async () => {
+  const worst = [];
+  for (const [W, H] of [[390, 844], [360, 640]]) {
+    const page = await b.newPage({ viewport: { width: W, height: H } });
+    await page.goto(ORIGIN, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(1200);
+    await page.evaluate(() => window.helxis.select(window.helxis.world.bodies[3]));
+    await page.waitForTimeout(400);
+    const r = await page.evaluate(() => {
+      const i = document.getElementById('inspector');
+      const rect = i.getBoundingClientRect();
+      return {
+        shown: i.clientHeight / i.scrollHeight,
+        cue: i.classList.contains('scroll-more'),
+        scrollable: i.scrollHeight > i.clientHeight + 4,
+        onScreen: rect.top >= 0 && rect.bottom <= innerHeight + 1,
+        // Something of the simulation still has to be visible behind it.
+        free: (() => {
+          let cov = 0;
+          for (const e of document.querySelectorAll('.panel')) {
+            const s = getComputedStyle(e);
+            if (s.display === 'none' || e.hidden) continue;
+            const q = e.getBoundingClientRect();
+            cov += Math.max(0, Math.min(q.right, innerWidth) - Math.max(q.left, 0))
+              * Math.max(0, Math.min(q.bottom, innerHeight) - Math.max(q.top, 0));
+          }
+          return 1 - cov / (innerWidth * innerHeight);
+        })(),
+      };
+    });
+    await page.close();
+    if (!r.onScreen) worst.push(`${W}x${H}: inspector runs off screen`);
+    if (r.shown < 0.45) worst.push(`${W}x${H}: only ${(r.shown * 100).toFixed(0)}% of the inspector fits`);
+    // Whenever it is scrollable, it has to say so.
+    if (r.scrollable && !r.cue) worst.push(`${W}x${H}: scrollable with no cue`);
+    if (!r.scrollable && r.cue) worst.push(`${W}x${H}: cue shown with nothing below`);
+    if (r.free < 0.15) worst.push(`${W}x${H}: only ${(r.free * 100).toFixed(0)}% of the canvas left`);
+    worst.push(`| ${W}x${H} ${(r.shown * 100).toFixed(0)}% shown, cue=${r.cue}`);
+  }
+  const bad = worst.filter((w) => !w.startsWith('|'));
+  return bad.length ? { fail: bad.join('; ') } : worst.join(' ');
+});
+
 console.log(log.join('\n'));
 if (errs.length) { failed += errs.length; console.log('\nERRORS:\n' + errs.join('\n')); }
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -490,6 +490,37 @@ function doMerge(target, proj, ctx) {
   // All of the COM-frame kinetic energy is dissipated in a merge.
   merged.addHeat(kImpact);
 
+  // --- the interior, if the target had one ----------------------------------
+  // A merge used to be an exchange of numbers: two compositions averaged, a new
+  // seed, a new sprite. Nothing melted, nothing moved, and the "mixing" was a
+  // mask drawn over the result afterwards. If the target was carrying a cell
+  // field, the impactor now goes into it as molten material at the point of
+  // contact, and the shock heats the rest — and then nothing else is decided
+  // here. Whether the iron sinks, whether the impactor's ice ends up on the
+  // surface, and what the terrain looks like when it freezes are all worked out
+  // by the field over the following frames, from the material's own densities.
+  if (target.field) {
+    merged.field = target.field;
+    const f = merged.field;
+    const a = Math.atan2(ny, nx) - merged.rotation;
+    const massFrac = clamp(Mp / Mtot, 0, 0.6);
+    f.excavate({
+      cu: Math.cos(a) * 0.82, cv: Math.sin(a) * 0.82,
+      craterR: clamp(0.35 + massFrac * 1.1, 0.2, 1.5),
+      specificEnergy: 0.5 * vImp * vImp,
+      escapeEnergy: 0.5 * merged.escapeVelocity * merged.escapeVelocity,
+      projMassFraction: massFrac,
+      projComp: proj.surfaceComposition,
+      tangential: bImp * 0.9,
+      rng,
+    });
+    // Shock heating through the rest of the target, and the swirl the impact's
+    // angular momentum left in the melt.
+    const shockT = clamp((kImpact / Math.max(Mtot * merged.specificHeat, 1)), 0, 6000);
+    f.shock(clamp(0.4 + massFrac * 2.2, 0, 1), shockT, sense * clamp(bImp, 0, 1) * 0.8, rng);
+    merged.syncFromField();
+  }
+
   // --- circumplanetary disc ------------------------------------------------
   // A grazing merge at around the escape velocity does not simply swallow the
   // impactor: it flings a sheet of mantle into orbit. That sheet is where the
@@ -705,7 +736,15 @@ function doCratering(target, proj, ctx) {
   target.vx = (pX - sumPx) / survivorMass;
   target.vy = (pY - sumPy) / survivorMass;
   target.addHeat(kImpact * 0.6);
-  target.addCrater(nx, ny, proj.mass, proj.radius, vImp, rng);
+  const craterSize = target.addCrater(nx, ny, proj.mass, proj.radius, vImp, rng);
+  // And the same impact, in the interior. This is the part that makes a small
+  // collision damage a planet rather than exchange its numbers for different
+  // ones: the hole is dug in actual material, the projectile ends up at the
+  // bottom of it, and what comes back out is whatever was there before.
+  target.takeImpact(nx, ny, {
+    vImp, projMass: proj.mass, projComp: proj.surfaceComposition,
+    bImp: ctx.bImp || 0, craterSize, rng,
+  });
   target.spin += clamp(
     (ctx.bImp || 0) * vImp * (Mp / Mtot) / Math.max(target.radius, 1) * 0.5, -1e-3, 1e-3
   );

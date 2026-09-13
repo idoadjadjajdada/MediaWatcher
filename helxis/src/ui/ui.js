@@ -270,6 +270,17 @@ export class UI {
     });
 
     $('inspector-close').addEventListener('click', () => app.select(null));
+
+    // Show the "more" cue only while there is something below the fold. On a
+    // phone the inspector is taller than the space it has, and a clipped panel
+    // with no scrollbar reads as the end of the content rather than the top.
+    const insp = $('inspector');
+    this.syncInspectorScroll = () => {
+      const more = insp.scrollHeight - insp.clientHeight - insp.scrollTop > 4;
+      insp.classList.toggle('scroll-more', more);
+    };
+    insp.addEventListener('scroll', this.syncInspectorScroll, { passive: true });
+    window.addEventListener('resize', () => this.syncInspectorScroll());
     $('btn-follow').addEventListener('click', () => app.toggleFollow());
     $('btn-delete-body').addEventListener('click', () => app.deleteSelected());
 
@@ -426,6 +437,8 @@ export class UI {
     }).join('');
 
     $('btn-follow').classList.toggle('active', this.app.camera.follow === body);
+    // The panel's height depends on what was just written into it.
+    if (this.syncInspectorScroll) this.syncInspectorScroll();
   }
 
   // --- status, radar, toasts ------------------------------------------------

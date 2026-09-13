@@ -1,4 +1,4 @@
-import { G, C, TAU, clamp, rocheLimit } from './const.js';
+import { G, C, TAU, clamp, rocheLimit, SIGMA_SB, T_CMB } from './const.js';
 import { Body, resetIds } from './body.js';
 import { Quadtree } from './quadtree.js';
 import { resolveCollision, sweptContactDisp, tidallyDisrupt } from './collide.js';
@@ -455,6 +455,7 @@ export class World {
 
     this.substepsTaken = taken;
     if (this.settings.thermal) this.thermalPass(seconds - remaining);
+    this.relaxFields(seconds - remaining);
     this.updateTrails();
     this.measureEnergy();
     return seconds - remaining;
@@ -796,6 +797,58 @@ export class World {
     this.energyDrift = Math.abs(this._energyRef) > 0
       ? (e - this._energyRef) / Math.abs(this._energyRef)
       : 0;
+  }
+
+  /**
+   * Let molten interiors flow, mix and freeze.
+   *
+   * Only bodies that are actually molten cost anything: a solid planet's field
+   * is skipped on a flag, which is most of them most of the time. The ones that
+   * are molten are the ones something just happened to, and there are never
+   * many at once, so a hard cap keeps a bad frame bounded rather than never
+   * arriving.
+   */
+  relaxFields(dt) {
+    if (!(dt > 0)) return;
+    // A relaxation pass costs about a millisecond for a planet-sized field, so
+    // this gets a budget of its own rather than being allowed to add eight of
+    // them to a frame that has already spent eleven. Bodies are taken in mass
+    // order so that when there is not enough time for all of them, it is the
+    // one you are most likely to be looking at that keeps moving.
+    const deadline = now() + Math.max(2, (this.settings.frameBudgetMs || 11) * 0.35);
+    const hot = [];
+    for (const b of this.bodies) {
+      if (b.field && b.field.moltenFraction > 0.004) hot.push(b);
+    }
+    if (!hot.length) return;
+    if (hot.length > 1) hot.sort((a, b) => b.mass - a.mass);
+    for (const b of hot) {
+      const f = b.field;
+      if (now() > deadline) break;
+
+      // What the surface is radiating into, and how long this body takes to
+      // give up its heat. Both are the body's own numbers, so a small hot moon
+      // freezes quickly and an Earth-sized magma ocean does not.
+      const area = 4 * Math.PI * b.radius * b.radius;
+      const eq = Math.pow(
+        (b.insolation * (1 - b.albedo)) / (4 * SIGMA_SB) + Math.pow(T_CMB, 4), 0.25,
+      );
+      const t = Math.max(f.meanTemperature(), 1);
+      const power = SIGMA_SB * area * t * t * t * t;
+      const heat = b.mass * b.specificHeat * Math.max(t - eq, 1);
+      const coolSeconds = power > 0 ? Math.max(heat / power, 1) : 1e12;
+
+      if (!f.relax(dt, { equilibriumT: eq, coolSeconds })) {
+        // Frozen. Take the final arrangement back into the body's own numbers
+        // — this is the moment the terrain it ended up with becomes what the
+        // body is made of.
+        b.syncFromField();
+        continue;
+      }
+      // Still moving: the surface is changing, so the sprite has to.
+      b.revision++;
+      b.refresh();
+    }
   }
 
   // --- Serialisation --------------------------------------------------------

@@ -22,6 +22,7 @@ import { loadPreset, PRESETS } from '../src/ui/presets.js';
 import { CATALOG, instantiate } from '../src/ui/catalog.js';
 import { radiusFromMass, bulkDensity, compressionFactor } from '../src/core/materials.js';
 import { texturePixels } from '../src/render/texture.js';
+import { EMPTY, matKey, matIndex } from '../src/core/cells.js';
 import { ToolController } from '../src/ui/tools.js';
 import { applyToWorld, defaultSettings } from '../src/ui/settings.js';
 
@@ -1056,6 +1057,26 @@ section('A merge is visible in the sprite it produces');
   assert('the impactor brings its own terrain, not just its own colour',
     terrainOnly.local > 8, `${terrainOnly.mean.toFixed(2)}/${terrainOnly.local.toFixed(2)} from the terrain seed alone`);
 
+  // A violent merge is the case that used to fail this. Widening the mask's
+  // transition band with the stirring — which is what "a stirred mix has a
+  // broad transition" meant in code — made the band wider than the disc at
+  // full stir, so the mask never reached either material anywhere and the face
+  // came out a flat average: 6.09/255 against an unmerged body, *below* the
+  // 7.00 a change of seed produces. Stirring draws two materials into
+  // filaments; it does not homogenise them. The band stays narrow and the
+  // violence goes into the frequency of the warp instead.
+  const stirred = diff(plain, sprite(mixOf({ iron: 1 }, 0.5, 0.05), 12345));
+  assert('a violently stirred merge is still a picture of a merge',
+    stirred.local > floor.local,
+    `${stirred.mean.toFixed(2)}/${stirred.local.toFixed(2)} vs seed ${floor.mean.toFixed(2)}/${floor.local.toFixed(2)}`);
+  // Iron on silicate is the hardest case there is — the two are within fifteen
+  // units of each other in every channel, so a marble of them is genuinely
+  // subtle and only the local figure clears the bar. With a material that
+  // differs, a stirred merge is unmistakable.
+  const stirredIce = diff(plain, sprite(mixOf({ water: 1 }, 0.5, 0.05), 12345));
+  assert('and with a different material it is obvious',
+    stirredIce.mean > floor.mean * 2, `${stirredIce.mean.toFixed(2)}/255 disc-wide`);
+
   // Sharpness is the record of how fast the two came together. The renderer
   // draws a scarp for a clean seam and a marble for a stirred one; if those
   // two look the same, the velocity is not in the picture.
@@ -1328,6 +1349,192 @@ section('The eccentric-orbit limit the README admits to');
   const order = Math.log2(d06 / drift(0.03, 20));
   check('convergence is fourth order, so this is truncation not a bug',
     order, 4.15, 0.12);
+}
+
+section('Planets are made of something now');
+{
+  // The interior as cells, and what a collision does to it. Everything in this
+  // section is about the model that replaced compositions-as-numbers: a body
+  // has material in places, and an impact damages the material where it hits.
+  const comp = { iron: 0.32, silicate: 0.68 };
+  const earth = () => new Body({
+    name: 'E', mass: M_EARTH, radius: R_EARTH, composition: comp,
+    temperature: 288, differentiation: 1, seed: 4242,
+  });
+  const ringOf = (f, r0, r1) => {
+    const acc = {};
+    let t = 0;
+    for (let j = 0; j < f.n; j++) {
+      for (let i = 0; i < f.n; i++) {
+        const k = f.idx(i, j);
+        if (f.mat[k] === EMPTY) continue;
+        const r = Math.hypot(f.u(i), f.u(j));
+        if (r < r0 || r >= r1) continue;
+        acc[matKey(f.mat[k])] = (acc[matKey(f.mat[k])] || 0) + 1;
+        t++;
+      }
+    }
+    for (const key in acc) acc[key] /= t;
+    return acc;
+  };
+
+  // A differentiated body has its iron in the middle, because that is what
+  // differentiated means. Nothing in the renderer decides this any more.
+  {
+    const b = earth();
+    const f = b.ensureField();
+    assert('a planet builds an interior', f && f.filled > 1000, `${f ? f.filled : 0} cells`);
+    const core = ringOf(f, 0, 0.35), skin = ringOf(f, 0.85, 1);
+    assert('with its iron in the core', (core.iron || 0) > 0.9,
+      `core is ${((core.iron || 0) * 100).toFixed(0)}% iron`);
+    assert('and none of it at the surface', (skin.iron || 0) < 0.05,
+      `surface is ${((skin.iron || 0) * 100).toFixed(0)}% iron`);
+    // A star has no interior worth resolving and must not get one.
+    const star = new Body({ name: 'S', kind: 'star', mass: M_SUN, radius: 7e8, temperature: 5772 });
+    assert('a star does not', star.ensureField() === null);
+  }
+
+  // A small impact damages the planet. It does not rearrange it, and it does
+  // not take any of it away: the crater is a dent in material that is still
+  // there, and it is still there once everything has cooled.
+  {
+    const b = earth();
+    const f = b.ensureField();
+    const m0 = b.mass, filled0 = f.filled;
+    const hit = b.takeImpact(1, 0, {
+      vImp: 18000, projMass: 1e20, projComp: { water: 0.6, silicate: 0.4 },
+      craterSize: 0.2, rng: () => 0.5,
+    });
+    assert('a small impact takes no mass off a planet', hit.ejectedMass === 0,
+      `${(hit.ejectedMass / m0).toExponential(1)} of the body`);
+    assert('and leaves no holes in it', f.filled === filled0, `${filled0} -> ${f.filled}`);
+    let deepest = 0;
+    for (let k = 0; k < f.n * f.n; k++) if (f.mat[k] !== EMPTY) deepest = Math.min(deepest, f.relief[k]);
+    assert('but it does leave a crater', deepest < -0.4, `deepest relief ${deepest.toFixed(2)}`);
+    // Cool it right down; a hole in cold rock does not heal.
+    for (let i = 0; i < 200; i++) f.relax(YEAR * 20, { equilibriumT: 288, coolSeconds: YEAR * 60 });
+    let after = 0;
+    for (let k = 0; k < f.n * f.n; k++) if (f.mat[k] !== EMPTY) after = Math.min(after, f.relief[k]);
+    assert('and the crater is still there a long time later', after < -0.3,
+      `${deepest.toFixed(2)} -> ${after.toFixed(2)}`);
+  }
+
+  // What escapes is limited by the energy that arrived, not by how wide the
+  // hole is. Taking the whole bowl had a 1e20 kg impactor throwing away two
+  // hundred times its own mass.
+  {
+    const b = earth();
+    b.ensureField();
+    const hit = b.takeImpact(1, 0, {
+      vImp: 25000, projMass: 1e21, projComp: comp, craterSize: 0.3, rng: () => 0.5,
+    });
+    const budget = 1e21 * 0.5 * 25000 * 25000 / (0.5 * b.escapeVelocity * b.escapeVelocity);
+    assert('ejecta cannot exceed what the impact could lift',
+      hit.ejectedMass <= budget, `${hit.ejectedMass.toExponential(2)} kg against ${budget.toExponential(2)} possible`);
+  }
+
+  // A giant impact melts the planet, and a molten planet is a fluid: it sorts
+  // itself by density, and it freezes from the outside in. None of that is
+  // scripted — it falls out of the material properties.
+  {
+    const b = earth();
+    const f = b.ensureField();
+    f.shock(1, 3000, 0.4, () => 0.5);
+    assert('a giant impact melts the whole planet', f.moltenFraction > 0.9,
+      `${(f.moltenFraction * 100).toFixed(0)}% molten`);
+    assert('and does not heat it past boiling', f.meanTemperature() < 4200,
+      `${f.meanTemperature().toFixed(0)} K`);
+
+    // Scramble the layering, then let it settle: the iron has to find its way
+    // back down on its own.
+    const scrambled = earth().ensureField();
+    scrambled.shock(1, 3000, 0, () => 0.5);
+    for (let k = 0; k < scrambled.n * scrambled.n; k++) {
+      if (scrambled.mat[k] === EMPTY) continue;
+      if ((k % 7) === 0) scrambled.mat[k] = matIndex('iron');
+      else if ((k % 7) === 1) scrambled.mat[k] = matIndex('silicate');
+    }
+    const before = (ringOf(scrambled, 0, 0.35).iron || 0);
+    for (let i = 0; i < 220; i++) {
+      scrambled.relax(YEAR * 5, { equilibriumT: 288, coolSeconds: YEAR * 400 });
+    }
+    const after = (ringOf(scrambled, 0, 0.35).iron || 0);
+    assert('iron sinks through melt without being told to',
+      after > before + 0.02, `core went from ${(before * 100).toFixed(0)}% to ${(after * 100).toFixed(0)}% iron`);
+
+    // And it freezes.
+    let steps = 0;
+    while (f.relax(YEAR * 8, { equilibriumT: 288, coolSeconds: YEAR * 40 }) && steps < 1200) steps++;
+    assert('a magma ocean freezes in finite time', steps < 1200 || f.moltenFraction < 0.05,
+      `${steps} steps, ${(f.moltenFraction * 100).toFixed(1)}% molten left`);
+    assert('and everything in it stays finite',
+      [...f.temp].every(isFinite) && [...f.relief].every(isFinite));
+  }
+
+  // The body's own numbers come back from the field, so a planet cannot look
+  // half ice and still claim to be dry rock.
+  {
+    const b = earth();
+    const f = b.ensureField();
+    for (let k = 0; k < f.n * f.n; k++) {
+      if (f.mat[k] !== EMPTY && Math.random() < 0) f.mat[k] = matIndex('water');
+    }
+    // Deterministically: make the outer third ice.
+    for (let j = 0; j < f.n; j++) {
+      for (let i = 0; i < f.n; i++) {
+        const k = f.idx(i, j);
+        if (f.mat[k] === EMPTY) continue;
+        if (Math.hypot(f.u(i), f.u(j)) > 0.72) f.mat[k] = matIndex('water');
+      }
+    }
+    b.syncFromField();
+    // The outer 28% of the radius is 48% of the area, but composition is by
+    // mass and water is a third the density of silicate and an eighth that of
+    // iron, so it is about 15% of the body. Reading 48% here would mean the
+    // field was reporting volume and calling it mass.
+    assert('the body reads its composition off its own material',
+      (b.composition.water || 0) > 0.1 && (b.composition.water || 0) < 0.25,
+      `${((b.composition.water || 0) * 100).toFixed(0)}% water by mass, from 48% by volume`);
+    assert('and its surface separately from its bulk',
+      (b.crust.water || 0) > (b.composition.water || 0),
+      `crust ${((b.crust.water || 0) * 100).toFixed(0)}% vs bulk ${((b.composition.water || 0) * 100).toFixed(0)}%`);
+  }
+
+  // A field has to survive a save.
+  {
+    const b = earth();
+    const f = b.ensureField();
+    b.takeImpact(1, 0, { vImp: 20000, projMass: 1e21, projComp: { carbon: 1 }, craterSize: 0.25, rng: () => 0.5 });
+    const round = Body.fromJSON(JSON.parse(JSON.stringify(b.toJSON())));
+    assert('a damaged planet survives a save and load',
+      round.field && round.field.filled === b.field.filled
+      && JSON.stringify(round.field.composition()) === JSON.stringify(b.field.composition()),
+      `${b.field.filled} cells -> ${round.field ? round.field.filled : 'none'}`);
+  }
+
+  // And the renderer draws the material, not a guess at it.
+  {
+    const plain = earth();
+    const cratered = earth();
+    const f = cratered.ensureField();
+    for (let q = 0; q < 5; q++) {
+      f.excavate({
+        cu: Math.cos(q * 1.2) * 0.7, cv: Math.sin(q * 1.2) * 0.7, craterR: 0.16,
+        specificEnergy: 0.5 * 16000 * 16000, escapeEnergy: 0.5 * 11200 * 11200,
+        projMassFraction: 2e-5, rng: () => 0.5,
+      });
+    }
+    cratered.syncFromField();
+    const a = texturePixels(plain, 96), c = texturePixels(cratered, 96);
+    let diff = 0, n = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      if (a[i + 3] < 128 && c[i + 3] < 128) continue;
+      n++;
+      diff += (Math.abs(a[i] - c[i]) + Math.abs(a[i + 1] - c[i + 1]) + Math.abs(a[i + 2] - c[i + 2])) / 3;
+    }
+    assert('a bombarded planet does not look like a pristine one',
+      diff / n > 10, `${(diff / n).toFixed(1)}/255 per channel`);
+  }
 }
 
 section('Save and load are exact');

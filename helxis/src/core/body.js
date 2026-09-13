@@ -7,6 +7,7 @@ import {
   differentiate, dominantMaterial, compositionProperty,
 } from './materials.js';
 import { hashSeed } from './rng.js';
+import { MaterialField, gridSizeFor } from './cells.js';
 
 /**
  * Depth of the layer that sunlight actually heats, in metres.
@@ -103,7 +104,15 @@ export class Body {
     // Fraction of the interior that has melted and re-sorted by density.
     this.differentiation = opts.differentiation != null ? opts.differentiation : 0;
 
-    this.seed = opts.seed != null ? opts.seed : hashSeed(this.name, this.id, Math.random());
+    // Deterministic: name and id, no Math.random(). A body's seed decides what
+    // it looks like and which way its fragments fly, so an unseeded one meant
+    // the same preset built a different system every time it was loaded — the
+    // Roche preset came out with 12 bodies on one run and 15 on the next, and
+    // the test that measured it was auditing a different scene each time. Ids
+    // are assigned in creation order and reset with the world, so building the
+    // same scene the same way gives the same seeds, and two bodies of the same
+    // name still differ because their ids do.
+    this.seed = opts.seed != null ? opts.seed : hashSeed(this.name, this.id);
     // Derived from the seed, not from Math.random(): a body has to look the
     // same after a save and load, and that includes which way it is facing.
     this.rotation = opts.rotation != null
@@ -116,6 +125,13 @@ export class Body {
     // Merge record: which parent surfaces mixed, how much of each, and along
     // what axis. This is what makes a merged planet look like its history.
     this.mixes = opts.mixes ? opts.mixes.map((m) => ({ ...m })) : [];
+
+    // The interior, once anything has happened to it. Null until a collision
+    // needs somewhere to put the damage: an undamaged planet is described
+    // perfectly well by its composition and a seed, and building a field for
+    // all 160 planetesimals of the disc preset on load would cost half a
+    // second for cells nothing was going to read.
+    this.field = opts.field ? MaterialField.fromJSON(opts.field) : null;
 
     // The outermost layer. A body's face is not its bulk: Earth's oceans are
     // two ten-thousandths of its mass and most of what you see. When the
@@ -445,7 +461,7 @@ export class Body {
     // Earth — including Meteor Crater, which this scaling gets right at 1.18 km
     // against an actual 1.2 and which the README claims the code tracks. The
     // list is capped and evicts its smallest, so keeping them costs nothing.
-    if (!(size > 0)) return;
+    if (!(size > 0)) return 0;
     // Keep the true fraction. Clamping every small crater up to 1/256 of the
     // disc made Meteor Crater and a 25 km basin the same entry, and the
     // renderer could no longer tell which it could draw.
@@ -470,11 +486,89 @@ export class Body {
     }
     this.revision++;
     this.refresh();
+    // Handed back so the cell field can dig a hole exactly as wide as the
+    // scaling says, rather than deriving the same number a second way.
+    return clamped;
+  }
+
+  /**
+   * Take an impact on the interior: dig the hole, heat what stayed, and bury
+   * the projectile at the bottom of it.
+   *
+   * This is what a small collision does instead of exchanging compositions.
+   * The crater's width comes from the same Schmidt-Housen scaling that draws
+   * it, the energy is the impact's own specific energy, and what leaves is
+   * whatever was moving faster than the body can hold on to. Returns the
+   * ejected mass and what it was made of, so the caller can turn it into
+   * debris that is actually the material that came out of the hole.
+   */
+  takeImpact(nx, ny, opts) {
+    const f = this.ensureField();
+    if (!f) return null;
+    const { vImp = 0, projMass = 0, projComp = null, bImp = 0, rng = Math.random } = opts;
+    const size = opts.craterSize > 0 ? opts.craterSize : 0.04;
+    // Local coordinates of the contact point, in the body's own frame.
+    const a = Math.atan2(ny, nx) - this.rotation;
+    const before = f.filled;
+    const res = f.excavate({
+      cu: Math.cos(a), cv: Math.sin(a),
+      craterR: clamp(size, 2 / f.n, 1.6),
+      specificEnergy: 0.5 * vImp * vImp,
+      escapeEnergy: 0.5 * this.escapeVelocity * this.escapeVelocity,
+      projMassFraction: this.mass > 0 ? clamp(projMass / this.mass, 0, 0.5) : 0,
+      projComp,
+      tangential: bImp * 0.6,
+      rng,
+    });
+    const ejectedMass = before > 0 ? (res.ejectedCells / before) * this.mass : 0;
+    this.syncFromField();
+    return { ejectedMass, ejectedComp: res.ejected, ejectedCells: res.ejectedCells };
   }
 
   /** Serialisable snapshot, used for save/load and for undo. */
+  /**
+   * The interior as cells, built on first use.
+   *
+   * Only for things with an interior worth resolving. A star has no surface to
+   * crater, a gas giant has no surface at all, and a black hole is not made of
+   * anything; below a thousand cells a body is a handful of pixels on screen
+   * and the field would cost more than it shows.
+   */
+  ensureField() {
+    if (this.field) return this.field;
+    if (!this.canHoldField()) return null;
+    this.field = MaterialField.build(this, gridSizeFor(this.radius));
+    return this.field;
+  }
+
+  canHoldField() {
+    return this.kind !== 'star' && this.kind !== 'gasgiant' && this.kind !== 'bh'
+      && this.kind !== 'ns' && this.kind !== 'wd' && this.mass > 1e16;
+  }
+
+  /**
+   * Take the body's bulk numbers back from the field.
+   *
+   * The field is the truth about what the body is made of once it has one, so
+   * composition, crust and temperature are read off it rather than tracked
+   * separately — otherwise a planet could be visibly half ice and still claim
+   * to be dry rock.
+   */
+  syncFromField() {
+    const f = this.field;
+    if (!f || f.filled === 0) return;
+    const bulk = f.composition();
+    if (bulk) this.composition = normalizeComposition(bulk);
+    const surf = f.surfaceComposition();
+    if (surf) this.crust = normalizeComposition(surf);
+    this.temperature = Math.max(T_CMB, f.meanTemperature());
+    this.revision++;
+    this.refresh();
+  }
+
   toJSON() {
     return {
+      field: this.field ? this.field.toJSON() : undefined,
       id: this.id, name: this.name, kind: this.kind, catalogId: this.catalogId,
       x: this.x, y: this.y, vx: this.vx, vy: this.vy,
       mass: this.mass, radius: this.explicitRadius ? this.radius : undefined,

@@ -544,6 +544,34 @@ input[type=range]::-moz-range-thumb {
 .inspector::-webkit-scrollbar { width: 6px; }
 .inspector::-webkit-scrollbar-thumb { background: rgba(167,139,250,.28); border-radius: 3px; }
 
+/* A panel that scrolls has to look like one. On a phone the inspector is
+   taller than the room it has even with everything else out of the way, and a
+   clipped list with no scrollbar reads as the end of the content rather than
+   the top of it.
+
+   Sticky, not absolute: the pseudo-element is the last child *inside* the
+   scrolling box, so an absolutely-positioned one scrolls away with the content
+   it is supposed to be covering. Sticky pins it to the scrollport instead. The
+   negative margin lets it sit over the last line rather than adding height. */
+.inspector.scroll-more::after {
+  content: 'more \2193';
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 4px;
+  position: sticky;
+  bottom: 0;
+  height: 34px;
+  margin-top: -34px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(20, 16, 33, 0), var(--panel-solid) 82%);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
 .inspector-head {
   display: flex;
   align-items: center;
@@ -994,11 +1022,20 @@ input[type=range]::-moz-range-thumb {
     /* Below the list: the view pill, and under that the dock. */
     --picker-bottom: calc(var(--viewbar-top) + 10px);
   }
-  /* With a body selected there is no room for both, and the list is the one
-     that can be folded to its header and reopened with one tap. */
-  body.inspecting .picker:not(.collapsed) .tabs,
-  body.inspecting .picker:not(.collapsed) .picker-body,
-  body.inspecting .picker:not(.collapsed) .placement { display: none; }
+  /* With a body selected there is no room for both. Folding the list to its
+     header was not enough: at 360x640 that left the inspector 146px to show
+     525px of content, so a reader saw the mass and nothing else — no radius,
+     no temperature, no composition — with nothing on screen to suggest there
+     was more. The list goes away entirely while something is selected, and so
+     does the view pill, which is the least useful thing on the screen at that
+     moment; closing the inspector brings both straight back. */
+  body.inspecting .picker,
+  body.inspecting .viewbar { display: none; }
+  body.inspecting .inspector {
+    top: 168px;
+    bottom: calc(var(--dock-top) + 12px);
+    max-height: none;
+  }
   /* The inspector is the only route to a body's numbers, so it cannot simply be
      hidden on a phone. Dock it to the bottom above the tools instead. */
   .inspector {
@@ -1008,8 +1045,6 @@ input[type=range]::-moz-range-thumb {
     right: 14px;
     left: 14px;
     width: auto;
-    /* Leaves the folded picker header (168px down, 62px tall) visible above
-       it, so the list is always one tap away. */
     max-height: calc(100vh - var(--viewbar-top) - 250px);
   }
   .tool-hint { display: none; }

@@ -378,12 +378,16 @@ export const PRESETS = [
     name: 'Rogue star flyby',
     blurb: 'A red dwarf cuts through a planetary system at 30 km/s. Very little survives.',
     build(world) {
+      // Seeded like every other preset: where the planets happen to be when the
+      // intruder arrives decides what survives, and that should be the same
+      // scene every time you load it, not a different one each press.
+      const rng = makeRng(0x0f1b);
       const sun = place(world, 'sun');
       for (const [id, a, e] of [
         ['earth', 1.0, 0.017], ['mars', 1.524, 0.093],
         ['jupiter', 5.204, 0.049], ['saturn', 9.537, 0.054],
       ]) {
-        orbit(world, sun, id, { a: a * AU, e, M: Math.random() * TAU });
+        orbit(world, sun, id, { a: a * AU, e, M: rng() * TAU });
       }
       const rogue = instantiate(CATALOG_BY_ID.get('red-dwarf'), { massScale: 3.1, name: 'Intruder' });
       rogue.x = -42 * AU;
