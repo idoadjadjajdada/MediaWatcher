@@ -98,15 +98,25 @@ function mixMask(u, v, mix, seed) {
   const ca = Math.cos(mix.angle + swirl), sa = Math.sin(mix.angle + swirl);
   let axis = u * ca + v * sa;
 
+  // Place the cut so the impactor covers roughly its mass fraction of the face.
+  const cut = 1 - 2 * mix.fracB;
+  // A stirred mix has a broad transition; a clean one is nearly a step.
+  const width = 0.04 + stir * 0.55;
+
+  // Seven octaves of noise per pixel per merge is the single most expensive
+  // thing in a merged sprite, and most pixels are nowhere near the boundary.
+  // Both warp terms are bounded, so whether the result is going to clamp to 0
+  // or 1 can be decided before evaluating either — exactly, not approximately.
+  const amp = (0.5 * 1.5 + 0.5 * 0.55) * (0.12 + stir * 1.25);
+  const gap = axis - cut;
+  if (gap + amp <= -width) return 0;
+  if (gap - amp >= width) return 1;
+
   // Warp the boundary. Low frequency for the big lobes, higher for the fringe.
   const w1 = fbm(u * 2.1 + 11, v * 2.1 - 7, seed ^ 0x5bf03635, 4) - 0.5;
   const w2 = fbm(u * 6.5 - 3, v * 6.5 + 5, seed ^ 0x1b873593, 3) - 0.5;
   axis += (w1 * 1.5 + w2 * 0.55) * (0.12 + stir * 1.25);
 
-  // Place the cut so the impactor covers roughly its mass fraction of the face.
-  const cut = 1 - 2 * mix.fracB;
-  // A stirred mix has a broad transition; a clean one is nearly a step.
-  const width = 0.04 + stir * 0.55;
   return smoothstep(clamp((axis - cut) / width * 0.5 + 0.5, 0, 1));
 }
 
@@ -231,17 +241,34 @@ function renderTerrestrial(body, size, data) {
     });
   }
 
+  // Reused across every pixel: allocating a mask array per pixel cost more than
+  // the work it was saving.
+  const masks = new Float64Array(Math.max(1, mixTerrain.length));
+
   // The height at a point, including whatever the merges did to it, plus how
   // much of the point is impactor material. Everything downstream — the sea
   // level probe, the shading, the ocean, the frost — goes through this, so the
   // coastline and the snow line follow the seam instead of ignoring it.
   const surfaceAt = (u, v, su, sv) => {
-    const hA = elevationAt(u, v, seed, rough, features, su, sv);
-    if (!mixTerrain.length) return { h: hA, amt: 0, t: null };
+    if (!mixTerrain.length) {
+      return { h: elevationAt(u, v, seed, rough, features, su, sv), amt: 0, t: null, seam: 0 };
+    }
+    // The masks first, and the target's own height field only if some of it
+    // still shows. Deep inside an impactor's terrane the original ground is
+    // completely covered, and evaluating it there was six octaves of noise
+    // thrown away on roughly half the pixels of a big merge.
+    let cover = 0;
+    for (let mi = 0; mi < mixTerrain.length; mi++) {
+      const m = mixMask(u, v, mixTerrain[mi].mix, seed ^ (mi * 0x9e3779b1));
+      masks[mi] = m;
+      cover = cover * (1 - m) + m;
+    }
+    let hA = 0;
+    if (cover < 0.998) hA = elevationAt(u, v, seed, rough, features, su, sv);
     let h = hA, amt = 0, t = null, seam = 0;
     for (let mi = 0; mi < mixTerrain.length; mi++) {
       const mt = mixTerrain[mi];
-      const m = mixMask(u, v, mt.mix, seed ^ (mi * 0x9e3779b1));
+      const m = masks[mi];
       if (m <= 0.002) continue;
       // The impactor's terrane has its own relief as well as its own mean
       // height: a metal-rich province is craggier than an icy one, and lerping

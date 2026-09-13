@@ -336,12 +336,13 @@ It skips itself if playwright is not installed.
 
 - The step is shared by all bodies, so one tight pair slows the whole scene.
 - The adaptive step is `η·√(r/|a|)`, which has no term for time-to-perihelion,
-  so it under-resolves the perihelion passage of a very eccentric orbit. At the
-  shipped η = 0.06, a two-body orbit with a = 5 AU and e = 0.98 drifts by
-  5.4 × 10⁻⁴ over 20 years and 9.1 × 10⁻³ over 200 — against 1.2 × 10⁻⁵ for the
-  Solar System over the same 200 years. Convergence is clean (measured order
-  4.25, so this is truncation and not a bug) and halving η fixes it, but
-  nothing warns you.
+  so it under-resolves the perihelion passage of a very eccentric orbit. A test
+  particle at a = 5 AU and e = 0.98, released at aphelion, drifts by
+  1.1 × 10⁻³ over 20 years at the shipped η = 0.06, and 9.7 × 10⁻³ over 200 —
+  against 1.2 × 10⁻⁵ for the Solar System over the same 200 years. Halving η
+  divides the error by about 18 each time (measured order 4.15, so this is
+  fourth-order truncation and not a bug), but nothing warns you that you are
+  in the regime where it matters.
 - A body has one temperature, and it has to stand for both a hot interior and
   a cold surface, which are not the same thing. Sunlight is therefore relaxed
   through a 10 m thermal skin — `√(κP/π)` for rock over a yearly cycle — while

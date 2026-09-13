@@ -1182,6 +1182,36 @@ section('Regressions found in the fifth review');
     molten > 1800, `${molten.toFixed(0)} K`);
 }
 
+section('The eccentric-orbit limit the README admits to');
+{
+  // eta*sqrt(r/|a|) has no time-to-perihelion term, so a very eccentric orbit
+  // is under-resolved at closest approach. The README quotes these; they are
+  // measured here so the number and the claim cannot drift apart, and so that
+  // an attempt to improve the step chooser has something to beat.
+  const drift = (eta, years) => {
+    const w = new World({
+      frameBudgetMs: 1e9, maxSubsteps: 1e9,
+      collisions: false, thermal: false, tidalDisruption: false,
+    });
+    w.settings.eta = eta;
+    w.add(new Body({ name: 'S', kind: 'star', mass: M_SUN, radius: 7e8 }));
+    const st = stateFromElements(G * M_SUN, 5 * AU, 0.98, 0, Math.PI);
+    w.add(new Body({ name: 'C', mass: 1e14, radius: 5e3, ...st }));
+    w.computeAccelerations();
+    const e0 = w.totalEnergy();
+    while (w.time < years * YEAR) w.advance(YEAR / 8);
+    return Math.abs((w.totalEnergy() - e0) / e0);
+  };
+  const d06 = drift(0.06, 20);
+  check('e = 0.98 drifts 1.1e-3 over 20 years at the shipped eta', d06, 1.12e-3, 0.35);
+  check('and 9.7e-3 over 200', drift(0.06, 200), 9.71e-3, 0.35);
+  // Halving eta must divide the error by about 2^4. If it stops doing that,
+  // something other than truncation is in the way.
+  const order = Math.log2(d06 / drift(0.03, 20));
+  check('convergence is fourth order, so this is truncation not a bug',
+    order, 4.15, 0.12);
+}
+
 section('Save and load are exact');
 {
   const w = new World({ frameBudgetMs: 1e9 });
@@ -1229,11 +1259,19 @@ section('The numbers the README quotes');
     };
   };
 
+  // Every cell of the table, including the worst-body column: the one cell the
+  // suite did not assert is the one that was wrong in the README (0.0006%
+  // against a real 0.0013%).
   const sol = new World();
   loadPreset(sol, 'solar-system');
   const s5 = treeError(sol, 0.5);
   check('Solar System per-body rms at theta 0.5', s5.perBody, 5.5e-6, 0.3);
+  check('Solar System worst body at theta 0.5', s5.worst * 100, 0.0013, 0.3, '%');
   check('Solar System scene-normalised rms at theta 0.5', s5.global, 9.4e-9, 0.3);
+  const s1 = treeError(sol, 1.0);
+  check('Solar System per-body rms at theta 1', s1.perBody, 2.8e-3, 0.3);
+  check('Solar System worst body at theta 1', s1.worst * 100, 0.63, 0.3, '%');
+  check('Solar System scene-normalised rms at theta 1', s1.global, 3.9e-6, 0.3);
 
   const cloud = new World();
   let seed = 12345;
@@ -1247,7 +1285,12 @@ section('The numbers the README quotes');
   }
   const c5 = treeError(cloud, 0.5);
   check('cloud per-body rms at theta 0.5', c5.perBody, 4.7e-2, 0.3);
+  check('cloud worst body at theta 0.5', c5.worst * 100, 114, 0.3, '%');
   check('cloud scene-normalised rms at theta 0.5', c5.global, 1.8e-4, 0.3);
+  const c1 = treeError(cloud, 1.0);
+  check('cloud per-body rms at theta 1', c1.perBody, 1.9e-1, 0.3);
+  check('cloud worst body at theta 1', c1.worst * 100, 312, 0.3, '%');
+  check('cloud scene-normalised rms at theta 1', c1.global, 1.2e-3, 0.3);
   assert('a cancelling cloud is far worse per body than per scene',
     c5.perBody / c5.global > 100,
     `ratio ${(c5.perBody / c5.global).toFixed(0)}x`);
