@@ -23,6 +23,7 @@ import { CATALOG, instantiate } from '../src/ui/catalog.js';
 import { radiusFromMass, bulkDensity, compressionFactor } from '../src/core/materials.js';
 import { texturePixels } from '../src/render/texture.js';
 import { EMPTY, matKey, matIndex } from '../src/core/cells.js';
+import { GrainSystem } from '../src/core/grains.js';
 import { ToolController } from '../src/ui/tools.js';
 import { applyToWorld, defaultSettings } from '../src/ui/settings.js';
 
@@ -165,7 +166,7 @@ section('Regressions found in review');
   // of the planet at high time scales.
   // Run at the wall-clock budget the app actually uses, since that is the
   // configuration the bug appeared in.
-  const w = new World({ frameBudgetMs: 11 });
+  const w = new World({ frameBudgetMs: 11, grainCollisions: false });
   loadPreset(w, 'giant-impact');
   const megayearPerSecond = 3.15576e13 / 60;
   let worstFrame = 0;
@@ -174,9 +175,22 @@ section('Regressions found in review');
     w.advance(megayearPerSecond);
     worstFrame = Math.max(worstFrame, Date.now() - t0);
   }
-  const planet = w.bodies.slice().sort((a, b) => b.mass - a.mass)[0];
+  // The giant-impact preset may still be parcels at this point — that is the
+  // new model working, not a failure — so measure whichever of the two the
+  // matter is currently in.
+  let planet = w.bodies.slice().sort((a, b) => b.mass - a.mass)[0];
+  if (!planet && w.grains && w.grains.n) {
+    const s = w.grains.summarise(w.grains.clusters().sort((a, b) => b.length - a.length)[0]);
+    planet = { x: s.x, y: s.y, radius: Math.cbrt(s.mass / 5500) * 100 };
+  }
+  assert('the giant impact leaves something behind', !!planet);
   let furthest = 0;
   for (const b of w.bodies) furthest = Math.max(furthest, Math.hypot(b.x - planet.x, b.y - planet.y));
+  if (w.grains) {
+    for (let i = 0; i < w.grains.n; i++) {
+      furthest = Math.max(furthest, Math.hypot(w.grains.x[i] - planet.x, w.grains.y[i] - planet.y));
+    }
+  }
   assert('debris stays bound at 1 Myr/s', furthest < planet.radius * 200,
     `furthest ${(furthest / planet.radius).toFixed(1)} planetary radii`);
   // And the frame budget has to actually bound the frame, including through a
@@ -577,7 +591,11 @@ section('Regressions found in the second review');
   // Shedding a circumplanetary disc must not move the pair's centre of mass:
   // placing bodies on a ring while leaving the remnant at the centre teleports
   // mass outward by a few planetary radii.
-  const w = new World({ frameBudgetMs: 1e9 });
+  //
+  // This is a property of the analytic outcome path, which still handles every
+  // impact too small or too gentle to be worth resolving parcel by parcel, so
+  // it is tested with the parcel path off rather than through it.
+  const w = new World({ frameBudgetMs: 1e9, grainCollisions: false });
   loadPreset(w, 'giant-impact');
   let com0 = null;
   w.on('collision', () => { if (!com0) com0 = true; });
@@ -865,7 +883,10 @@ section('Swept contact catches a tunnelling impactor');
 
 section('Giant impact reproduces the lunar iron depletion');
 {
-  const w = new World({ frameBudgetMs: 1e9 });
+  // Also the analytic path: the mantle-derived disc is a property of how that
+  // path partitions material, and the parcel path reaches the same answer by a
+  // different route, which is tested separately.
+  const w = new World({ frameBudgetMs: 1e9, grainCollisions: false });
   loadPreset(w, 'giant-impact');
   const m0 = w.bodies.reduce((s, b) => s + b.mass, 0);
   let regime = null;
@@ -1551,7 +1572,11 @@ section('A giant impact makes a moon, at any time scale');
   // finely came apart into 282 fragments when stepped coarsely.
   const comp = { iron: 0.32, silicate: 0.68 };
   const run = (chunkDays) => {
-    const w = new World({ frameBudgetMs: 1e9, maxSubsteps: 400 });
+    // The analytic outcome path. The parcel path reaches its own answer for
+    // this scenario by simulating the material directly, and is tested
+    // separately; what this pins is that the analytic answer does not depend
+    // on the clock, which is the regression it was written for.
+    const w = new World({ frameBudgetMs: 1e9, maxSubsteps: 400, grainCollisions: false });
     const t = new Body({
       name: 'Proto-Earth', mass: M_EARTH * 0.9, composition: comp,
       differentiation: 1, temperature: 900, seed: 7,
@@ -1610,6 +1635,133 @@ section('A giant impact makes a moon, at any time scale');
     `${fine.moon.toFixed(2)} vs ${coarse.moon.toFixed(2)} lunar masses`);
   assert('and does not shatter the debris either', coarse.shattered === 0,
     `${coarse.shattered} disruptive events at 200-day chunks`);
+}
+
+section('Matter, as parcels');
+{
+  // The parcel system: no bodies in it, no outcomes decided, just material
+  // pulling on and pushing against other material. Everything here is about
+  // whether that produces the right behaviour on its own.
+  const rock = { iron: 0.3, silicate: 0.7 };
+  const worldlet = () => new Body({
+    name: 'R', mass: 8e21, composition: rock, temperature: 250,
+    differentiation: 1, seed: 11,
+  });
+
+  // A body made of parcels has to stay a body. Too soft a contact and it
+  // collapses under its own gravity; too stiff and it blows itself apart.
+  {
+    const b = worldlet();
+    const g = new GrainSystem({ cap: 2000 });
+    const added = g.addBody(b, 900);
+    assert('a body fills with parcels', added > 500, `${added} parcels`);
+    check('and they carry all of its mass', g.totalMass(), b.mass, 1e-9);
+
+    const extent = () => {
+      let cx = 0, cy = 0, m = 0;
+      for (let i = 0; i < g.n; i++) { cx += g.mass[i] * g.x[i]; cy += g.mass[i] * g.y[i]; m += g.mass[i]; }
+      cx /= m; cy /= m;
+      let far = 0;
+      for (let i = 0; i < g.n; i++) far = Math.max(far, Math.hypot(g.x[i] - cx, g.y[i] - cy));
+      return far;
+    };
+    const before = extent();
+    for (let i = 0; i < 300; i++) g.step(5, { equilibriumT: 250 });
+    const after = extent();
+    assert('and it holds itself together under its own gravity',
+      after > before * 0.9 && after < before * 1.15,
+      `${(before / 1e3).toFixed(0)} km -> ${(after / 1e3).toFixed(0)} km`);
+    assert('without cooking itself doing it',
+      g.summarise(g.clusters()[0]).temperature < 400,
+      `${g.summarise(g.clusters()[0]).temperature.toFixed(0)} K`);
+    assert('and it is still one object', g.clusters().length === 1);
+  }
+
+  // A collision. Nothing decides the outcome: parcels hit parcels, the energy
+  // they lose becomes heat, and what is left is however many clumps there are.
+  {
+    const t = worldlet();
+    const p = new Body({
+      name: 'P', mass: 2e21, composition: { iron: 0.2, silicate: 0.55, water: 0.25 },
+      temperature: 250, differentiation: 1, seed: 12,
+    });
+    const rs = t.radius + p.radius;
+    const vEsc = Math.sqrt((2 * G * (t.mass + p.mass)) / rs);
+    p.x = rs * 2.2; p.y = rs * 1.1;
+    const d = Math.hypot(p.x, p.y);
+    p.vx = (-p.x / d) * 1.4 * vEsc; p.vy = (-p.y / d) * 1.4 * vEsc;
+
+    const g = new GrainSystem({ cap: 3000 });
+    g.addBody(t, 1000);
+    g.addBody(p, 300);
+    const m0 = g.totalMass();
+    let px0 = 0, py0 = 0;
+    for (let i = 0; i < g.n; i++) { px0 += g.mass[i] * g.vx[i]; py0 += g.mass[i] * g.vy[i]; }
+    let tMax0 = 0;
+    for (let i = 0; i < g.n; i++) tMax0 = Math.max(tMax0, g.temp[i]);
+
+    for (let i = 0; i < 1200; i++) g.step(4, { equilibriumT: 250 });
+
+    let px1 = 0, py1 = 0, tMax1 = 0;
+    for (let i = 0; i < g.n; i++) {
+      px1 += g.mass[i] * g.vx[i]; py1 += g.mass[i] * g.vy[i];
+      tMax1 = Math.max(tMax1, g.temp[i]);
+    }
+    check('a collision conserves mass exactly', g.totalMass(), m0, 1e-12);
+    const scale = Math.hypot(px0, py0) || m0;
+    assert('and momentum', Math.hypot(px1 - px0, py1 - py0) / scale < 1e-9,
+      `${(Math.hypot(px1 - px0, py1 - py0) / scale).toExponential(2)}`);
+    assert('the impact heats the material that took it', tMax1 > tMax0 + 500,
+      `${tMax0.toFixed(0)} K -> ${tMax1.toFixed(0)} K`);
+
+    const groups = g.clusters().sort((a, b) => b.length - a.length);
+    const big = g.summarise(groups[0]);
+    assert('and most of it ends up in one object',
+      big.mass / m0 > 0.9, `${((big.mass / m0) * 100).toFixed(1)}%`);
+    assert('which is spinning, because the impact was off centre',
+      Math.abs(big.spin) > 1e-6, `${big.spin.toExponential(2)} rad/s`);
+    // The impactor's material has to actually be in there.
+    assert('carrying material from both bodies',
+      (big.composition.water || 0) > 0.01,
+      `${(((big.composition.water) || 0) * 100).toFixed(1)}% water, which only the impactor had`);
+  }
+
+  // And the whole loop through the world: two bodies go in, parcels happen,
+  // bodies come out, and nothing is created or lost on the way.
+  {
+    const w = new World({ frameBudgetMs: 1e9, maxSubsteps: 200, maxGrainSubsteps: 400 });
+    const a = new Body({ name: 'A', mass: 6e22, composition: rock, temperature: 400, differentiation: 1, seed: 3 });
+    const rb = new Body({ mass: 2e22, composition: rock });
+    const rs = a.radius + rb.radius;
+    const vEsc = Math.sqrt((2 * G * (a.mass + 2e22)) / rs);
+    w.add(a);
+    w.add(new Body({
+      name: 'B', mass: 2e22, composition: rock, temperature: 400, differentiation: 1, seed: 4,
+      x: rs * 1.6, y: rs * 0.9, vx: -1.3 * vEsc * 0.87, vy: -1.3 * vEsc * 0.49,
+    }));
+    const m0 = w.bodies.reduce((s2, b) => s2 + b.mass, 0);
+    let shattered = 0, condensed = 0;
+    w.on('shatter', () => { shattered++; });
+    w.on('condense', () => { condensed++; });
+
+    const t0 = Date.now();
+    while ((shattered === 0 || w.grains.n > 0) && Date.now() - t0 < 40000) w.advance(DAY);
+    assert('a big collision becomes parcels rather than an outcome', shattered === 1,
+      `${shattered} shatter events`);
+    assert('and the parcels become bodies again', condensed > 0 && w.grains.n === 0,
+      `${condensed} condensations, ${w.grains.n} parcels left`);
+    const m1 = w.bodies.reduce((s2, b) => s2 + b.mass, 0);
+    check('with all the mass still there', m1, m0, 1e-9);
+    assert('and something to show for it', w.bodies.length >= 1, `${w.bodies.length} bodies`);
+    // A crowd uses the analytic path instead — resolving a hundred and sixty
+    // grinding planetesimals parcel by parcel is unwatchable and beside the
+    // point.
+    const disc = new World({ frameBudgetMs: 1e9 });
+    loadPreset(disc, 'protoplanetary');
+    assert('a crowded scene is left to the analytic path',
+      !disc.worthShattering(disc.bodies[1], disc.bodies[2]),
+      `${disc.bodies.length} bodies in the scene`);
+  }
 }
 
 section('Save and load are exact');

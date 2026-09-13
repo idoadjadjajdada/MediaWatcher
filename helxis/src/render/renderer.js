@@ -1,5 +1,6 @@
-import { clamp, TAU, formatDistance, schwarzschild } from '../core/const.js';
-import { incandescence, surfaceColor } from '../core/materials.js';
+import { clamp, lerp, TAU, formatDistance, schwarzschild } from '../core/const.js';
+import { incandescence, surfaceColor, MATERIALS } from '../core/materials.js';
+import { matKey } from '../core/cells.js';
 import {
   bodyTexture, shadeMask, glowSprite, dotSprite, pickSize, blackbodyColor,
 } from './texture.js';
@@ -117,6 +118,7 @@ export class Renderer {
 
     if (settings.glow) this.drawGlows(ctx, world, cam, stars, settings);
     this.drawBodies(ctx, world, cam, stars, settings, state);
+    if (world.grains && world.grains.n > 0) this.drawGrains(ctx, world.grains, cam);
     if (settings.lensing) this.drawLensing(ctx, world, cam, settings);
 
     this.drawEffects(ctx, effects, cam, settings);
@@ -274,6 +276,52 @@ export class Renderer {
   }
 
   /** Flux-weighted direction to the light, in world space. */
+  /**
+   * Matter in flight, drawn parcel by parcel.
+   *
+   * No sprite, no disc, no assumed shape: a collision in progress is whatever
+   * the parcels are doing, and this draws exactly that. Which is the point —
+   * a planet being hit is not a sphere, and the moment you draw it as one you
+   * have thrown away the thing worth looking at.
+   */
+  drawGrains(ctx, g, cam) {
+    const n = g.n;
+    if (!n) return;
+    const scale = cam.scale;
+    const cos = Math.cos(cam.rotation), sin = Math.sin(cam.rotation);
+    const w = ctx.canvas.width, h = ctx.canvas.height;
+    const halfW = w / 2, halfH = h / 2;
+
+    for (let i = 0; i < n; i++) {
+      const dx = g.x[i] - cam.x, dy = g.y[i] - cam.y;
+      const sx = halfW + (dx * cos - dy * sin) * scale;
+      const sy = halfH + (dx * sin + dy * cos) * scale;
+      // A parcel is never smaller than a pixel: debris a hundred metres across
+      // still has to be visible when you are looking at a planet.
+      const rp = Math.max(0.7, g.r[i] * scale);
+      if (sx < -rp || sy < -rp || sx > w + rp || sy > h + rp) continue;
+
+      const mat = MATERIALS[matKey(g.mat[i])] || MATERIALS.silicate;
+      let cr = mat.cold[0], cg = mat.cold[1], cb = mat.cold[2];
+      const melt = g.melt[i];
+      if (melt > 0.02) {
+        cr = lerp(cr, mat.hot[0], melt * 0.8);
+        cg = lerp(cg, mat.hot[1], melt * 0.8);
+        cb = lerp(cb, mat.hot[2], melt * 0.8);
+      }
+      const glow = incandescence(g.temp[i]);
+      if (glow) {
+        const t = clamp((g.temp[i] - 900) / 1600, 0, 1);
+        cr = lerp(cr, glow[0], t); cg = lerp(cg, glow[1], t); cb = lerp(cb, glow[2], t);
+      }
+      ctx.fillStyle = `rgb(${cr | 0},${cg | 0},${cb | 0})`;
+      // Squares, on the buffer grid, because the buffer is the pixel grid and
+      // a circle here would just be a square with the corners guessed at.
+      const d = Math.max(1, Math.round(rp * 2));
+      ctx.fillRect(Math.round(sx - d / 2), Math.round(sy - d / 2), d, d);
+    }
+  }
+
   lightDirection(body, stars) {
     let lx = 0, ly = 0, total = 0;
     for (const s of stars) {

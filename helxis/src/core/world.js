@@ -3,6 +3,8 @@ import { Body, resetIds } from './body.js';
 import { Quadtree } from './quadtree.js';
 import { resolveCollision, sweptContactDisp, tidallyDisrupt } from './collide.js';
 import { dominantAttractor } from './kepler.js';
+import { GrainSystem } from './grains.js';
+import { radiusFromMass } from './materials.js';
 
 // The finest step the integrator will take. Below this it is no longer
 // resolving what it claims to, and `underResolved` is set to say so.
@@ -446,7 +448,21 @@ export class World {
    * shows the real rate instead of a requested one the physics never delivered.
    */
   advance(seconds) {
-    if (seconds <= 0 || this.bodies.length === 0) return 0;
+    // Not `bodies.length === 0`: during a collision every scrap of matter in
+    // the scene can be parcels, and returning early there froze the clock at
+    // the exact moment there was something to watch.
+    const hasGrains = !!(this.grains && this.grains.n > 0);
+    if (seconds <= 0 || (this.bodies.length === 0 && !hasGrains)) return 0;
+    if (this.bodies.length === 0) {
+      // Parcels only: no orbits to integrate, so hand the whole step to them.
+      this._frame++;
+      const used = this.stepGrains(seconds) || 0;
+      this.throttled = used < seconds - 1e-9;
+      this.time += used;
+      this.substepsTaken = this.grainSubsteps || 0;
+      this.updateTrails();
+      return used;
+    }
     // A body added or removed since the last step leaves every acceleration
     // stale, and the first drift of the next step would use it.
     if (this.steps === 0 || this._accelDirty) this.computeAccelerations();
@@ -455,6 +471,18 @@ export class World {
     if (this.cullNonFinite()) this.computeAccelerations();
 
     this._frame++;
+    // Parcels resolve on a scale of seconds. If a collision is in flight, the
+    // clock comes down to meet it rather than skipping past it: at a megayear
+    // a second there is no step that both advances the orbit and resolves a
+    // contact, and the honest answer is that the interesting thing is the
+    // collision. The status line says TIME LIMITED while this holds.
+    if (this.grains && this.grains.n > 0) {
+      // The bodies advance by however much the parcels manage, so the two never
+      // drift apart. That does mean the clock slows to collision speed while a
+      // collision is happening, which is the point of watching one.
+      const cap = this.grainCapacity(this.grains);
+      if (seconds > cap) { seconds = cap; this.throttled = true; }
+    }
     let remaining = seconds;
     let taken = 0;
     const cap = this.settings.maxSubsteps;
@@ -501,6 +529,7 @@ export class World {
 
     this.substepsTaken = taken;
     if (this.settings.thermal) this.thermalPass(seconds - remaining);
+    if (this.grains && this.grains.n > 0) this.stepGrains(seconds - remaining);
     this.relaxFields(seconds - remaining);
     this.updateTrails();
     this.measureEnergy();
@@ -571,6 +600,22 @@ export class World {
       // would report every impact as more head-on than it was.
       rollback(best.a, best.t);
       rollback(best.b, best.t);
+
+      // Big enough to be worth watching? Then stop treating it as an event with
+      // an outcome and let the material sort it out. Everything below the
+      // threshold — a pebble cratering a planet, two grains of debris settling
+      // — still goes through the analytic path, because shattering an Earth
+      // into thousands of parcels to resolve a crater would be absurd.
+      if (this.settings.grainCollisions !== false && this.worthShattering(best.a, best.b)) {
+        if (this.shatterInto(best.a, best.b)) {
+          this.emit('collision', {
+            regime: 'shatter', x: best.a.x, y: best.a.y,
+            vImp: Math.hypot(best.b.vx - best.a.vx, best.b.vy - best.a.vy),
+            energy: 0, scale: best.a.radius + best.b.radius,
+          });
+          continue;
+        }
+      }
 
       // Taper fragmentation as the scene fills up. Shattering a body into
       // fifty pieces when there is room for ten produces fifty, evicts forty,
@@ -843,6 +888,256 @@ export class World {
     this.energyDrift = Math.abs(this._energyRef) > 0
       ? (e - this._energyRef) / Math.abs(this._energyRef)
       : 0;
+  }
+
+  // --- matter in flight -----------------------------------------------------
+
+  /**
+   * Is this collision worth simulating parcel by parcel?
+   *
+   * Two tests. The smaller body has to be a real fraction of the larger, since
+   * a projectile a millionth of the target's mass cannot deform it in any way
+   * a few thousand parcels could resolve. And the impact has to be energetic
+   * enough to do something: below the pair's escape velocity they are simply
+   * going to settle together, which the analytic path already does correctly
+   * and far more cheaply.
+   */
+  worthShattering(a, b) {
+    if (a.kind === 'bh' || b.kind === 'bh') return false;
+    if (a.kind === 'star' || b.kind === 'star') return false;
+    const big = a.mass >= b.mass ? a : b;
+    const small = a.mass >= b.mass ? b : a;
+    if (small.mass < big.mass * 0.02) return false;
+    const rs = a.radius + b.radius;
+    const vEsc = Math.sqrt((2 * G * (a.mass + b.mass)) / Math.max(rs, 1));
+    const vImp = Math.hypot(b.vx - a.vx, b.vy - a.vy);
+    if (vImp < vEsc * 0.55) return false;
+    // One event at a time. Condensing part of a collision while the rest is
+    // still in flight puts a solid body inside a cloud of parcels it is
+    // overlapping, which re-collides, re-shatters, and runs away: parcels went
+    // from 1558 to 4161 and bodies to 278 inside three frames.
+    const g = this.grains;
+    if (g && g.n > 0) return false;
+    // And both have to be big enough that a few hundred parcels can say
+    // anything useful about them.
+    if (Math.min(a.mass, b.mass) < (this.settings.grainMinMass || 1e21)) return false;
+    // Not in a crowd. A protoplanetary disc is a hundred and sixty bodies
+    // grinding against each other for thousands of collisions, and resolving
+    // each one parcel by parcel is both unwatchable and beside the point —
+    // there the interesting thing is the population, not any one impact. The
+    // analytic path is the right level of detail for that, and this is the
+    // right level for the collision you are actually looking at.
+    return this.bodies.length <= (this.settings.grainMaxScene || 24);
+  }
+
+  /**
+   * Turn two bodies about to collide into the material they are made of.
+   *
+   * From here until it settles, there are no bodies involved — only parcels
+   * pulling on each other, hitting each other, and sticking or not depending on
+   * how hot they are. What comes out is not chosen: it is however many clumps
+   * the parcels end up in.
+   *
+   * Only worth doing for a collision big enough to watch. A pebble hitting a
+   * planet is still handled analytically, because shattering an Earth into six
+   * thousand parcels to resolve a crater would be absurd.
+   */
+  shatterInto(a, b) {
+    if (!this.grains) this.grains = new GrainSystem({ cap: this.settings.grainCap || 4200 });
+    const g = this.grains;
+    const total = a.mass + b.mass;
+    const room = g.cap - g.n;
+    if (room < 200) return false;
+
+    // Parcels split between the two in proportion to mass, but never so few for
+    // the smaller one that it is a single blob.
+    const budget = Math.min(room, this.settings.grainCount || 1600);
+    const share = clamp(b.mass / total, 0.06, 0.5);
+    const nb = Math.max(40, Math.round(budget * share));
+    const na = Math.max(60, budget - nb);
+
+    const before = g.n;
+    if (!g.addBody(a, na)) return false;
+    if (!g.addBody(b, nb)) { g.n = before; return false; }
+
+    this.remove(a);
+    this.remove(b);
+    this._grainAge = 0;
+    this.grainsActive = true;
+    this._accelDirty = true;
+    this.emit('shatter', { x: a.x, y: a.y, mass: total, parcels: g.n - before });
+    return true;
+  }
+
+  /**
+   * Step the parcels, and let go of any clump that has finished being one.
+   *
+   * A cluster becomes a body again when it is cold enough to hold together and
+   * its parcels have stopped moving relative to each other — not after a fixed
+   * time, and not because anything decided it should. Until then it stays
+   * parcels, which is why a planet mid-impact is the wrong shape.
+   */
+  stepGrains(dt) {
+    const g = this.grains;
+    if (!g || g.n === 0) { this.grainsActive = false; return; }
+
+    // The rest of the universe still pulls on the debris.
+    const bodies = this.bodies;
+    const external = (gs) => {
+      for (let i = 0; i < gs.n; i++) {
+        let ax = 0, ay = 0;
+        for (let k = 0; k < bodies.length; k++) {
+          const o = bodies[k];
+          const dx = o.x - gs.x[i], dy = o.y - gs.y[i];
+          const d2 = dx * dx + dy * dy;
+          const reach = o.radius + gs.r[i];
+          const d = Math.sqrt(d2);
+          if (d <= 0) continue;
+          const f = d < reach
+            ? (G * o.mass * d) / (reach * reach * reach)
+            : (G * o.mass) / (d2 * d);
+          ax += f * dx; ay += f * dy;
+        }
+        gs._ax[i] += ax; gs._ay[i] += ay;
+      }
+    };
+
+    // Sub-stepped: the parcels need a finer step than the orbital one, and the
+    // budget decides how much of it they get.
+    // The step the parcels can take, and never more: dividing a large frame
+    // into a bounded number of substeps let h exceed it, and a parcel that
+    // crosses more than its own radius in one step arrives already deep inside
+    // its neighbour and is thrown out at enormous speed. Two rocky worlds
+    // meeting at 1.7 escape velocities blew apart into a cloud that left the
+    // screen, when the same collision run at a safe step accretes.
+    const h = this.grainStep(g);
+    const deadline = now() + Math.max(3, (this.settings.frameBudgetMs || 11) * 0.9);
+    // Bounded, like the body integrator's own substep cap. A test that hands
+    // out an effectively unlimited frame budget would otherwise ask for the
+    // whole five days in one call — 54,000 parcel steps, three minutes of wall
+    // clock, and no way to see it was progressing.
+    const want = Math.max(1, Math.min(
+      Math.ceil(dt / h), this.settings.maxGrainSubsteps || 600,
+    ));
+    let taken = 0;
+    for (let s = 0; s < want; s++) {
+      g.step(h, { external, equilibriumT: 2.725 });
+      taken++;
+      if (now() > deadline) break;
+    }
+    this.grainSubsteps = taken;
+    // However much of the frame the parcels actually got through is how much
+    // time passed. Anything else desynchronises the clock from the matter.
+    this.grainSeconds = taken * h;
+    // A collision that will not settle still has to end. The guard is generous
+    // — thousands of parcel steps — and exists so a pathological scene degrades
+    // into bodies rather than holding the clock down for ever.
+    this._grainAge = (this._grainAge || 0) + taken;
+    const stuck = this._grainAge > (this.settings.grainMaxSteps || 12000);
+    // Clustering is a union-find over every parcel and costs as much as a
+    // contact pass, so it runs a few times a second rather than every substep.
+    this._sinceCluster = (this._sinceCluster || 0) + taken;
+    if (stuck || this._sinceCluster >= 30) {
+      this._sinceCluster = 0;
+      this.condenseGrains(stuck);
+      if (this.grains.n === 0) this._grainAge = 0;
+    }
+    return this.grainSeconds;
+  }
+
+  /** How much simulated time the parcels can cover in one frame's budget. */
+  grainCapacity(g) {
+    const per = Math.max(g.n, 1) * 3e-3;           // ms per substep, measured
+    const budget = Math.max(3, (this.settings.frameBudgetMs || 11) * 0.9);
+    return this.grainStep(g) * Math.max(1, Math.floor(budget / Math.max(per, 1e-3)));
+  }
+
+  /** The largest step the parcels can take without passing through each other. */
+  grainStep(g) {
+    // A quarter of a radius per parcel per step, not half.
+    //
+    // Two parcels approaching each other each move by this much, so the gap
+    // closes at twice the rate: at half a radius apiece they can go from
+    // touching to fully overlapped between one step and the next, and the
+    // contact pass then has to undo a whole radius of interpenetration in one
+    // go. That correction is a velocity, and it is enormous — an Earth-scale
+    // impact at eleven kilometres a second tore itself into 305 pieces at 2.6
+    // km/s, which is the numerics, not the physics.
+    let worst = Infinity;
+    for (let i = 0; i < g.n; i++) {
+      const v = Math.hypot(g.vx[i], g.vy[i]);
+      if (v > 0) worst = Math.min(worst, (g.r[i] * 0.25) / v);
+    }
+    return isFinite(worst) && worst > 0 ? worst : 1;
+  }
+
+  /**
+   * Any cluster that has settled becomes a body again.
+   *
+   * "Settled" means its parcels have stopped moving relative to each other
+   * compared with the speed it takes to escape it, and it is not still molten
+   * through. A clump that is still churning stays parcels.
+   */
+  condenseGrains(force = false) {
+    const g = this.grains;
+    if (!g || g.n === 0) return;
+    const groups = g.clusters();
+
+    // All or nothing. A collision resolves into bodies when the whole scene has
+    // stopped being a collision, not cluster by cluster: releasing one clump
+    // early drops a solid body into the parcels it is still overlapping.
+    if (!force) {
+      for (const list of groups) {
+        const s = g.summarise(list);
+        if (!s) continue;
+        if (list.length < 3) continue;
+        const vEsc = Math.sqrt((2 * G * s.mass) / Math.max(radiusFromMass(s.mass, s.composition), 1));
+        if (s.dispersion >= vEsc * 0.22 || s.molten >= 0.45) return;
+      }
+    }
+
+    const keep = [];
+    let condensed = 0;
+
+    for (const list of groups) {
+      const s = g.summarise(list);
+      if (!s) continue;
+      const vEsc = Math.sqrt((2 * G * s.mass) / Math.max(radiusFromMass(s.mass, s.composition), 1));
+      // A lone parcel has nothing to be in equilibrium with, so it is settled
+      // by definition — it is a rock flying through space. Requiring three of
+      // them meant every scrap thrown clear stayed a parcel for ever, which
+      // kept the whole system live and, because the clock is held down to
+      // collision timescales while it is, stopped time permanently.
+      const settled = force || list.length < 3
+        || (s.dispersion < vEsc * 0.22 && s.molten < 0.45);
+      if (!settled) { keep.push(...list); continue; }
+
+      const body = new Body({
+        name: 'Body', kind: s.mass > 3e22 ? 'planet' : (s.mass > 1e18 ? 'asteroid' : 'debris'),
+        mass: s.mass, composition: s.composition, temperature: s.temperature,
+        x: s.x, y: s.y, vx: s.vx, vy: s.vy, spin: s.spin,
+        differentiation: clamp(s.molten * 1.4 + 0.25, 0, 1),
+      });
+      body.name = this.nameFor(body);
+      this.add(body);
+      condensed++;
+    }
+
+    if (condensed === 0) return;
+    // Repack the parcels that are still in flight.
+    const kx = keep.map((i) => [g.x[i], g.y[i], g.vx[i], g.vy[i], g.mass[i], g.mat[i], g.temp[i], g.r[i]]);
+    g.clear();
+    for (const [x, y, vx, vy, m, mat, t, r] of kx) g.add(x, y, vx, vy, m, mat, t, r);
+    this.grainsActive = g.n > 0;
+    this._accelDirty = true;
+    this.emit('condense', { count: condensed, left: g.n });
+  }
+
+  nameFor(body) {
+    this._condensedCount = (this._condensedCount || 0) + 1;
+    const n = this._condensedCount;
+    if (body.mass > 3e22) return `Accreted world ${n}`;
+    return body.mass > 1e18 ? `Fragment ${n}` : `Debris ${n}`;
   }
 
   /**
